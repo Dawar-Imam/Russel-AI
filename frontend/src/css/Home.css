@@ -1,7 +1,64 @@
 .home-page {
   min-height: 100vh;
-  background-image: url('../utils/interview_room.png');
+  background-image: url('../utils/home-page.png');
   background-size: cover;
   background-position: center;
   background-repeat: no-repeat;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.home-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-4);
+  padding: var(--space-6);
+  text-align: center;
+}
+
+.home-brand {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+.home-title {
+  margin: 0;
+  font-size: clamp(40px, 8vw, 72px);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+
+.home-title-primary {
+  color: var(--color-text-primary);
+}
+
+.home-title-accent {
+  color: var(--color-primary);
+}
+
+.home-logo {
+  width: clamp(36px, 6vw, 56px);
+  height: clamp(36px, 6vw, 56px);
+}
+
+.home-subtitle {
+  margin: 0;
+  font-size: 15px;
+  color: var(--color-text-secondary);
+}
+
+.home-actions {
+  display: flex;
+  gap: var(--space-4);
+  margin-top: var(--space-6);
+}
+
+@media (max-width: 480px) {
+  .home-actions {
+    flex-direction: column;
+    width: 100%;
+  }
 }

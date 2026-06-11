@@ -1,0 +1,73 @@
+.job-apply-dialog {
+  display: flex;
+  gap: var(--space-8);
+}
+
+.job-apply-main {
+  flex: 1.4;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.job-apply-side {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.job-apply-company {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-primary);
+}
+
+.job-apply-title {
+  margin: 0;
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--color-text-primary);
+}
+
+.job-apply-description {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--color-text-secondary);
+}
+
+.job-apply-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.job-apply-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-text-secondary);
+}
+
+.job-apply-experience {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.job-apply-submit {
+  margin-top: auto;
+  width: 100%;
+}
+
+@media (max-width: 560px) {
+  .job-apply-dialog {
+    flex-direction: column;
+  }
+}

@@ -1,0 +1,47 @@
+.tag {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: 4px 12px;
+  border-radius: var(--radius-pill);
+  font-size: 12px;
+  font-weight: 500;
+  border: 1px solid var(--color-border);
+  background-color: var(--color-surface-raised);
+  color: var(--color-text-secondary);
+}
+
+.tag-active {
+  background-color: rgba(245, 166, 35, 0.15);
+  color: var(--color-primary);
+  border-color: rgba(245, 166, 35, 0.4);
+}
+
+.tag-info {
+  background-color: rgba(26, 58, 107, 0.4);
+  color: var(--color-info-text);
+  border-color: rgba(26, 58, 107, 0.4);
+}
+
+.tag-clickable {
+  cursor: pointer;
+  transition: border-color 0.2s ease, color 0.2s ease;
+}
+
+.tag-clickable:hover {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
+.tag-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  color: inherit;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+}

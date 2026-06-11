@@ -1,8 +1,13 @@
+@import './tokens.css';
+
 :root {
-  font-family: system-ui, sans-serif;
+  font-family: var(--font-sans);
+  color-scheme: dark;
 }
 
 body {
   margin: 0;
-  padding: 2rem;
+  background-color: var(--color-bg);
+  color: var(--color-text-primary);
+  line-height: 1.6;
 }
