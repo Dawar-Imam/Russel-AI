@@ -1,0 +1,7 @@
+.home-page {
+  min-height: 100vh;
+  background-image: url('../utils/interview_room.png');
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+}
