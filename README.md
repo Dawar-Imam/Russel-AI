@@ -1,2 +1,2 @@
 # Russel-AI
-Russel AI is an AI-powered recruitment platform. Russel screens candidates, conducts interviews, and generates hiring insights
+Russel.AI is an AI-powered talent intelligence platform that streamlines the hiring process for recruiters and accelerates career growth for candidates. The platform automates candidate screening, interviews, evaluation, ranking, and reporting, helping recruiters focus only on the most qualified applicants. For candidates, Russel.AI provides AI mock interviews, skill gap analysis, personalized preparation guidance, and career insights to improve job readiness and hiring success.
