@@ -263,6 +263,37 @@ Candidate signs up → Builds profile → Applies to jobs
 ## System Design
  
 - Full flow diagram: [draw.io](https://app.diagrams.net/#G1CyvYuqgtQgt8ghGicG6CHgu0zTUcIK5C#%7B%22pageId%22%3A%22FgCxdf08D7E8nqMTdc42%22%7D)
+
+---
+
+## Project Setup
+
+### Backend (FastAPI, `uv`-managed via `pyproject.toml`)
+
+- `app/main.py` – FastAPI app with CORS, `/health` endpoint, mounts API router
+- `app/core/config.py` – pydantic-settings based config (reads `.env`)
+- `app/core/logging.py` – logging setup
+- `app/api/router.py` + `app/api/endpoints/demo.py` – demo endpoint at `/demo/`
+- `app/schemas/schema.py` – `DemoMessage` pydantic model
+- `app/services/demo_service.py` – demo service returning the message
+- `app/database/__init__.py` – placeholder for DB setup
+- `.env.example` for config
+
+Run:
+```bash
+cd backend && uv sync && uv run uvicorn app.main:app --reload
+```
+
+### Frontend (Vite + React + TypeScript)
+
+- `src/components/Header.tsx`, `src/pages/Home.tsx` – sample component/page
+- `src/App.tsx` – react-router routes, `src/main.tsx` – entry with `BrowserRouter`
+- `package.json`, `vite.config.ts`, `tsconfig.json`, `index.html`
+
+Run:
+```bash
+cd frontend && npm install && npm run dev
+```
  
 
 
