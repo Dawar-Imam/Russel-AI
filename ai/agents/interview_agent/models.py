@@ -2,7 +2,7 @@ from sqlalchemy import Boolean, ForeignKey, Integer, String
 from sqlalchemy.dialects.mssql import DATETIME2, NVARCHAR, UNIQUEIDENTIFIER
 from sqlalchemy.orm import Mapped, mapped_column
 
-from ai_configs.db import Base
+from app.database.session import Base
 
 # Models below cover the subset of the schema (see .claude/database-schema.md)
 # needed by the question_generator and answer_scorer tools. Lookup/profile

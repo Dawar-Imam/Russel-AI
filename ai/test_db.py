@@ -1,7 +1,7 @@
 from sqlalchemy import select
 
 from agents.interview_agent.models import CandidateProfiles
-from ai_configs.db import SessionLocal
+from app.database.session import SessionLocal
 
 CANDIDATE_ID = "b0000001-0000-0000-0000-000000000001"
 

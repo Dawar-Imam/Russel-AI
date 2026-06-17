@@ -1,9 +1,14 @@
+import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import Button from './Button'
 import Tag from './Tag'
 import Modal from './Modal'
 import type { JobPost } from '../data/jobs'
 import '../css/JobApplyDialog.css'
+
+// Hardcoded for dev — will come from auth session later
+const CANDIDATE_ID = 'b0000001-0000-0000-0000-000000000001'
+const API_BASE = 'http://localhost:8000'
 
 interface JobApplyDialogProps {
   job: JobPost
@@ -13,10 +18,33 @@ interface JobApplyDialogProps {
 
 function JobApplyDialog({ job, isOpen, onClose }: JobApplyDialogProps) {
   const navigate = useNavigate()
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
-  function handleApply() {
-    onClose()
-    navigate('/interview-stages')
+  async function handleApply() {
+    setLoading(true)
+    setError(null)
+    try {
+      const res = await fetch(`${API_BASE}/api/applications/apply`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          job_posting_id: job.jobPostingId,
+          candidate_id: CANDIDATE_ID,
+        }),
+      })
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}))
+        throw new Error(data.detail ?? `Server error ${res.status}`)
+      }
+      const { application_id } = await res.json()
+      onClose()
+      navigate(`/interview-stages/${application_id}`)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Something went wrong')
+    } finally {
+      setLoading(false)
+    }
   }
 
   return (
@@ -45,8 +73,16 @@ function JobApplyDialog({ job, isOpen, onClose }: JobApplyDialogProps) {
             <p className="job-apply-experience">{job.minExperience}</p>
           </div>
 
-          <Button type="button" variant="primary" className="job-apply-submit" onClick={handleApply}>
-            Apply to Job
+          {error && <p className="job-apply-error">{error}</p>}
+
+          <Button
+            type="button"
+            variant="primary"
+            className="job-apply-submit"
+            onClick={handleApply}
+            disabled={loading}
+          >
+            {loading ? 'Applying…' : 'Apply to Job'}
           </Button>
         </div>
       </div>

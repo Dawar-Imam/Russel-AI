@@ -1,16 +1,16 @@
-from agents.interview_agent.prompts import (
+from app.ai.interview_tools.prompts import (
     GENERATE_QUESTIONS_SYSTEM_PROMPT,
     GENERATE_QUESTIONS_USER_PROMPT,
 )
-from agents.interview_agent.schemas import (
+from app.ai.interview_tools.schemas import (
     CandidateCVRelevance,
     GeneratedQuestions,
     QuestionItem,
     RelevantProject,
     RelevantSkill,
 )
+from app.ai.ai_services.question_bank_service import InterviewContext
 from app.core.config import get_llm
-from ai_services.question_bank_service import InterviewContext
 
 
 def _format_skills(skills: list[RelevantSkill]) -> str:
@@ -44,10 +44,9 @@ async def generate_questions(
     candidate_relevance: CandidateCVRelevance,
     count: int,
     context: InterviewContext,
-) -> GeneratedQuestions: 
-    """generate_questions(): LLM call producing `count` interview questions
-    for the given example questions, candidate CV relevance, and interview
-    context."""
+) -> GeneratedQuestions:
+    """LLM call producing `count` interview questions for the given example
+    questions, candidate CV relevance, and interview context."""
 
     structured_llm = get_llm(temperature=0.7).with_structured_output(GeneratedQuestions)
 

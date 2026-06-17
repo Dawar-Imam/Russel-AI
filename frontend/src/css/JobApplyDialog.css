@@ -61,6 +61,12 @@
   color: var(--color-text-primary);
 }
 
+.job-apply-error {
+  margin: 0;
+  font-size: 13px;
+  color: #e05c5c;
+}
+
 .job-apply-submit {
   margin-top: auto;
   width: 100%;

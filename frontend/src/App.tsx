@@ -38,7 +38,7 @@ function App() {
           }
         />
         <Route
-          path="/interview-stages"
+          path="/interview-stages/:applicationId"
           element={
             <PageTransition>
               <InterviewStages />
@@ -46,7 +46,7 @@ function App() {
           }
         />
         <Route
-          path="/interview-room"
+          path="/interview-room/:interviewId"
           element={
             <PageTransition>
               <InterviewRoom />

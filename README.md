@@ -34,6 +34,21 @@ HireIQ serves two sides of the hiring process:
 - Platform-wide oversight
 ---
 
+## Interview Status Values
+
+The `Interviews.status` column uses the following four values:
+
+| Status | Meaning |
+|---|---|
+| `Scheduled` | Date/time assigned — interview is upcoming |
+| `In Progress` | Interview is currently happening |
+| `Completed` | Round finished and result stored |
+| `Failed` | Interview round failed due to network failure, system crash, etc. |
+
+The **current round** displayed to the candidate is the interview with the lowest `round_order` (via `InterviewRounds`) whose status is `Scheduled` or `In Progress`.
+
+---
+
 ## Database Schema
 
 17 tables across the following domains:
@@ -299,4 +314,30 @@ cd backend && uv sync && uv run uvicorn app.main:app --reload
 Run:
 ```bash
 cd frontend && npm install && npm run dev
+```
+
+### AI Agents (LangGraph, `uv`-managed via `pyproject.toml`)
+
+- `agents/interview_agent/` – Interview Agent
+  - `schemas.py` – Pydantic I/O schemas for `generate_questions_tool` / `score_answers_tool`
+  - `prompts.py` – system/user prompts for question generation, CV-relevance extraction, and answer grading
+  - `tools.py` – `generate_questions_tool`, `score_answers_tool` graph node functions
+  - `models.py` – SQLAlchemy models for the schema subset these tools use (`Questions`, `JobRoles`, `ExperienceLevels`, `InterviewRoundTypes`, `SkillSets`, `CandidateProfiles`, `CandidateSkills`, `JobPostings`, `JobRequiredSkills`)
+- `agents/voice_agent/` – scaffold only (`agent.py`, `models.py`, `prompt.py`, `schemas.py`, `tools.py`)
+- `ai_services/` – service layer used by the interview agent tools
+  - `question_bank_service.py` – `fetch_questions_from_db`, `fetch_interview_context`
+  - `cv_relevance_service.py` – `fetch_candidate_cv_relevance` (+ resume-PDF variant `fetch_candidate_cv_relevance_2`)
+  - `question_generation_service.py` – `generate_questions`
+  - `answer_scoring_service.py` – `grade_candidate_answers`
+- `graph/` – `state.py` (`AgentState` TypedDict) and `graph.py` (`interview_graph` LangGraph `StateGraph`)
+- `ai_configs/` – `config.py` (pydantic-settings + `get_llm()` ChatOpenAI factory), `db.py` (SQLAlchemy engine/session against SQL Server LocalDB `RusselAI`)
+- `app.py` – CLI entrypoint that runs `generate_questions_tool` then `score_answers_tool`
+- `.env.example` for config (`DATABASE_URL`, `OPENAI_API_KEY`, `OPENAI_MODEL`)
+
+See [.claude/agent-architecture.md](.claude/agent-architecture.md) for the
+full agentic flow and tool I/O contracts.
+
+Run:
+```bash
+cd ai && uv sync && uv run python app.py
 ```

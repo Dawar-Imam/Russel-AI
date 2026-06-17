@@ -9,7 +9,7 @@ from agents.interview_agent.models import (
     Questions,
 )
 from agents.interview_agent.schemas import FetchQuestionsFromDBOutput, QuestionItem
-from ai_configs.db import SessionLocal
+from app.database.session import SessionLocal
 
 
 async def fetch_questions_from_db(

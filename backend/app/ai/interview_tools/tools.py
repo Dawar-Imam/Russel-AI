@@ -1,13 +1,12 @@
-from ai_services.answer_scoring_service import grade_candidate_answers
-from ai_services.cv_relevance_service import fetch_candidate_cv_relevance
-from ai_services.question_bank_service import fetch_interview_context, fetch_questions_from_db
-from ai_services.question_generation_service import generate_questions
-from graph.state import AgentState
+from app.ai.ai_services.answer_scoring_service import grade_candidate_answers
+from app.ai.ai_services.cv_relevance_service import fetch_candidate_cv_relevance
+from app.ai.ai_services.question_bank_service import fetch_interview_context, fetch_questions_from_db
+from app.ai.ai_services.question_generation_service import generate_questions
+from app.ai.interview_tools.state import AgentState
 
 
 async def generate_questions_tool(state: AgentState) -> dict:
-    """generate_questions_tool: fetch_questions_from_db +
-    fetch_candidate_cv_relevance -> generate_questions."""
+    """fetch_questions_from_db + fetch_candidate_cv_relevance -> generate_questions."""
 
     try:
         count = state.get("count", 10)
@@ -46,7 +45,7 @@ async def generate_questions_tool(state: AgentState) -> dict:
 
 
 async def validate_tool(state: AgentState) -> dict:
-    """validate_tool: validates generated questions or scores (stub — full implementation TBD)."""
+    """Validates generated questions or scores (stub — full implementation TBD)."""
     try:
         if not state.get("questions"):
             return {"status": "error", "last_tool_used": "validate_tool"}
@@ -56,7 +55,7 @@ async def validate_tool(state: AgentState) -> dict:
 
 
 async def score_answers_tool(state: AgentState) -> dict:
-    """score_answers_tool: grade_candidate_answers."""
+    """grade_candidate_answers."""
 
     try:
         result = await grade_candidate_answers(state["answers"])

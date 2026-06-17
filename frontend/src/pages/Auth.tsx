@@ -16,7 +16,6 @@ function Auth() {
   const [accountType, setAccountType] = useState<AccountType>('candidate')
   const [mode, setMode] = useState<AuthMode>('signin')
 
-  const [jobRole, setJobRole] = useState('')
   const [skillRole, setSkillRole] = useState<(typeof JOB_ROLES)[number] | ''>('')
   const [skills, setSkills] = useState<string[]>([])
   const [showSuggestions, setShowSuggestions] = useState(false)
@@ -24,12 +23,6 @@ function Auth() {
   const [cvFile, setCvFile] = useState<File | null>(null)
 
   const suggestedSkills = skillRole ? ROLE_SKILLS[skillRole].filter((skill) => !skills.includes(skill)) : []
-
-  function handleJobRoleChange(event: ChangeEvent<HTMLSelectElement>) {
-    const value = event.target.value
-    setJobRole(value)
-    setSkillRole((prev) => prev || (value as (typeof JOB_ROLES)[number]))
-  }
 
   function handleSkillRoleChange(event: ChangeEvent<HTMLSelectElement>) {
     setSkillRole(event.target.value as (typeof JOB_ROLES)[number])
@@ -115,22 +108,8 @@ function Auth() {
             </>
           ) : (
             <>
-              <label className="field">
-                <span className="field-label">Job Title / Role</span>
-                <Select value={jobRole} onChange={handleJobRoleChange} required>
-                  <option value="" disabled>
-                    Select your role
-                  </option>
-                  {JOB_ROLES.map((role) => (
-                    <option key={role} value={role}>
-                      {role}
-                    </option>
-                  ))}
-                </Select>
-              </label>
-
               <div className="field">
-                <span className="field-label">Skillset</span>
+                <span className="field-label">Job Title / Role</span>
                 <div className="skillset-row">
                   <Select value={skillRole} onChange={handleSkillRoleChange}>
                     <option value="" disabled>

@@ -11,6 +11,17 @@
   padding: var(--space-12) var(--space-6);
 }
 
+.stages-status-text {
+  margin: var(--space-8) 0;
+  font-size: 14px;
+  color: var(--color-text-secondary);
+  text-align: center;
+}
+
+.stages-error {
+  color: #e05c5c;
+}
+
 .interview-stages-heading {
   margin: var(--space-8) 0 var(--space-12);
   font-size: 28px;
@@ -106,6 +117,14 @@
   position: fixed;
   bottom: var(--space-8);
   right: var(--space-8);
+}
+
+.stages-completed-text {
+  margin: var(--space-6) 0 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-primary);
+  text-align: center;
 }
 
 @media (max-width: 600px) {

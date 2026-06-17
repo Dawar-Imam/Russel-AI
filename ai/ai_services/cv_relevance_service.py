@@ -12,8 +12,8 @@ from agents.interview_agent.models import (
 )
 from agents.interview_agent.prompts import EXTRACT_RESUME_CV_RELEVANCE_SYSTEM_PROMPT
 from agents.interview_agent.schemas import CandidateCVRelevance, RelevantSkill
-from ai_configs.config import get_llm
-from ai_configs.db import SessionLocal
+from app.core.config import get_llm
+from app.database.session import SessionLocal
 
 
 async def fetch_candidate_cv_relevance(

@@ -1,11 +1,10 @@
-from agents.interview_agent.prompts import GRADE_ANSWERS_SYSTEM_PROMPT
-from agents.interview_agent.schemas import AnswerItem, GradedAnswers
+from app.ai.interview_tools.prompts import GRADE_ANSWERS_SYSTEM_PROMPT
+from app.ai.interview_tools.schemas import AnswerItem, GradedAnswers
 from app.core.config import get_llm
 
 
 async def grade_candidate_answers(answers: list[AnswerItem]) -> GradedAnswers:
-    """grade_candidate_answers(): LLM call scoring each candidate answer and
-    computing the overall score."""
+    """LLM call scoring each candidate answer and computing the overall score."""
 
     structured_llm = get_llm().with_structured_output(GradedAnswers)
 
