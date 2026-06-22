@@ -1,5 +1,6 @@
 .home-page {
-  min-height: 100vh;
+  height: 100vh;
+  overflow: hidden;
   background-image: url('../utils/home-page.png');
   background-size: cover;
   background-position: center;

@@ -4,7 +4,7 @@ import Button from '../components/Button'
 import BackButton from '../components/BackButton'
 import '../css/InterviewStages.css'
 
-const API_BASE = 'http://localhost:8000'
+const API_BASE = (import.meta.env.VITE_API_URL as string | undefined) ?? 'http://localhost:8000'
 
 interface RoundInfo {
   interview_round_id: string
@@ -32,7 +32,7 @@ function InterviewStages() {
     (r) => r.interview_round_id === data.current_round_id,
   )
   const allCompleted =
-    data != null && (!data.current_round_id || currentRound?.status === 'completed')
+    data != null && (!data.current_round_id || currentRound?.status === 'Completed')
 
   useEffect(() => {
     if (!applicationId) return
@@ -49,41 +49,43 @@ function InterviewStages() {
   return (
     <main className="interview-stages-page">
       <BackButton />
-      <h1 className="interview-stages-heading">Interview Stages</h1>
+      <div className="interview-stages-body">
+        <h1 className="interview-stages-heading">Interview Stages</h1>
 
-      {loading && <p className="stages-status-text">Loading interview stages…</p>}
+        {loading && <p className="stages-status-text">Loading interview stages…</p>}
 
-      {error && <p className="stages-status-text stages-error">{error}</p>}
+        {error && <p className="stages-status-text stages-error">{error}</p>}
 
-      {data && (
-        <div className="interview-stages-list">
-          {data.rounds.map((round) => (
-            <div key={round.interview_round_id} className="stage-bubble-wrapper">
-              <div className="stage-bubble">{round.title}</div>
-              {round.interview_round_id === data.current_round_id && (
-                <span className="stage-current-label">Current Round</span>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
+        {data && (
+          <div className="interview-stages-list">
+            {data.rounds.map((round) => (
+              <div key={round.interview_round_id} className="stage-bubble-wrapper">
+                <div className="stage-bubble">{round.title}</div>
+                {round.interview_round_id === data.current_round_id && (
+                  <span className="stage-current-label">Current Round</span>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
 
-      {allCompleted ? (
-        <p className="stages-completed-text">All interview rounds have been completed.</p>
-      ) : (
-        <Button
-          variant="primary"
-          className="interview-stages-cta"
-          onClick={() => {
-            if (currentRound?.interview_id) {
-              navigate(`/interview-room/${currentRound.interview_id}`)
-            }
-          }}
-          disabled={!data || !data.current_round_id}
-        >
-          Go To Interview Room
-        </Button>
-      )}
+        {allCompleted ? (
+          <p className="stages-completed-text">All interview rounds have been completed.</p>
+        ) : (
+          <Button
+            variant="primary"
+            className="interview-stages-cta"
+            onClick={() => {
+              if (currentRound?.interview_id) {
+                navigate(`/interview-room/${currentRound.interview_id}`)
+              }
+            }}
+            disabled={!data || !data.current_round_id}
+          >
+            Go To Interview Room
+          </Button>
+        )}
+      </div>
     </main>
   )
 }

@@ -1,48 +1,197 @@
-import { useState, type ChangeEvent, type FormEvent } from 'react'
-import { Link } from 'react-router-dom'
+import { useEffect, useState, type ChangeEvent, type FormEvent } from 'react'
+import { Link, useLocation, useNavigate } from 'react-router-dom'
 import Button from '../components/Button'
 import Input from '../components/Input'
 import Select from '../components/Select'
 import Tag from '../components/Tag'
 import BackButton from '../components/BackButton'
 import logo from '../utils/logo.png'
-import { JOB_ROLES, ROLE_SKILLS } from '../data/roles'
+import {
+  fetchSignupMetadata,
+  signupCandidate,
+  signinCandidate,
+  signupRecruiter,
+  signinRecruiter,
+  type JobRole,
+  type Skill,
+} from '../api/auth'
 import '../css/Auth.css'
 
 type AccountType = 'candidate' | 'recruiter'
 type AuthMode = 'signin' | 'signup'
 
 function Auth() {
+  const navigate = useNavigate()
+  const location = useLocation()
+  const pendingJobId = (location.state as { pendingJobId?: string } | null)?.pendingJobId
   const [accountType, setAccountType] = useState<AccountType>('candidate')
   const [mode, setMode] = useState<AuthMode>('signin')
 
-  const [skillRole, setSkillRole] = useState<(typeof JOB_ROLES)[number] | ''>('')
-  const [skills, setSkills] = useState<string[]>([])
+  // Sign-in form state (shared)
+  const [signinEmail, setSigninEmail] = useState('')
+  const [signinPassword, setSigninPassword] = useState('')
+
+  // Shared signup fields
+  const [firstName, setFirstName] = useState('')
+  const [lastName, setLastName] = useState('')
+  const [signupEmail, setSignupEmail] = useState('')
+  const [signupPassword, setSignupPassword] = useState('')
+
+  // Candidate-only signup state
+  const [jobRoles, setJobRoles] = useState<JobRole[]>([])
+  const [allSkills, setAllSkills] = useState<Skill[]>([])
+  const [metaLoading, setMetaLoading] = useState(false)
+  const [metaError, setMetaError] = useState<string | null>(null)
+  const [selectedRoleId, setSelectedRoleId] = useState<number | ''>('')
+  const [selectedSkills, setSelectedSkills] = useState<Skill[]>([])
   const [showSuggestions, setShowSuggestions] = useState(false)
   const [experience, setExperience] = useState('')
   const [cvFile, setCvFile] = useState<File | null>(null)
 
-  const suggestedSkills = skillRole ? ROLE_SKILLS[skillRole].filter((skill) => !skills.includes(skill)) : []
+  // Recruiter-only signup state
+  const [companyName, setCompanyName] = useState('')
+  const [designation, setDesignation] = useState('')
 
-  function handleSkillRoleChange(event: ChangeEvent<HTMLSelectElement>) {
-    setSkillRole(event.target.value as (typeof JOB_ROLES)[number])
+  // Password visibility
+  const [showSigninPassword, setShowSigninPassword] = useState(false)
+  const [showSignupPassword, setShowSignupPassword] = useState(false)
+
+  // Submission state
+  const [submitting, setSubmitting] = useState(false)
+  const [submitError, setSubmitError] = useState<string | null>(null)
+  const [submitSuccess, setSubmitSuccess] = useState(false)
+
+  const suggestedSkills =
+    selectedRoleId !== ''
+      ? allSkills.filter(
+          (s) =>
+            s.job_role_ids.includes(selectedRoleId as number) &&
+            !selectedSkills.some((sel) => sel.id === s.id),
+        )
+      : []
+
+  useEffect(() => {
+    if (mode !== 'signup' || accountType !== 'candidate') return
+    setMetaLoading(true)
+    setMetaError(null)
+    fetchSignupMetadata()
+      .then(({ job_roles, skills }) => {
+        setJobRoles(job_roles)
+        setAllSkills(skills)
+      })
+      .catch((err: unknown) => setMetaError(err instanceof Error ? err.message : 'Failed to load options'))
+      .finally(() => setMetaLoading(false))
+  }, [mode, accountType])
+
+  function handleAccountTypeChange(type: AccountType) {
+    setAccountType(type)
+    setSubmitError(null)
+    setSubmitSuccess(false)
+  }
+
+  function handleRoleChange(event: ChangeEvent<HTMLSelectElement>) {
+    setSelectedRoleId(Number(event.target.value))
+    setSelectedSkills([])
     setShowSuggestions(false)
   }
 
-  function handleAddSkill(skill: string) {
-    setSkills((prev) => [...prev, skill])
+  function handleAddSkill(skill: Skill) {
+    setSelectedSkills((prev) => [...prev, skill])
   }
 
-  function handleRemoveSkill(skill: string) {
-    setSkills((prev) => prev.filter((item) => item !== skill))
+  function handleRemoveSkill(skillId: number) {
+    setSelectedSkills((prev) => prev.filter((s) => s.id !== skillId))
   }
 
   function handleCvChange(event: ChangeEvent<HTMLInputElement>) {
     setCvFile(event.target.files?.[0] ?? null)
   }
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
+
+    if (mode === 'signin') {
+      setSubmitting(true)
+      setSubmitError(null)
+      try {
+        if (accountType === 'candidate') {
+          const result = await signinCandidate(signinEmail, signinPassword)
+          sessionStorage.setItem('candidateId', result.candidate_id)
+          sessionStorage.setItem('candidateEmail', signinEmail)
+          navigate('/jobs', { state: { candidateId: result.candidate_id, pendingJobId } })
+        } else {
+          const result = await signinRecruiter(signinEmail, signinPassword)
+          sessionStorage.setItem('recruiterId', result.recruiter_id)
+          navigate('/recruiter-dashboard', { state: { recruiterId: result.recruiter_id } })
+        }
+      } catch (err: unknown) {
+        setSubmitError(err instanceof Error ? err.message : 'Sign in failed')
+      } finally {
+        setSubmitting(false)
+      }
+      return
+    }
+
+    // Signup
+    setSubmitting(true)
+    setSubmitError(null)
+    try {
+      if (accountType === 'candidate') {
+        if (selectedRoleId === '') return
+        await signupCandidate({
+          firstName,
+          lastName,
+          email: signupEmail,
+          password: signupPassword,
+          jobRoleId: selectedRoleId as number,
+          skillIds: selectedSkills.map((s) => s.id),
+          experienceYears: parseFloat(experience),
+          cv: cvFile,
+        })
+      } else {
+        await signupRecruiter({
+          firstName,
+          lastName,
+          email: signupEmail,
+          password: signupPassword,
+          companyName,
+          designation,
+        })
+      }
+      setSubmitSuccess(true)
+    } catch (err: unknown) {
+      setSubmitError(err instanceof Error ? err.message : 'Signup failed')
+    } finally {
+      setSubmitting(false)
+    }
+  }
+
+  if (submitSuccess) {
+    return (
+      <main className="auth-page">
+        <div className="auth-card">
+          <Link to="/" className="auth-brand">
+            <span className="auth-brand-title">
+              <span className="auth-brand-primary">Russel</span>
+              <span className="auth-brand-accent">.AI</span>
+            </span>
+            <img src={logo} alt="Russel.AI logo" className="auth-logo" />
+          </Link>
+          <p className="auth-success-message">Account created! You can now sign in.</p>
+          <Button
+            type="button"
+            variant="primary"
+            className="auth-submit"
+            onClick={() => {
+              setSubmitSuccess(false)
+              setMode('signin')
+            }}
+          >
+            Go to Sign In
+          </Button>
+        </div>
+      </main>
+    )
   }
 
   return (
@@ -63,13 +212,18 @@ function Auth() {
             role="tab"
             aria-selected={accountType === 'candidate'}
             className={`auth-toggle ${accountType === 'candidate' ? 'auth-toggle-active' : ''}`}
-            onClick={() => setAccountType('candidate')}
+            onClick={() => handleAccountTypeChange('candidate')}
           >
             Candidate
           </button>
-          <button type="button" role="tab" aria-selected={false} className="auth-toggle auth-toggle-disabled" disabled>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={accountType === 'recruiter'}
+            className={`auth-toggle ${accountType === 'recruiter' ? 'auth-toggle-active' : ''}`}
+            onClick={() => handleAccountTypeChange('recruiter')}
+          >
             Recruiter
-            <span className="auth-soon">Soon</span>
           </button>
         </div>
 
@@ -98,30 +252,243 @@ function Auth() {
           {mode === 'signin' ? (
             <>
               <label className="field">
-                <span className="field-label">Username</span>
-                <Input type="text" name="username" placeholder="Enter your username" required />
+                <span className="field-label">Email</span>
+                <Input
+                  type="email"
+                  name="email"
+                  placeholder="Enter your email"
+                  value={signinEmail}
+                  onChange={(e) => setSigninEmail(e.target.value)}
+                  required
+                />
               </label>
               <label className="field">
                 <span className="field-label">Password</span>
-                <Input type="password" name="password" placeholder="Enter your password" required />
+                <div className="password-wrapper">
+                  <Input
+                    type={showSigninPassword ? 'text' : 'password'}
+                    name="password"
+                    placeholder="Enter your password"
+                    value={signinPassword}
+                    onChange={(e) => setSigninPassword(e.target.value)}
+                    required
+                  />
+                  <button
+                    type="button"
+                    className="password-toggle"
+                    onClick={() => setShowSigninPassword((v) => !v)}
+                    aria-label={showSigninPassword ? 'Hide password' : 'Show password'}
+                  >
+                    {showSigninPassword ? (
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/>
+                        <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/>
+                        <line x1="1" y1="1" x2="23" y2="23"/>
+                      </svg>
+                    ) : (
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                        <circle cx="12" cy="12" r="3"/>
+                      </svg>
+                    )}
+                  </button>
+                </div>
               </label>
+              {submitError && <p className="auth-submit-error">{submitError}</p>}
             </>
+          ) : accountType === 'recruiter' ? (
+            <>
+              <div className="auth-name-row">
+                <label className="field">
+                  <span className="field-label">First Name</span>
+                  <Input
+                    type="text"
+                    name="first_name"
+                    placeholder="First name"
+                    value={firstName}
+                    onChange={(e) => setFirstName(e.target.value)}
+                    required
+                  />
+                </label>
+                <label className="field">
+                  <span className="field-label">Last Name</span>
+                  <Input
+                    type="text"
+                    name="last_name"
+                    placeholder="Last name"
+                    value={lastName}
+                    onChange={(e) => setLastName(e.target.value)}
+                    required
+                  />
+                </label>
+              </div>
+
+              <label className="field">
+                <span className="field-label">Email</span>
+                <Input
+                  type="email"
+                  name="email"
+                  placeholder="Enter your email"
+                  value={signupEmail}
+                  onChange={(e) => setSignupEmail(e.target.value)}
+                  required
+                />
+              </label>
+
+              <label className="field">
+                <span className="field-label">Password</span>
+                <div className="password-wrapper">
+                  <Input
+                    type={showSignupPassword ? 'text' : 'password'}
+                    name="password"
+                    placeholder="Create a password"
+                    value={signupPassword}
+                    onChange={(e) => setSignupPassword(e.target.value)}
+                    required
+                  />
+                  <button
+                    type="button"
+                    className="password-toggle"
+                    onClick={() => setShowSignupPassword((v) => !v)}
+                    aria-label={showSignupPassword ? 'Hide password' : 'Show password'}
+                  >
+                    {showSignupPassword ? (
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/>
+                        <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/>
+                        <line x1="1" y1="1" x2="23" y2="23"/>
+                      </svg>
+                    ) : (
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                        <circle cx="12" cy="12" r="3"/>
+                      </svg>
+                    )}
+                  </button>
+                </div>
+              </label>
+
+              <label className="field">
+                <span className="field-label">Company Name</span>
+                <Input
+                  type="text"
+                  name="company_name"
+                  placeholder="e.g. Acme Corp"
+                  value={companyName}
+                  onChange={(e) => setCompanyName(e.target.value)}
+                  required
+                />
+              </label>
+
+              <label className="field">
+                <span className="field-label">Your Job Title</span>
+                <Input
+                  type="text"
+                  name="designation"
+                  placeholder="e.g. Head of Talent"
+                  value={designation}
+                  onChange={(e) => setDesignation(e.target.value)}
+                  required
+                />
+              </label>
+
+              {submitError && <p className="auth-submit-error">{submitError}</p>}
+            </>
+          ) : metaLoading ? (
+            <p className="auth-meta-loading">Loading options…</p>
+          ) : metaError ? (
+            <p className="auth-meta-error">{metaError}</p>
           ) : (
             <>
+              <div className="auth-name-row">
+                <label className="field">
+                  <span className="field-label">First Name</span>
+                  <Input
+                    type="text"
+                    name="first_name"
+                    placeholder="First name"
+                    value={firstName}
+                    onChange={(e) => setFirstName(e.target.value)}
+                    required
+                  />
+                </label>
+                <label className="field">
+                  <span className="field-label">Last Name</span>
+                  <Input
+                    type="text"
+                    name="last_name"
+                    placeholder="Last name"
+                    value={lastName}
+                    onChange={(e) => setLastName(e.target.value)}
+                    required
+                  />
+                </label>
+              </div>
+
+              <label className="field">
+                <span className="field-label">Email</span>
+                <Input
+                  type="email"
+                  name="email"
+                  placeholder="Enter your email"
+                  value={signupEmail}
+                  onChange={(e) => setSignupEmail(e.target.value)}
+                  required
+                />
+              </label>
+
+              <label className="field">
+                <span className="field-label">Password</span>
+                <div className="password-wrapper">
+                  <Input
+                    type={showSignupPassword ? 'text' : 'password'}
+                    name="password"
+                    placeholder="Create a password"
+                    value={signupPassword}
+                    onChange={(e) => setSignupPassword(e.target.value)}
+                    required
+                  />
+                  <button
+                    type="button"
+                    className="password-toggle"
+                    onClick={() => setShowSignupPassword((v) => !v)}
+                    aria-label={showSignupPassword ? 'Hide password' : 'Show password'}
+                  >
+                    {showSignupPassword ? (
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/>
+                        <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/>
+                        <line x1="1" y1="1" x2="23" y2="23"/>
+                      </svg>
+                    ) : (
+                      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                        <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                        <circle cx="12" cy="12" r="3"/>
+                      </svg>
+                    )}
+                  </button>
+                </div>
+              </label>
+
               <div className="field">
                 <span className="field-label">Job Title / Role</span>
                 <div className="skillset-row">
-                  <Select value={skillRole} onChange={handleSkillRoleChange}>
+                  <Select value={selectedRoleId} onChange={handleRoleChange}>
                     <option value="" disabled>
                       Select a role
                     </option>
-                    {JOB_ROLES.map((role) => (
-                      <option key={role} value={role}>
-                        {role}
+                    {jobRoles.map((role) => (
+                      <option key={role.id} value={role.id}>
+                        {role.title}
                       </option>
                     ))}
                   </Select>
-                  <Button type="button" variant="secondary" disabled={!skillRole} onClick={() => setShowSuggestions(true)}>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    disabled={selectedRoleId === ''}
+                    onClick={() => setShowSuggestions(true)}
+                  >
                     Add Skills
                   </Button>
                 </div>
@@ -131,19 +498,19 @@ function Auth() {
                     <span className="skill-suggestions-label">Tap to add</span>
                     <div className="tag-list">
                       {suggestedSkills.map((skill) => (
-                        <Tag key={skill} onClick={() => handleAddSkill(skill)}>
-                          {skill}
+                        <Tag key={skill.id} onClick={() => handleAddSkill(skill)}>
+                          {skill.name}
                         </Tag>
                       ))}
                     </div>
                   </div>
                 )}
 
-                {skills.length > 0 && (
+                {selectedSkills.length > 0 && (
                   <div className="tag-list selected-skills">
-                    {skills.map((skill) => (
-                      <Tag key={skill} variant="active" onRemove={() => handleRemoveSkill(skill)}>
-                        {skill}
+                    {selectedSkills.map((skill) => (
+                      <Tag key={skill.id} variant="active" onRemove={() => handleRemoveSkill(skill.id)}>
+                        {skill.name}
                       </Tag>
                     ))}
                   </div>
@@ -159,7 +526,7 @@ function Auth() {
                   step="0.5"
                   placeholder="e.g. 2.5"
                   value={experience}
-                  onChange={(event) => setExperience(event.target.value)}
+                  onChange={(e) => setExperience(e.target.value)}
                   required
                 />
               </label>
@@ -172,11 +539,15 @@ function Auth() {
                   <span className="file-input-name">{cvFile ? cvFile.name : 'No file selected'}</span>
                 </label>
               </div>
+
+              {submitError && <p className="auth-submit-error">{submitError}</p>}
             </>
           )}
 
-          <Button type="submit" variant="primary" className="auth-submit">
-            {mode === 'signin' ? 'Sign In' : 'Create Account'}
+          <Button type="submit" variant="primary" className="auth-submit" disabled={submitting}>
+            {mode === 'signin'
+              ? submitting ? 'Signing In…' : 'Sign In'
+              : submitting ? 'Creating Account…' : 'Create Account'}
           </Button>
         </form>
       </div>

@@ -1,3 +1,4 @@
+import { Room, RoomEvent, Track } from 'livekit-client'
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import BackButton from '../components/BackButton'
@@ -5,7 +6,7 @@ import Button from '../components/Button'
 import botImage from '../utils/bot1.png'
 import '../css/InterviewRoom.css'
 
-const API_BASE = 'http://localhost:8000'
+const API_BASE = (import.meta.env.VITE_API_URL as string | undefined) ?? 'http://localhost:8000'
 
 const RING_RADIUS = 62
 const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS
@@ -31,9 +32,18 @@ interface Results {
 interface ConversationMessage {
   role: 'user' | 'assistant'
   text: string
+  streaming?: boolean
+  fullText?: string
 }
 
-type Phase = 'loading' | 'answering' | 'submitting' | 'results' | 'error'
+type Phase =
+  | 'loading'
+  | 'voice-connecting'
+  | 'voice-active'
+  | 'answering'
+  | 'submitting'
+  | 'results'
+  | 'error'
 
 function fmtTime(secs: number): string {
   const m = Math.floor(secs / 60).toString().padStart(2, '0')
@@ -59,6 +69,7 @@ function InterviewRoom() {
   const [showMandatoryWarn, setShowMandatoryWarn] = useState(false)
   const [interviewType, setInterviewType] = useState('')
   const [messages, setMessages] = useState<ConversationMessage[]>([])
+  const [audioBlocked, setAudioBlocked] = useState(false)
 
   const answersRef = useRef<string[]>([])
   const questionsRef = useRef<QuestionItem[]>([])
@@ -67,6 +78,8 @@ function InterviewRoom() {
   const warnTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const isOralRef = useRef(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
+  const roomRef = useRef<Room | null>(null)
+  const eventSourceRef = useRef<EventSource | null>(null)
 
   const isOral = interviewType.toLowerCase() === 'oral' || interviewType.toLowerCase().includes('voice')
 
@@ -74,7 +87,8 @@ function InterviewRoom() {
   useEffect(() => { questionsRef.current = questions }, [questions])
   useEffect(() => { setShowMandatoryWarn(false) }, [answers])
   useEffect(() => {
-    isOralRef.current = interviewType.toLowerCase() === 'oral' || interviewType.toLowerCase().includes('voice')
+    isOralRef.current =
+      interviewType.toLowerCase() === 'oral' || interviewType.toLowerCase().includes('voice')
   }, [interviewType])
 
   useEffect(() => {
@@ -82,6 +96,41 @@ function InterviewRoom() {
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
     }
   }, [messages])
+
+  // Typewriter effect: advance streaming AI messages 3 chars per 18ms
+  useEffect(() => {
+    const last = messages[messages.length - 1]
+    if (!last?.streaming || !last.fullText) return
+    if (last.text.length >= last.fullText.length) {
+      setMessages((prev) =>
+        prev.map((m, i) => (i === prev.length - 1 ? { ...m, streaming: false } : m))
+      )
+      return
+    }
+    const t = setTimeout(() => {
+      setMessages((prev) =>
+        prev.map((m, i) =>
+          i === prev.length - 1 && m.streaming
+            ? { ...m, text: m.fullText!.slice(0, m.text.length + 3) }
+            : m
+        )
+      )
+    }, 18)
+    return () => clearTimeout(t)
+  }, [messages])
+
+  // Cleanup LiveKit room and SSE on unmount
+  useEffect(() => {
+    return () => {
+      roomRef.current?.disconnect()
+      eventSourceRef.current?.close()
+      if (timerRef.current) clearInterval(timerRef.current)
+    }
+  }, [])
+
+  // ---------------------------------------------------------------------------
+  // Written interview submit
+  // ---------------------------------------------------------------------------
 
   const doSubmit = useCallback(async () => {
     if (isSubmittingRef.current) return
@@ -115,12 +164,146 @@ function InterviewRoom() {
     }
   }, [interviewId])
 
+  // ---------------------------------------------------------------------------
+  // Voice interview helpers
+  // ---------------------------------------------------------------------------
+
+  const scoreFromDb = useCallback(async () => {
+    try {
+      const res = await fetch(`${API_BASE}/api/interviews/${interviewId}/score-answers`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fetch_from_db: true, answers: [] }),
+      })
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}))
+        throw new Error((d as { detail?: string }).detail ?? `Server error ${res.status}`)
+      }
+      const data: Results = await res.json()
+      setResults(data)
+      setPhase('results')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Scoring failed')
+      setPhase('error')
+    }
+  }, [interviewId])
+
+  const startVoiceInterview = useCallback(async () => {
+    setPhase('voice-connecting')
+    try {
+      // Start voice interview — backend creates room and launches agent
+      const res = await fetch(`${API_BASE}/api/interviews/${interviewId}/voice-interview`, {
+        method: 'POST',
+      })
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}))
+        throw new Error((d as { detail?: string }).detail ?? `Server error ${res.status}`)
+      }
+      const { url, token } = (await res.json()) as { url: string; token: string }
+
+      // Connect to LiveKit room
+      const lkRoom = new Room()
+      roomRef.current = lkRoom
+
+      // Attach agent audio tracks to the DOM so the browser can play them
+      lkRoom.on(RoomEvent.TrackSubscribed, (track) => {
+        if (track.kind === Track.Kind.Audio) {
+          const el = track.attach() as HTMLAudioElement
+          document.body.appendChild(el)
+        }
+      })
+      lkRoom.on(RoomEvent.TrackUnsubscribed, (track) => {
+        track.detach().forEach((el) => el.remove())
+      })
+
+      // Handle browser autoplay policy — show Enable Audio button when blocked
+      lkRoom.on(RoomEvent.AudioPlaybackStatusChanged, () => {
+        setAudioBlocked(!lkRoom.canPlaybackAudio)
+      })
+
+      // Receive live transcript messages from the agent via data channel
+      lkRoom.on(RoomEvent.DataReceived, (payload: Uint8Array) => {
+        try {
+          const msg = JSON.parse(new TextDecoder().decode(payload)) as { role: string; text: string }
+          if (!msg.role || !msg.text) return
+          if (msg.role === 'user') {
+            // Append consecutive user chunks into the same bubble
+            setMessages((prev) => {
+              const last = prev[prev.length - 1]
+              if (last?.role === 'user') {
+                return prev.map((m, i) =>
+                  i === prev.length - 1 ? { ...m, text: m.text + ' ' + msg.text } : m
+                )
+              }
+              return [...prev, { role: 'user' as const, text: msg.text }]
+            })
+          } else {
+            // AI message: start empty and stream it in via typewriter effect
+            setMessages((prev) => [
+              ...prev,
+              { role: 'assistant' as const, text: '', streaming: true, fullText: msg.text },
+            ])
+          }
+        } catch {
+          // ignore malformed data
+        }
+      })
+
+      // When room disconnects, wait for backend processing then score
+      lkRoom.on(RoomEvent.Disconnected, () => {
+        if (timerRef.current) clearInterval(timerRef.current)
+        setPhase('submitting')
+
+        const es = new EventSource(
+          `${API_BASE}/api/interviews/${interviewId}/status-stream`,
+        )
+        eventSourceRef.current = es
+
+        es.addEventListener('done', () => {
+          es.close()
+          eventSourceRef.current = null
+          void scoreFromDb()
+        })
+
+        es.addEventListener('timeout', () => {
+          es.close()
+          eventSourceRef.current = null
+          setError('Interview processing timed out. Please try again.')
+          setPhase('error')
+        })
+
+        es.onerror = () => {
+          es.close()
+          eventSourceRef.current = null
+          setError('Connection error while processing your interview.')
+          setPhase('error')
+        }
+      })
+
+      await lkRoom.connect(url, token)
+      await lkRoom.localParticipant.setMicrophoneEnabled(true)
+      // Check audio playback status immediately after connect
+      setAudioBlocked(!lkRoom.canPlaybackAudio)
+      setPhase('voice-active')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to start voice interview')
+      setPhase('error')
+    }
+  }, [interviewId, scoreFromDb])
+
+  // ---------------------------------------------------------------------------
+  // Load questions (always first step)
+  // ---------------------------------------------------------------------------
+
   useEffect(() => {
     if (!interviewId) return
+    const controller = new AbortController()
+
     fetch(`${API_BASE}/api/interviews/${interviewId}/generate-questions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ return_questions: true }),
+      signal: controller.signal,
     })
       .then((res) => {
         if (!res.ok)
@@ -130,31 +313,44 @@ function InterviewRoom() {
         return res.json()
       })
       .then((data) => {
+        if (controller.signal.aborted) return
         const type = (data.interview_type ?? '') as string
         setInterviewType(type)
-        isOralRef.current = type.toLowerCase() === 'oral' || type.toLowerCase().includes('voice')
-        setQuestions(data.questions)
-        setAnswers(new Array((data.questions as QuestionItem[]).length).fill(''))
+        const oral =
+          type.toLowerCase() === 'oral' || type.toLowerCase().includes('voice')
+        isOralRef.current = oral
         setTimer(data.timer_seconds)
         setTotalTimer(data.timer_seconds)
-        setPhase('answering')
+
+        if (oral) {
+          void startVoiceInterview()
+        } else {
+          setQuestions(data.questions)
+          setAnswers(new Array((data.questions as QuestionItem[]).length).fill(''))
+          setPhase('answering')
+        }
       })
       .catch((err: unknown) => {
+        if (controller.signal.aborted) return
         setError(err instanceof Error ? err.message : 'Failed to load questions')
         setPhase('error')
       })
+
+    return () => controller.abort()
+  // startVoiceInterview is stable; interviewId is the only real dep here
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [interviewId])
+
+  // ---------------------------------------------------------------------------
+  // Written interview timer
+  // ---------------------------------------------------------------------------
 
   useEffect(() => {
     if (phase !== 'answering') return
     timerRef.current = setInterval(() => {
       setTimer((prev) => {
         if (prev <= 1) {
-          if (!isOralRef.current) {
-            doSubmit()
-          } else {
-            if (timerRef.current) clearInterval(timerRef.current)
-          }
+          doSubmit()
           return 0
         }
         return prev - 1
@@ -164,6 +360,31 @@ function InterviewRoom() {
       if (timerRef.current) clearInterval(timerRef.current)
     }
   }, [phase, doSubmit])
+
+  // ---------------------------------------------------------------------------
+  // Voice interview timer (auto-disconnect when time's up)
+  // ---------------------------------------------------------------------------
+
+  useEffect(() => {
+    if (phase !== 'voice-active') return
+    timerRef.current = setInterval(() => {
+      setTimer((prev) => {
+        if (prev <= 1) {
+          if (timerRef.current) clearInterval(timerRef.current)
+          roomRef.current?.disconnect()
+          return 0
+        }
+        return prev - 1
+      })
+    }, 1000)
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current)
+    }
+  }, [phase])
+
+  // ---------------------------------------------------------------------------
+  // Written submit handlers
+  // ---------------------------------------------------------------------------
 
   const handleSubmitClick = useCallback(() => {
     if (answers.filter((a) => a.trim().length > 0).length < questions.length) {
@@ -177,6 +398,10 @@ function InterviewRoom() {
     }
     void doSubmit()
   }, [answers, questions.length, doSubmit])
+
+  // ---------------------------------------------------------------------------
+  // Derived display values
+  // ---------------------------------------------------------------------------
 
   const answeredCount = answers.filter((a) => a.trim().length > 0).length
   const isUrgent = timer > 0 && timer <= Math.floor(totalTimer / 5)
@@ -200,10 +425,14 @@ function InterviewRoom() {
     </div>
   )
 
+  // ---------------------------------------------------------------------------
+  // Render
+  // ---------------------------------------------------------------------------
+
   return (
     <main className="ir-page">
 
-      {/* ── Loading ── */}
+      {/* ── Loading: generating questions ── */}
       {phase === 'loading' && (
         <div className="ir-center">
           <BackButton />
@@ -213,8 +442,17 @@ function InterviewRoom() {
         </div>
       )}
 
-      {/* ── Answering: ORAL layout ── */}
-      {phase === 'answering' && isOral && (
+      {/* ── Loading: connecting to voice room ── */}
+      {phase === 'voice-connecting' && (
+        <div className="ir-center">
+          <div className="ir-spinner" />
+          <p className="ir-status-text">Starting voice interview…</p>
+          <p className="ir-status-sub">Connecting to interview room</p>
+        </div>
+      )}
+
+      {/* ── Answering: ORAL / voice layout ── */}
+      {phase === 'voice-active' && (
         <div className="ir-answering-root">
           <div className="ir-back-float">
             <BackButton />
@@ -222,7 +460,7 @@ function InterviewRoom() {
           <h1 className="ir-heading">Interview Room</h1>
 
           <div className="ir-oral-body">
-            {/* Left — conversation transcript */}
+            {/* Left — live transcript */}
             <div className="ir-conversation-panel">
               <div className="ir-conversation-header">Live Transcript</div>
               <div className="ir-conversation-messages">
@@ -234,7 +472,10 @@ function InterviewRoom() {
                       <span className="ir-message-label">
                         {msg.role === 'assistant' ? 'Russel' : 'You'}
                       </span>
-                      <div className="ir-message-bubble">{msg.text}</div>
+                      <div className="ir-message-bubble">
+                        {msg.text}
+                        {msg.streaming && <span className="ir-cursor">▋</span>}
+                      </div>
                     </div>
                   ))
                 )}
@@ -242,10 +483,25 @@ function InterviewRoom() {
               </div>
             </div>
 
-            {/* Center — bot + timer */}
+            {/* Right — bot, timer, end button */}
             <div className="ir-bot-area">
               <img src={botImage} alt="AI Interviewer" className="ir-bot-image" />
+              {audioBlocked && (
+                <Button
+                  variant="primary"
+                  onClick={() => { void roomRef.current?.startAudio() }}
+                >
+                  Enable Audio
+                </Button>
+              )}
               {timerCircle}
+              <Button
+                variant="secondary"
+                className="ir-end-interview-btn"
+                onClick={() => roomRef.current?.disconnect()}
+              >
+                End Interview
+              </Button>
             </div>
           </div>
         </div>
@@ -286,7 +542,6 @@ function InterviewRoom() {
             </div>
           </div>
 
-          {/* Fixed bottom bar: badge | timer | submit */}
           <div className="ir-bottom-bar">
             <div className={`ir-answered-badge${isUrgent ? ' ir-answered-badge--urgent' : ''}`}>
               <svg width="13" height="14" viewBox="0 0 13 14" fill="none" aria-hidden="true" className="ir-badge-icon">
@@ -313,12 +568,18 @@ function InterviewRoom() {
         </div>
       )}
 
-      {/* ── Scoring ── */}
+      {/* ── Processing / Scoring ── */}
       {phase === 'submitting' && (
         <div className="ir-center">
           <div className="ir-spinner" />
-          <p className="ir-status-text">Scoring your answers…</p>
-          <p className="ir-status-sub">AI is evaluating your responses</p>
+          <p className="ir-status-text">
+            {isOral ? 'Processing your interview…' : 'Scoring your answers…'}
+          </p>
+          <p className="ir-status-sub">
+            {isOral
+              ? 'Extracting and scoring your answers — this may take a moment'
+              : 'AI is evaluating your responses'}
+          </p>
         </div>
       )}
 

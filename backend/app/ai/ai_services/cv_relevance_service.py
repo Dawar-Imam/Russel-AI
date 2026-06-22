@@ -95,3 +95,4 @@ async def fetch_candidate_cv_relevance_2(candidate_id: str) -> CandidateCVReleva
             ("user", resume_text),
         ]
     )
+ 

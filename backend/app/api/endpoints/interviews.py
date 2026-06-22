@@ -1,5 +1,11 @@
 from fastapi import APIRouter, HTTPException
+from fastapi.responses import StreamingResponse
 
+from app.ai.voice_agent.room_connection import (
+    CreateRoomResponse,
+    conduct_voice_interview,
+    wait_for_interview_done,
+)
 from app.schemas.interviews import (
     GenerateQuestionsRequest,
     GenerateQuestionsResponse,
@@ -45,3 +51,31 @@ async def score_answers(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post("/{interview_id}/voice-interview", response_model=CreateRoomResponse)
+async def start_voice_interview(interview_id: str) -> CreateRoomResponse:
+    try:
+        return await conduct_voice_interview(interview_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get("/{interview_id}/status-stream")
+async def interview_status_stream(interview_id: str) -> StreamingResponse:
+    async def generate():
+        done = await wait_for_interview_done(interview_id, timeout=600.0)
+        event_name = "done" if done else "timeout"
+        yield f"event: {event_name}\ndata: {{}}\n\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )

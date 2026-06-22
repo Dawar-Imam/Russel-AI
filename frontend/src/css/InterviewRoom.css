@@ -1,5 +1,6 @@
 .ir-page {
-  min-height: 100vh;
+  height: 100vh;
+  overflow: hidden;
   background-color: var(--color-bg);
   background-image: url('../utils/interview_room.png');
   background-size: cover;
@@ -506,16 +507,27 @@
 /* ── Oral interview layout ── */
 .ir-oral-body {
   flex: 1;
-  display: grid;
-  grid-template-columns: 320px 1fr;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   min-height: 0;
   overflow: hidden;
+  padding: 16px;
+  position: relative;
 }
 
-/* Left panel — conversation transcript */
+/* Left panel — conversation transcript (overlaid, doesn't affect centering) */
 .ir-conversation-panel {
-  background: var(--color-surface);
-  border-right: 1px solid var(--color-border);
+  position: absolute;
+  left: 16px;
+  top: 16px;
+  bottom: 16px;
+  width: 400px;
+  background: rgba(255, 255, 255, 0.03);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(245, 166, 35, 0.2);
+  border-radius: 16px;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -524,11 +536,11 @@
 .ir-conversation-header {
   padding: 14px 20px;
   border-bottom: 1px solid var(--color-border);
-  font-size: 10px;
+  font-size: 14px;
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.12em;
-  color: var(--color-text-muted);
+  color: #000000;
   flex-shrink: 0;
 }
 
@@ -561,11 +573,17 @@
   font-style: italic;
 }
 
+@keyframes ir-bubble-in {
+  from { opacity: 0; transform: translateY(8px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
 .ir-message {
   display: flex;
   flex-direction: column;
   gap: 4px;
   max-width: 92%;
+  animation: ir-bubble-in 0.22s ease both;
 }
 
 .ir-message--assistant {
@@ -593,29 +611,54 @@
   padding: 10px 14px;
   font-size: 13px;
   line-height: 1.65;
-  color: var(--color-text-primary);
 }
 
 .ir-message--assistant .ir-message-bubble {
-  background: var(--color-surface-raised);
-  border: 1px solid var(--color-border);
-  border-left: 3px solid var(--color-primary);
+  background: #000;
+  border: 1px solid var(--color-primary);
   border-radius: 4px 12px 12px 4px;
+  color: var(--color-primary);
 }
 
 .ir-message--user .ir-message-bubble {
-  background: rgba(245, 166, 35, 0.07);
-  border: 1px solid rgba(245, 166, 35, 0.18);
+  background: var(--color-primary);
+  border: 1px solid var(--color-primary);
   border-radius: 12px 4px 4px 12px;
+  color: #000;
+  font-weight: 500;
 }
 
-/* Center — bot image + timer */
+.ir-cursor {
+  display: inline-block;
+  margin-left: 1px;
+  animation: ir-blink 0.7s step-end infinite;
+}
+
+@keyframes ir-blink {
+  0%, 100% { opacity: 1; }
+  50%       { opacity: 0; }
+}
+
+/* Center — bot image + timer + end button */
 .ir-bot-area {
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
   gap: 36px;
+}
+
+.ir-end-interview-btn {
+  min-width: 160px;
+  background-color: var(--color-surface-raised) !important;
+  border-color: var(--color-border) !important;
+  color: var(--color-text-primary) !important;
+}
+
+.ir-end-interview-btn:hover {
+  background-color: #252525 !important;
+  border-color: var(--color-primary) !important;
+  color: var(--color-primary) !important;
 }
 
 .ir-bot-image {

@@ -1,15 +1,45 @@
-import subprocess
-import sys
+import asyncio
+import json
+import logging
 import uuid
-from pathlib import Path
 
+from langchain_core.messages import HumanMessage
+from livekit import rtc
 from livekit.api import AccessToken, CreateRoomRequest, LiveKitAPI, VideoGrants
 from pydantic import BaseModel
 
-from app.core.config import settings
+from app.ai.voice_agent.agent import run_voice_agent
+from app.core.config import get_llm, settings
+from app.services.interview_service import get_interview_questions, save_voice_answers_bulk
 
-BACKEND_DIR = Path(__file__).resolve().parent.parent.parent.parent
+_logger = logging.getLogger("russel.voice_agent")
 
+# ---------------------------------------------------------------------------
+# Done-event store (used by SSE endpoint to wait for processing completion)
+# ---------------------------------------------------------------------------
+
+_interview_done: dict[str, asyncio.Event] = {}
+
+
+def _get_done_event(interview_id: str) -> asyncio.Event:
+    if interview_id not in _interview_done:
+        _interview_done[interview_id] = asyncio.Event()
+    return _interview_done[interview_id]
+
+
+async def wait_for_interview_done(interview_id: str, timeout: float = 600.0) -> bool:
+    """Wait until answers are stored for this interview. Returns True on done, False on timeout."""
+    event = _get_done_event(interview_id)
+    try:
+        await asyncio.wait_for(asyncio.shield(event.wait()), timeout=timeout)
+        return True
+    except asyncio.TimeoutError:
+        return False
+
+
+# ---------------------------------------------------------------------------
+# Room creation
+# ---------------------------------------------------------------------------
 
 class CreateRoomResponse(BaseModel):
     url: str
@@ -41,12 +71,112 @@ async def create_room() -> CreateRoomResponse:
     )
 
 
-async def enter_person_and_agent_in_room() -> CreateRoomResponse:
-    room_response = await create_room() # where the candidate will join
+# ---------------------------------------------------------------------------
+# LLM post-processing
+# ---------------------------------------------------------------------------
 
-    subprocess.Popen(
-        [sys.executable, "-m", "app.ai.voice_agent.agent", "start"],
-        cwd=str(BACKEND_DIR),
+def _extract_answers_with_llm(questions: list, conversation_history: list[dict]) -> list[str]:
+    """Map conversation history onto the ordered question list and return one answer per question."""
+    questions_block = "\n".join(f"{i + 1}. {q.question_text}" for i, q in enumerate(questions))
+    history_block = "\n".join(
+        f"{'Interviewer' if t['role'] == 'assistant' else 'Candidate'}: {t['text']}"
+        for t in conversation_history
     )
+
+    prompt = (
+        "You are processing a recorded voice interview transcript.\n\n"
+        "These are the intended interview questions (in order):\n"
+        f"{questions_block}\n\n"
+        "This is the full conversation between the interviewer and the candidate:\n"
+        f"{history_block}\n\n"
+        "Extract the candidate's final answer for each question. "
+        "Return a JSON array of strings — one answer per question, in the same order as the questions. "
+        "If the candidate did not answer a question, use an empty string for that position. "
+        "Return ONLY the JSON array, no explanation.\n\n"
+        'Example: ["answer to Q1", "answer to Q2", "answer to Q3"]'
+    )
+
+    llm = get_llm(temperature=0)
+    response = llm.invoke([HumanMessage(content=prompt)])
+    raw = response.content.strip()
+
+    if raw.startswith("```"):
+        raw = raw.split("```")[1]
+        if raw.startswith("json"):
+            raw = raw[4:]
+        raw = raw.strip()
+
+    return json.loads(raw)
+
+
+# ---------------------------------------------------------------------------
+# Background task
+# ---------------------------------------------------------------------------
+
+async def _run_and_store(agent_room: rtc.Room, interview_id: str, questions: list) -> None:
+    """Fire-and-forget task: run voice session, post-process, bulk-save."""
+    done_event = _get_done_event(interview_id)
+    try:
+        conversation_history = await run_voice_agent(agent_room, questions)
+
+        if not conversation_history:
+            _logger.warning("Empty conversation history for interview %s — nothing to store", interview_id)
+            return
+
+        _logger.info(
+            "Post-processing %d conversation turns for interview %s",
+            len(conversation_history),
+            interview_id,
+        )
+
+        answers = _extract_answers_with_llm(questions, conversation_history)
+
+        pairs = [
+            (questions[i].iq_id, answers[i])
+            for i in range(min(len(questions), len(answers)))
+            if answers[i]
+        ]
+
+        if pairs:
+            save_voice_answers_bulk(interview_id, pairs)
+            _logger.info("Stored %d answers for interview %s", len(pairs), interview_id)
+        else:
+            _logger.warning("No answers extracted for interview %s", interview_id)
+
+    except Exception:
+        _logger.exception("Voice agent task failed for interview %s", interview_id)
+    finally:
+        done_event.set()
+
+
+# ---------------------------------------------------------------------------
+# Public entry point
+# ---------------------------------------------------------------------------
+
+async def conduct_voice_interview(interview_id: str) -> CreateRoomResponse:
+    questions = get_interview_questions(interview_id)
+    if not questions:
+        raise ValueError(f"No questions found for interview {interview_id}")
+
+    room_response = await create_room()
+
+    agent_token = (
+        AccessToken(settings.LIVEKIT_API_KEY, settings.LIVEKIT_API_SECRET)
+        .with_identity("russel-agent")
+        .with_name("Russel AI")
+        .with_grants(
+            VideoGrants(
+                room_join=True,
+                room=room_response.room_name,
+                can_publish=True,
+                can_subscribe=True,
+            )
+        )
+    )
+
+    agent_room = rtc.Room()
+    await agent_room.connect(settings.LIVEKIT_URL, agent_token.to_jwt())
+
+    asyncio.create_task(_run_and_store(agent_room, interview_id, questions))
 
     return room_response

@@ -1,0 +1,220 @@
+.user-menu {
+  position: fixed;
+  top: var(--space-6);
+  right: var(--space-6);
+  z-index: 200;
+}
+
+/* ── Trigger button ── */
+.user-menu-trigger {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-full);
+  cursor: pointer;
+  color: var(--color-text-secondary);
+  transition: border-color 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
+}
+
+.user-menu-trigger:hover {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
+.user-menu-trigger--active {
+  border-color: rgba(245, 166, 35, 0.4);
+  color: var(--color-text-primary);
+}
+
+.user-menu-trigger--active:hover {
+  box-shadow: var(--shadow-glow-amber);
+}
+
+.user-menu-icon {
+  width: 18px;
+  height: 18px;
+}
+
+/* Status dot */
+.user-menu-dot {
+  position: absolute;
+  bottom: 1px;
+  right: 1px;
+  width: 9px;
+  height: 9px;
+  border-radius: var(--radius-full);
+  border: 2px solid var(--color-surface);
+  background-color: var(--color-text-muted);
+}
+
+.user-menu-dot--online {
+  background-color: #4caf72;
+}
+
+/* ── Dropdown ── */
+.user-menu-dropdown {
+  position: absolute;
+  top: calc(100% + 10px);
+  right: 0;
+  width: 220px;
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-modal);
+  padding: var(--space-3);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+
+  /* Animation */
+  opacity: 0;
+  transform: translateY(-8px) scale(0.97);
+  pointer-events: none;
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+
+.user-menu-dropdown--open {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+  pointer-events: auto;
+}
+
+/* ── Profile row ── */
+.user-menu-profile {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-2) var(--space-1);
+}
+
+.user-menu-avatar {
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-full);
+  background-color: var(--color-primary);
+  color: var(--color-bg);
+  font-size: 13px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.user-menu-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.user-menu-status {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+
+.user-menu-email {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Divider ── */
+.user-menu-divider {
+  height: 1px;
+  background-color: var(--color-border);
+  margin: 0 calc(-1 * var(--space-1));
+}
+
+/* ── Buttons ── */
+.user-menu-btn {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  width: 100%;
+  padding: var(--space-2) var(--space-2);
+  border-radius: var(--radius-sm);
+  border: none;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+  text-align: left;
+  background: none;
+  color: var(--color-text-secondary);
+}
+
+.user-menu-btn svg {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+}
+
+.user-menu-btn--logout {
+  color: #e05c5c;
+}
+
+.user-menu-btn--logout:hover {
+  background-color: rgba(224, 92, 92, 0.08);
+  color: #e05c5c;
+}
+
+.user-menu-btn--signin {
+  color: var(--color-primary);
+  justify-content: center;
+  text-align: center;
+}
+
+.user-menu-btn--signin:hover {
+  background-color: rgba(245, 166, 35, 0.08);
+}
+
+/* ── Confirm state ── */
+.user-menu-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-1) 0;
+}
+
+.user-menu-confirm-text {
+  margin: 0;
+  font-size: 13px;
+  color: var(--color-text-primary);
+  line-height: 1.4;
+  padding: 0 var(--space-1);
+}
+
+.user-menu-btn--danger {
+  background-color: rgba(224, 92, 92, 0.12);
+  border: 1px solid rgba(224, 92, 92, 0.3);
+  color: #e05c5c;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+}
+
+.user-menu-btn--danger:hover {
+  background-color: rgba(224, 92, 92, 0.2);
+}
+
+.user-menu-btn--ghost {
+  color: var(--color-text-secondary);
+  justify-content: center;
+}
+
+.user-menu-btn--ghost:hover {
+  background-color: var(--color-surface-raised);
+  color: var(--color-text-primary);
+}

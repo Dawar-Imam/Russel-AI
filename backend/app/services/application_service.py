@@ -11,6 +11,23 @@ def apply_to_job(job_posting_id: str, candidate_id: str) -> ApplyResponse:
     try:
         cur = conn.cursor()
 
+        # Validate the candidate profile exists (prevents recruiter from applying)
+        cur.execute("SELECT id FROM CandidateProfiles WHERE id = ?", candidate_id)
+        if not cur.fetchone():
+            raise ValueError("Invalid candidate profile. Only candidates may apply for jobs.")
+
+        # Validate the job exists and is currently active (not expired)
+        cur.execute(
+            """
+            SELECT id FROM JobPostings
+            WHERE id = ? AND status = 'active'
+              AND (expires_at IS NULL OR expires_at > GETDATE())
+            """,
+            job_posting_id,
+        )
+        if not cur.fetchone():
+            raise ValueError("Job not found or no longer accepting applications.")
+
         # Check for existing application
         cur.execute(
             "SELECT id FROM Applications WHERE job_id = ? AND candidate_id = ?",

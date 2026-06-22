@@ -1,5 +1,6 @@
 .interview-stages-page {
-  min-height: 100vh;
+  height: 100vh;
+  overflow: hidden;
   background-color: var(--color-bg);
   background-image: url('../utils/background-image-1.png');
   background-size: cover;
@@ -8,7 +9,30 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: var(--space-12) var(--space-6);
+  padding: var(--space-8) var(--space-6) 0;
+}
+
+.interview-stages-body {
+  flex: 1;
+  width: 100%;
+  max-width: 900px;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-bottom: var(--space-8);
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border) transparent;
+}
+
+.interview-stages-body::-webkit-scrollbar {
+  width: 4px;
+}
+
+.interview-stages-body::-webkit-scrollbar-thumb {
+  background: var(--color-border);
+  border-radius: 2px;
 }
 
 .stages-status-text {
@@ -23,7 +47,7 @@
 }
 
 .interview-stages-heading {
-  margin: var(--space-8) 0 var(--space-12);
+  margin: var(--space-6) 0 var(--space-8);
   font-size: 28px;
   font-weight: 700;
   letter-spacing: -0.02em;
@@ -40,7 +64,7 @@
   justify-content: center;
   flex-wrap: wrap;
   gap: var(--space-8);
-  margin: var(--space-6) auto var(--space-12);
+  margin: var(--space-4) auto var(--space-8);
 }
 
 .interview-stages-list::before {

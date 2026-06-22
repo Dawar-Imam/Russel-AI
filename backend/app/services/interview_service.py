@@ -12,7 +12,7 @@ from app.schemas.interviews import (
     ScoreAnswersResponse,
 )
 
-TIMER_SECONDS = 60
+TIMER_SECONDS = 300
 PASS_THRESHOLD = 6.0
 
 
@@ -171,6 +171,30 @@ def _save_scores_and_complete(
 # Public service functions
 # ---------------------------------------------------------------------------
 
+def get_interview_questions(interview_id: str) -> list[QuestionItem]:
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        return _fetch_existing_questions(cur, interview_id)
+    finally:
+        conn.close()
+
+
+def save_voice_answers_bulk(interview_id: str, answers: list[tuple[str, str]]) -> None:
+    """Persist voice answers in one transaction. answers = [(iq_id, answer_text), ...]"""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        for iq_id, answer_text in answers:
+            cur.execute(
+                "UPDATE InterviewQuestions SET candidate_answer = ? WHERE id = ? AND interview_id = ?",
+                answer_text, iq_id, interview_id,
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 async def generate_interview_questions(
     interview_id: str,
     return_questions: bool = True,
@@ -259,6 +283,15 @@ async def score_interview_answers(
     conn = get_connection()
     try:
         cur = conn.cursor()
+
+        # Guard: prevent re-scoring a completed interview
+        cur.execute("SELECT status FROM Interviews WHERE id = ?", interview_id)
+        status_row = cur.fetchone()
+        if not status_row:
+            raise ValueError(f"Interview {interview_id} not found")
+        if str(status_row[0]).lower() == "completed":
+            raise ValueError("This interview has already been completed and scored.")
+
         stored = _fetch_existing_questions(cur, interview_id)
         if not stored:
             raise ValueError(f"No questions found for interview {interview_id}")

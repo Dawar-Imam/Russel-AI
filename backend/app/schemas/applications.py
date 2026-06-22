@@ -6,6 +6,11 @@ class ApplyRequest(BaseModel):
     candidate_id: str
 
 
+class ATSCheckResponse(BaseModel):
+    eligible: bool
+    reason: str
+
+
 class ApplyResponse(BaseModel):
     application_id: str
     created: bool

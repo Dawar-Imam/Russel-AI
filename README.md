@@ -51,7 +51,7 @@ The **current round** displayed to the candidate is the interview with the lowes
 
 ## Database Schema
 
-17 tables across the following domains:
+18 tables across the following domains:
 
 | Domain | Tables |
 |---|---|
@@ -60,7 +60,7 @@ The **current round** displayed to the candidate is the interview with the lowes
 | Company | `Companies` |
 | Jobs | `JobRoles`, `JobPostings`, `ExperienceLevels` |
 | Applications | `Applications` |
-| Skills | `SkillSets`, `CandidateSkills`, `JobRequiredSkills` |
+| Skills | `SkillSets`, `RoleSkills`, `CandidateSkills`, `JobRequiredSkills` |
 | Interviews | `InterviewRoundTypes`, `InterviewRounds`, `Interviews`, `InterviewQuestions` |
 | Questions | `Questions` |
 
@@ -99,6 +99,12 @@ erDiagram
     varchar name
     varchar category
     bit is_active
+  }
+
+  RoleSkills {
+    int id PK
+    int skill_id FK
+    int job_role_id FK
   }
 
   Companies {
@@ -233,6 +239,8 @@ erDiagram
   ExperienceLevels ||--o{ CandidateProfiles : "level"
   JobRoles ||--o{ CandidateProfiles : "role"
   CandidateProfiles ||--o{ CandidateSkills : "has"
+  JobRoles ||--o{ RoleSkills : "role"
+  SkillSets ||--o{ RoleSkills : "skill"
   SkillSets ||--o{ CandidateSkills : "ref"
   Companies ||--o{ RecruiterProfiles : "employs"
   Companies ||--o{ JobPostings : "posts"

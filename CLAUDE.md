@@ -40,3 +40,5 @@ in `ai/` or interview-related `backend/` code.
   entrypoint `ai/app.py`.
 - `frontend/` — Vite + React + TypeScript. Has its own
   [frontend/CLAUDE.md](frontend/CLAUDE.md) with design-system rules.
+  Full token reference, component patterns, animation catalogue, and
+  layout rules: [.claude/frontend-theme.md](.claude/frontend-theme.md).

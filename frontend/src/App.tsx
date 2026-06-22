@@ -3,15 +3,19 @@ import { AnimatePresence } from 'framer-motion'
 import Home from './pages/Home'
 import Auth from './pages/Auth'
 import Jobs from './pages/Jobs'
+import RecruiterDashboard from './pages/RecruiterDashboard'
 import InterviewStages from './pages/InterviewStages'
 import InterviewRoom from './pages/InterviewRoom'
 import PageTransition from './components/PageTransition'
+import UserMenu from './components/UserMenu'
 
 function App() {
   const location = useLocation()
 
   return (
-    <AnimatePresence mode="wait">
+    <>
+      <UserMenu />
+      <AnimatePresence mode="wait">
       <Routes location={location} key={location.pathname}>
         <Route
           path="/"
@@ -38,6 +42,14 @@ function App() {
           }
         />
         <Route
+          path="/recruiter-dashboard"
+          element={
+            <PageTransition>
+              <RecruiterDashboard />
+            </PageTransition>
+          }
+        />
+        <Route
           path="/interview-stages/:applicationId"
           element={
             <PageTransition>
@@ -55,6 +67,7 @@ function App() {
         />
       </Routes>
     </AnimatePresence>
+    </>
   )
 }
 

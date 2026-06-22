@@ -4,7 +4,7 @@ Source of truth: [README.md](../README.md#database-schema). This file mirrors
 that ERD for quick reference by both `ai/` and `backend/` — keep it in sync
 if the schema changes.
 
-17 tables across 8 domains:
+18 tables across 8 domains:
 
 | Domain | Tables |
 |---|---|
@@ -13,7 +13,7 @@ if the schema changes.
 | Company | `Companies` |
 | Jobs | `JobRoles`, `JobPostings`, `ExperienceLevels` |
 | Applications | `Applications` |
-| Skills | `SkillSets`, `CandidateSkills`, `JobRequiredSkills` |
+| Skills | `SkillSets`, `RoleSkills`, `CandidateSkills`, `JobRequiredSkills` |
 | Interviews | `InterviewRoundTypes`, `InterviewRounds`, `Interviews`, `InterviewQuestions` |
 | Questions | `Questions` |
 
@@ -56,6 +56,13 @@ if the schema changes.
 | name | varchar |
 | category | varchar |
 | is_active | bit |
+
+### RoleSkills
+| Column | Type |
+|---|---|
+| id | int PK |
+| skill_id | int FK -> SkillSets |
+| job_role_id | int FK -> JobRoles |
 
 ### Companies
 | Column | Type |
@@ -203,6 +210,8 @@ if the schema changes.
 - `ExperienceLevels ||--o{ CandidateProfiles` — level
 - `JobRoles ||--o{ CandidateProfiles` — role
 - `CandidateProfiles ||--o{ CandidateSkills` — has
+- `JobRoles ||--o{ RoleSkills` — role
+- `SkillSets ||--o{ RoleSkills` — skill
 - `SkillSets ||--o{ CandidateSkills` — ref
 - `Companies ||--o{ RecruiterProfiles` — employs
 - `Companies ||--o{ JobPostings` — posts
