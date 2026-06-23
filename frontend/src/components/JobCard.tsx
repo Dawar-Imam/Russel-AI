@@ -11,7 +11,7 @@ function JobCard({ job, onApply }: JobCardProps) {
   return (
     <article className="job-card">
       <div className="job-card-content">
-        <h2 className="job-card-title">{job.designation}</h2>
+        <h2 className="job-card-title">{`${job.experience_level_name} ${job.job_role_title}`}</h2>
         <p className="job-card-description">{job.description}</p>
         <span className="job-card-company">{job.company}</span>
         <div className="job-card-meta">

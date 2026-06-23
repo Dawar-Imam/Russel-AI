@@ -103,7 +103,7 @@ function JobApplyDialog({ job, candidateId, isOpen, onClose }: JobApplyDialogPro
       <div className="job-apply-dialog">
         <div className="job-apply-main">
           <span className="job-apply-company">{job.company}</span>
-          <h2 className="job-apply-title">{job.designation}</h2>
+          <h2 className="job-apply-title">{`${job.experience_level_name} ${job.job_role_title}`}</h2>
           <div className="job-apply-description-wrap">
             <p className="job-apply-description">{job.description}</p>
           </div>

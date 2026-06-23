@@ -51,7 +51,7 @@ The **current round** displayed to the candidate is the interview with the lowes
 
 ## Database Schema
 
-18 tables across the following domains:
+17 tables across the following domains:
 
 | Domain | Tables |
 |---|---|
@@ -60,7 +60,7 @@ The **current round** displayed to the candidate is the interview with the lowes
 | Company | `Companies` |
 | Jobs | `JobRoles`, `JobPostings`, `ExperienceLevels` |
 | Applications | `Applications` |
-| Skills | `SkillSets`, `RoleSkills`, `CandidateSkills`, `JobRequiredSkills` |
+| Skills | `SkillSets`, `CandidateSkills`, `JobRequiredSkills` |
 | Interviews | `InterviewRoundTypes`, `InterviewRounds`, `Interviews`, `InterviewQuestions` |
 | Questions | `Questions` |
 
@@ -99,12 +99,6 @@ erDiagram
     varchar name
     varchar category
     bit is_active
-  }
-
-  RoleSkills {
-    int id PK
-    int skill_id FK
-    int job_role_id FK
   }
 
   Companies {
@@ -167,7 +161,7 @@ erDiagram
     uniqueidentifier recruiter_id FK
     uniqueidentifier company_id FK
     int job_role_id FK
-    varchar designation
+    int experience_level_id FK
     nvarchar description
     varchar location
     varchar job_type
@@ -222,6 +216,7 @@ erDiagram
     nvarchar question_text
     bit is_active
     datetime2 created_at
+    bit ai_generated
   }
 
   InterviewQuestions {
@@ -239,13 +234,12 @@ erDiagram
   ExperienceLevels ||--o{ CandidateProfiles : "level"
   JobRoles ||--o{ CandidateProfiles : "role"
   CandidateProfiles ||--o{ CandidateSkills : "has"
-  JobRoles ||--o{ RoleSkills : "role"
-  SkillSets ||--o{ RoleSkills : "skill"
   SkillSets ||--o{ CandidateSkills : "ref"
   Companies ||--o{ RecruiterProfiles : "employs"
   Companies ||--o{ JobPostings : "posts"
   RecruiterProfiles ||--o{ JobPostings : "creates"
   JobRoles ||--o{ JobPostings : "role"
+  ExperienceLevels ||--o{ JobPostings : "level"
   JobPostings ||--o{ JobRequiredSkills : "requires"
   SkillSets ||--o{ JobRequiredSkills : "ref"
   JobPostings ||--o{ Applications : "receives"

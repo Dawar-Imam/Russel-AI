@@ -35,6 +35,8 @@ async def wait_for_interview_done(interview_id: str, timeout: float = 600.0) -> 
         return True
     except asyncio.TimeoutError:
         return False
+    finally:
+        _interview_done.pop(interview_id, None)
 
 
 # ---------------------------------------------------------------------------
@@ -75,7 +77,7 @@ async def create_room() -> CreateRoomResponse:
 # LLM post-processing
 # ---------------------------------------------------------------------------
 
-def _extract_answers_with_llm(questions: list, conversation_history: list[dict]) -> list[str]:
+async def _extract_answers_with_llm(questions: list, conversation_history: list[dict]) -> list[str]:
     """Map conversation history onto the ordered question list and return one answer per question."""
     questions_block = "\n".join(f"{i + 1}. {q.question_text}" for i, q in enumerate(questions))
     history_block = "\n".join(
@@ -97,7 +99,7 @@ def _extract_answers_with_llm(questions: list, conversation_history: list[dict])
     )
 
     llm = get_llm(temperature=0)
-    response = llm.invoke([HumanMessage(content=prompt)])
+    response = await llm.ainvoke([HumanMessage(content=prompt)])
     raw = response.content.strip()
 
     if raw.startswith("```"):
@@ -118,9 +120,10 @@ async def _run_and_store(agent_room: rtc.Room, interview_id: str, questions: lis
     done_event = _get_done_event(interview_id)
     try:
         conversation_history = await run_voice_agent(agent_room, questions)
+        await agent_room.disconnect()
 
         if not conversation_history:
-            _logger.warning("Empty conversation history for interview %s — nothing to store", interview_id)
+            _logger.warning("Empty conversation history for interview %s — SSE will timeout", interview_id)
             return
 
         _logger.info(
@@ -129,7 +132,7 @@ async def _run_and_store(agent_room: rtc.Room, interview_id: str, questions: lis
             interview_id,
         )
 
-        answers = _extract_answers_with_llm(questions, conversation_history)
+        answers = await _extract_answers_with_llm(questions, conversation_history)
 
         pairs = [
             (questions[i].iq_id, answers[i])
@@ -137,16 +140,17 @@ async def _run_and_store(agent_room: rtc.Room, interview_id: str, questions: lis
             if answers[i]
         ]
 
-        if pairs:
-            save_voice_answers_bulk(interview_id, pairs)
-            _logger.info("Stored %d answers for interview %s", len(pairs), interview_id)
-        else:
-            _logger.warning("No answers extracted for interview %s", interview_id)
+        if not pairs:
+            _logger.warning("No answers extracted for interview %s — SSE will timeout", interview_id)
+            return
+
+        save_voice_answers_bulk(interview_id, pairs)
+        _logger.info("Stored %d answers for interview %s", len(pairs), interview_id)
+        done_event.set()
 
     except Exception:
         _logger.exception("Voice agent task failed for interview %s", interview_id)
-    finally:
-        done_event.set()
+        # done_event deliberately NOT set — SSE times out, preventing scoring of empty answers
 
 
 # ---------------------------------------------------------------------------

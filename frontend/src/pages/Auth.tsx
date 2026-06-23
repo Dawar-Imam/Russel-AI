@@ -58,6 +58,7 @@ function Auth() {
 
   // Submission state
   const [submitting, setSubmitting] = useState(false)
+  const [attemptedSubmit, setAttemptedSubmit] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [submitSuccess, setSubmitSuccess] = useState(false)
 
@@ -87,6 +88,7 @@ function Auth() {
     setAccountType(type)
     setSubmitError(null)
     setSubmitSuccess(false)
+    setAttemptedSubmit(false)
   }
 
   function handleRoleChange(event: ChangeEvent<HTMLSelectElement>) {
@@ -109,8 +111,10 @@ function Auth() {
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
+    setAttemptedSubmit(true)
 
     if (mode === 'signin') {
+      if (!signinEmail || !signinPassword) return
       setSubmitting(true)
       setSubmitError(null)
       try {
@@ -118,10 +122,13 @@ function Auth() {
           const result = await signinCandidate(signinEmail, signinPassword)
           sessionStorage.setItem('candidateId', result.candidate_id)
           sessionStorage.setItem('candidateEmail', signinEmail)
+          sessionStorage.setItem('userType', 'candidate')
           navigate('/jobs', { state: { candidateId: result.candidate_id, pendingJobId } })
         } else {
           const result = await signinRecruiter(signinEmail, signinPassword)
           sessionStorage.setItem('recruiterId', result.recruiter_id)
+          sessionStorage.setItem('recruiterEmail', signinEmail)
+          sessionStorage.setItem('userType', 'recruiter')
           navigate('/recruiter-dashboard', { state: { recruiterId: result.recruiter_id } })
         }
       } catch (err: unknown) {
@@ -132,7 +139,13 @@ function Auth() {
       return
     }
 
-    // Signup
+    // Signup validation
+    if (accountType === 'recruiter') {
+      if (!firstName || !lastName || !signupEmail || !signupPassword || !companyName || !designation) return
+    } else {
+      if (!firstName || !lastName || !signupEmail || !signupPassword || selectedRoleId === '' || selectedSkills.length === 0 || !experience) return
+    }
+
     setSubmitting(true)
     setSubmitError(null)
     try {
@@ -233,7 +246,7 @@ function Auth() {
             role="tab"
             aria-selected={mode === 'signin'}
             className={`auth-toggle ${mode === 'signin' ? 'auth-toggle-active' : ''}`}
-            onClick={() => setMode('signin')}
+            onClick={() => { setMode('signin'); setAttemptedSubmit(false) }}
           >
             Sign In
           </button>
@@ -242,28 +255,34 @@ function Auth() {
             role="tab"
             aria-selected={mode === 'signup'}
             className={`auth-toggle ${mode === 'signup' ? 'auth-toggle-active' : ''}`}
-            onClick={() => setMode('signup')}
+            onClick={() => { setMode('signup'); setAttemptedSubmit(false) }}
           >
             Sign Up
           </button>
         </div>
 
-        <form className="auth-form" onSubmit={handleSubmit}>
+        <form className="auth-form" onSubmit={handleSubmit} noValidate>
           {mode === 'signin' ? (
             <>
               <label className="field">
-                <span className="field-label">Email</span>
+                <span className="field-label">
+                  Email<span className="required-star"> *</span>
+                </span>
                 <Input
                   type="email"
                   name="email"
                   placeholder="Enter your email"
                   value={signinEmail}
                   onChange={(e) => setSigninEmail(e.target.value)}
-                  required
                 />
+                {attemptedSubmit && !signinEmail && (
+                  <span className="field-error">Email is required.</span>
+                )}
               </label>
               <label className="field">
-                <span className="field-label">Password</span>
+                <span className="field-label">
+                  Password<span className="required-star"> *</span>
+                </span>
                 <div className="password-wrapper">
                   <Input
                     type={showSigninPassword ? 'text' : 'password'}
@@ -271,7 +290,6 @@ function Auth() {
                     placeholder="Enter your password"
                     value={signinPassword}
                     onChange={(e) => setSigninPassword(e.target.value)}
-                    required
                   />
                   <button
                     type="button"
@@ -293,6 +311,9 @@ function Auth() {
                     )}
                   </button>
                 </div>
+                {attemptedSubmit && !signinPassword && (
+                  <span className="field-error">Password is required.</span>
+                )}
               </label>
               {submitError && <p className="auth-submit-error">{submitError}</p>}
             </>
@@ -300,43 +321,57 @@ function Auth() {
             <>
               <div className="auth-name-row">
                 <label className="field">
-                  <span className="field-label">First Name</span>
+                  <span className="field-label">
+                    First Name<span className="required-star"> *</span>
+                  </span>
                   <Input
                     type="text"
                     name="first_name"
                     placeholder="First name"
                     value={firstName}
                     onChange={(e) => setFirstName(e.target.value)}
-                    required
                   />
+                  {attemptedSubmit && !firstName && (
+                    <span className="field-error">First name is required.</span>
+                  )}
                 </label>
                 <label className="field">
-                  <span className="field-label">Last Name</span>
+                  <span className="field-label">
+                    Last Name<span className="required-star"> *</span>
+                  </span>
                   <Input
                     type="text"
                     name="last_name"
                     placeholder="Last name"
                     value={lastName}
                     onChange={(e) => setLastName(e.target.value)}
-                    required
                   />
+                  {attemptedSubmit && !lastName && (
+                    <span className="field-error">Last name is required.</span>
+                  )}
                 </label>
               </div>
 
               <label className="field">
-                <span className="field-label">Email</span>
+                <span className="field-label">
+                  Email<span className="required-star"> *</span>
+                </span>
                 <Input
                   type="email"
                   name="email"
                   placeholder="Enter your email"
                   value={signupEmail}
                   onChange={(e) => setSignupEmail(e.target.value)}
-                  required
                 />
+                {attemptedSubmit && !signupEmail && (
+                  <span className="field-error">Email is required.</span>
+                )}
               </label>
 
               <label className="field">
-                <span className="field-label">Password</span>
+                <span className="field-label">
+                  Password<span className="required-star"> *</span>
+                </span>
                 <div className="password-wrapper">
                   <Input
                     type={showSignupPassword ? 'text' : 'password'}
@@ -344,7 +379,6 @@ function Auth() {
                     placeholder="Create a password"
                     value={signupPassword}
                     onChange={(e) => setSignupPassword(e.target.value)}
-                    required
                   />
                   <button
                     type="button"
@@ -366,30 +400,41 @@ function Auth() {
                     )}
                   </button>
                 </div>
+                {attemptedSubmit && !signupPassword && (
+                  <span className="field-error">Password is required.</span>
+                )}
               </label>
 
               <label className="field">
-                <span className="field-label">Company Name</span>
+                <span className="field-label">
+                  Company Name<span className="required-star"> *</span>
+                </span>
                 <Input
                   type="text"
                   name="company_name"
                   placeholder="e.g. Acme Corp"
                   value={companyName}
                   onChange={(e) => setCompanyName(e.target.value)}
-                  required
                 />
+                {attemptedSubmit && !companyName && (
+                  <span className="field-error">Company name is required.</span>
+                )}
               </label>
 
               <label className="field">
-                <span className="field-label">Your Job Title</span>
+                <span className="field-label">
+                  Your Job Title<span className="required-star"> *</span>
+                </span>
                 <Input
                   type="text"
                   name="designation"
                   placeholder="e.g. Head of Talent"
                   value={designation}
                   onChange={(e) => setDesignation(e.target.value)}
-                  required
                 />
+                {attemptedSubmit && !designation && (
+                  <span className="field-error">Job title is required.</span>
+                )}
               </label>
 
               {submitError && <p className="auth-submit-error">{submitError}</p>}
@@ -402,43 +447,57 @@ function Auth() {
             <>
               <div className="auth-name-row">
                 <label className="field">
-                  <span className="field-label">First Name</span>
+                  <span className="field-label">
+                    First Name<span className="required-star"> *</span>
+                  </span>
                   <Input
                     type="text"
                     name="first_name"
                     placeholder="First name"
                     value={firstName}
                     onChange={(e) => setFirstName(e.target.value)}
-                    required
                   />
+                  {attemptedSubmit && !firstName && (
+                    <span className="field-error">First name is required.</span>
+                  )}
                 </label>
                 <label className="field">
-                  <span className="field-label">Last Name</span>
+                  <span className="field-label">
+                    Last Name<span className="required-star"> *</span>
+                  </span>
                   <Input
                     type="text"
                     name="last_name"
                     placeholder="Last name"
                     value={lastName}
                     onChange={(e) => setLastName(e.target.value)}
-                    required
                   />
+                  {attemptedSubmit && !lastName && (
+                    <span className="field-error">Last name is required.</span>
+                  )}
                 </label>
               </div>
 
               <label className="field">
-                <span className="field-label">Email</span>
+                <span className="field-label">
+                  Email<span className="required-star"> *</span>
+                </span>
                 <Input
                   type="email"
                   name="email"
                   placeholder="Enter your email"
                   value={signupEmail}
                   onChange={(e) => setSignupEmail(e.target.value)}
-                  required
                 />
+                {attemptedSubmit && !signupEmail && (
+                  <span className="field-error">Email is required.</span>
+                )}
               </label>
 
               <label className="field">
-                <span className="field-label">Password</span>
+                <span className="field-label">
+                  Password<span className="required-star"> *</span>
+                </span>
                 <div className="password-wrapper">
                   <Input
                     type={showSignupPassword ? 'text' : 'password'}
@@ -446,7 +505,6 @@ function Auth() {
                     placeholder="Create a password"
                     value={signupPassword}
                     onChange={(e) => setSignupPassword(e.target.value)}
-                    required
                   />
                   <button
                     type="button"
@@ -468,10 +526,15 @@ function Auth() {
                     )}
                   </button>
                 </div>
+                {attemptedSubmit && !signupPassword && (
+                  <span className="field-error">Password is required.</span>
+                )}
               </label>
 
               <div className="field">
-                <span className="field-label">Job Title / Role</span>
+                <span className="field-label">
+                  Job Title / Role & Skills<span className="required-star"> *</span>
+                </span>
                 <div className="skillset-row">
                   <Select value={selectedRoleId} onChange={handleRoleChange}>
                     <option value="" disabled>
@@ -492,6 +555,13 @@ function Auth() {
                     Add Skills
                   </Button>
                 </div>
+
+                {attemptedSubmit && selectedRoleId === '' && (
+                  <span className="field-error">Please select a job role.</span>
+                )}
+                {attemptedSubmit && selectedRoleId !== '' && selectedSkills.length === 0 && (
+                  <span className="field-error">Please add at least one skill.</span>
+                )}
 
                 {showSuggestions && suggestedSkills.length > 0 && (
                   <div className="skill-suggestions">
@@ -518,7 +588,9 @@ function Auth() {
               </div>
 
               <label className="field">
-                <span className="field-label">Total Experience (years)</span>
+                <span className="field-label">
+                  Total Experience (years)<span className="required-star"> *</span>
+                </span>
                 <Input
                   type="number"
                   name="experience"
@@ -527,8 +599,10 @@ function Auth() {
                   placeholder="e.g. 2.5"
                   value={experience}
                   onChange={(e) => setExperience(e.target.value)}
-                  required
                 />
+                {attemptedSubmit && !experience && (
+                  <span className="field-error">Experience is required.</span>
+                )}
               </label>
 
               <div className="field">

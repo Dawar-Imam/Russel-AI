@@ -57,9 +57,10 @@ async def check_ats_eligibility(candidate_id: str, job_posting_id: str) -> ATSCh
 
         cur.execute(
             """
-            SELECT jp.designation, jp.description, jr.title
+            SELECT el.name, jr.title, jp.description
             FROM JobPostings jp
             JOIN JobRoles jr ON jr.id = jp.job_role_id
+            JOIN ExperienceLevels el ON el.id = jp.experience_level_id
             WHERE jp.id = ?
             """,
             job_posting_id,
@@ -68,7 +69,8 @@ async def check_ats_eligibility(candidate_id: str, job_posting_id: str) -> ATSCh
         if not job_row:
             return ATSCheckResult(eligible=True, reason="Job not found; proceeding.")
 
-        designation, job_description, job_role = job_row
+        experience_level_name, job_role, job_description = job_row
+        designation = f"{experience_level_name} {job_role}"
 
         cur.execute(
             """

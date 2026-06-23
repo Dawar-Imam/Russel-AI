@@ -9,13 +9,13 @@
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: var(--space-6);
+  padding: var(--space-6) var(--space-6) var(--space-12);
 }
 
 .auth-card {
   width: 100%;
   max-width: 440px;
-  max-height: calc(100vh - var(--space-6) * 2);
+  max-height: calc(100vh - var(--space-6) - var(--space-12));
   background-color: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);
@@ -240,6 +240,17 @@
   font-size: 13px;
   color: #e05252;
   margin: 0;
+}
+
+.required-star {
+  color: var(--color-primary);
+}
+
+.field-error {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--color-primary);
+  margin-top: -2px;
 }
 
 .auth-success-message {

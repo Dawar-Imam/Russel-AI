@@ -2,11 +2,12 @@ const BASE_URL = (import.meta.env.VITE_API_URL as string | undefined) ?? 'http:/
 
 export interface JobListItem {
   id: string
-  designation: string
   description: string
   company: string
   job_role_id: number
   job_role_title: string
+  experience_level_id: number
+  experience_level_name: string
   location: string
   job_type: string
   salary_range: string | null
@@ -17,6 +18,7 @@ export interface JobListItem {
 
 export interface JobFilters {
   job_role_id?: number
+  experience_level_id?: number
   location?: string
   job_type?: string
   salary_range?: string
@@ -27,7 +29,7 @@ export interface JobFilters {
 export interface JobPostRequest {
   recruiter_id: string
   job_role_id: number
-  designation: string
+  experience_level_id: number
   description: string
   location: string
   job_type: string
@@ -46,6 +48,7 @@ export async function fetchJobs(
 ): Promise<JobListItem[]> {
   const params = new URLSearchParams()
   if (filters.job_role_id != null) params.set('job_role_id', String(filters.job_role_id))
+  if (filters.experience_level_id != null) params.set('experience_level_id', String(filters.experience_level_id))
   if (filters.location) params.set('location', filters.location)
   if (filters.job_type) params.set('job_type', filters.job_type)
   if (filters.salary_range) params.set('salary_range', filters.salary_range)

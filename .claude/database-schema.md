@@ -4,7 +4,7 @@ Source of truth: [README.md](../README.md#database-schema). This file mirrors
 that ERD for quick reference by both `ai/` and `backend/` — keep it in sync
 if the schema changes.
 
-18 tables across 8 domains:
+17 tables across 8 domains:
 
 | Domain | Tables |
 |---|---|
@@ -13,7 +13,7 @@ if the schema changes.
 | Company | `Companies` |
 | Jobs | `JobRoles`, `JobPostings`, `ExperienceLevels` |
 | Applications | `Applications` |
-| Skills | `SkillSets`, `RoleSkills`, `CandidateSkills`, `JobRequiredSkills` |
+| Skills | `SkillSets`, `CandidateSkills`, `JobRequiredSkills` |
 | Interviews | `InterviewRoundTypes`, `InterviewRounds`, `Interviews`, `InterviewQuestions` |
 | Questions | `Questions` |
 
@@ -56,13 +56,6 @@ if the schema changes.
 | name | varchar |
 | category | varchar |
 | is_active | bit |
-
-### RoleSkills
-| Column | Type |
-|---|---|
-| id | int PK |
-| skill_id | int FK -> SkillSets |
-| job_role_id | int FK -> JobRoles |
 
 ### Companies
 | Column | Type |
@@ -131,7 +124,7 @@ if the schema changes.
 | recruiter_id | uniqueidentifier FK -> RecruiterProfiles |
 | company_id | uniqueidentifier FK -> Companies |
 | job_role_id | int FK -> JobRoles |
-| designation | varchar |
+| experience_level_id | int FK -> ExperienceLevels |
 | description | nvarchar |
 | location | varchar |
 | job_type | varchar |
@@ -191,6 +184,7 @@ if the schema changes.
 | question_text | nvarchar |
 | is_active | bit |
 | created_at | datetime2 |
+| ai_generated | bit |
 
 ### InterviewQuestions
 | Column | Type |
@@ -210,13 +204,12 @@ if the schema changes.
 - `ExperienceLevels ||--o{ CandidateProfiles` — level
 - `JobRoles ||--o{ CandidateProfiles` — role
 - `CandidateProfiles ||--o{ CandidateSkills` — has
-- `JobRoles ||--o{ RoleSkills` — role
-- `SkillSets ||--o{ RoleSkills` — skill
 - `SkillSets ||--o{ CandidateSkills` — ref
 - `Companies ||--o{ RecruiterProfiles` — employs
 - `Companies ||--o{ JobPostings` — posts
 - `RecruiterProfiles ||--o{ JobPostings` — creates
 - `JobRoles ||--o{ JobPostings` — role
+- `ExperienceLevels ||--o{ JobPostings` — level
 - `JobPostings ||--o{ JobRequiredSkills` — requires
 - `SkillSets ||--o{ JobRequiredSkills` — ref
 - `JobPostings ||--o{ Applications` — receives

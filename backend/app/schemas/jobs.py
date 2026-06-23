@@ -8,26 +8,19 @@ VALID_JOB_TYPES = ('Full-time', 'Part-time', 'Remote', 'Contract', 'Hybrid')
 class JobPostRequest(BaseModel):
     recruiter_id: str
     job_role_id: int
-    designation: str
+    experience_level_id: int
     description: str
     location: str
     job_type: Literal['Full-time', 'Part-time', 'Remote', 'Contract', 'Hybrid']
     salary_range: str | None = None
     expires_at: str | None = None
 
-    @field_validator('designation', 'description', 'location', 'recruiter_id')
+    @field_validator('description', 'location', 'recruiter_id')
     @classmethod
     def validate_nonempty(cls, v: str) -> str:
         v = v.strip()
         if not v:
             raise ValueError('This field is required')
-        return v
-
-    @field_validator('designation')
-    @classmethod
-    def validate_designation_length(cls, v: str) -> str:
-        if len(v) > 200:
-            raise ValueError('Designation must be 200 characters or fewer')
         return v
 
     @field_validator('salary_range')
@@ -47,11 +40,12 @@ class JobPostResponse(BaseModel):
 
 class JobListItem(BaseModel):
     id: str
-    designation: str
     description: str
     company: str
     job_role_id: int
     job_role_title: str
+    experience_level_id: int
+    experience_level_name: str
     location: str
     job_type: str
     salary_range: str | None

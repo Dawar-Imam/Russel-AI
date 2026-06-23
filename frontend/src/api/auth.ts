@@ -13,9 +13,15 @@ export interface Skill {
   job_role_ids: number[]
 }
 
+export interface ExperienceLevel {
+  id: number
+  name: string
+}
+
 export interface SignupMetadata {
   job_roles: JobRole[]
   skills: Skill[]
+  experience_levels: ExperienceLevel[]
 }
 
 export interface SignupResponse {
@@ -57,8 +63,16 @@ export async function signupCandidate(data: {
   if (data.cv) form.append('cv', data.cv)
 
   const res = await fetch(`${BASE_URL}/api/auth/signup`, { method: 'POST', body: form })
-  const body = (await res.json()) as { detail?: string } & Partial<SignupResponse>
-  if (!res.ok) throw new Error(body.detail ?? 'Signup failed')
+  const body = (await res.json()) as { detail?: string | { msg?: string }[] } & Partial<SignupResponse>
+  if (!res.ok) {
+    const detail = body.detail
+    const message = typeof detail === 'string'
+      ? detail
+      : Array.isArray(detail)
+        ? detail.map((e) => e.msg ?? '').filter(Boolean).join('; ') || 'Signup failed'
+        : 'Signup failed'
+    throw new Error(message)
+  }
   return body as SignupResponse
 }
 

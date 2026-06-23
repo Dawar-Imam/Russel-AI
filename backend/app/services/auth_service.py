@@ -5,7 +5,7 @@ import uuid
 from pathlib import Path
 
 from app.database import get_connection
-from app.schemas.auth import JobRoleItem, RecruiterSigninResponse, RecruiterSignupResponse, SigninResponse, SignupMetadataResponse, SignupResponse, SkillItem
+from app.schemas.auth import CandidateProfileResponse, ExperienceLevelItem, JobRoleItem, RecruiterProfileResponse, RecruiterSigninResponse, RecruiterSignupResponse, SigninResponse, SignupMetadataResponse, SignupResponse, SkillItem
 from app.services.cv_parser_service import parse_pdf_cv
 
 _UPLOADS_DIR = Path(__file__).parent.parent.parent / "uploads" / "resumes"
@@ -33,6 +33,9 @@ def get_signup_metadata() -> SignupMetadataResponse:
         cur.execute("SELECT id, title, category FROM JobRoles WHERE is_active = 1 ORDER BY title")
         job_roles = [JobRoleItem(id=row[0], title=row[1], category=row[2]) for row in cur.fetchall()]
 
+        cur.execute("SELECT id, name FROM ExperienceLevels ORDER BY min_years")
+        experience_levels = [ExperienceLevelItem(id=row[0], name=row[1]) for row in cur.fetchall()]
+
         cur.execute(
             """
             SELECT s.id, s.name, s.category, rs.job_role_id
@@ -50,7 +53,11 @@ def get_signup_metadata() -> SignupMetadataResponse:
             if job_role_id is not None:
                 skill_map[skill_id].job_role_ids.append(int(job_role_id))
 
-        return SignupMetadataResponse(job_roles=job_roles, skills=list(skill_map.values()))
+        return SignupMetadataResponse(
+            job_roles=job_roles,
+            skills=list(skill_map.values()),
+            experience_levels=experience_levels,
+        )
     finally:
         conn.close()
 
@@ -245,6 +252,110 @@ def signup_recruiter(
             user_id=user_id,
             recruiter_id=recruiter_id,
             message="Account created successfully.",
+        )
+    finally:
+        conn.close()
+
+
+def get_candidate_profile(candidate_id: str) -> CandidateProfileResponse:
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT
+                u.first_name, u.last_name, u.email,
+                jr.title,
+                el.name, el.min_years, el.max_years,
+                cp.bio, cp.linkedin_url, cp.current_location, cp.open_to_work, cp.resume_url,
+                u.created_at
+            FROM CandidateProfiles cp
+            JOIN Users u ON u.id = cp.user_id
+            LEFT JOIN JobRoles jr ON jr.id = cp.job_role_id
+            LEFT JOIN ExperienceLevels el ON el.id = cp.experience_level_id
+            WHERE cp.id = ?
+            """,
+            candidate_id,
+        )
+        row = cur.fetchone()
+        if not row:
+            raise ValueError("Candidate not found")
+
+        el_name = str(row[4]) if row[4] else ""
+        el_min = int(row[5]) if row[5] is not None else 0
+        el_max = row[6]
+        if el_name:
+            experience_level = f"{el_name} ({el_min}–{int(el_max)} yrs)" if el_max else f"{el_name} ({el_min}+ yrs)"
+        else:
+            experience_level = "Not specified"
+
+        created_at = row[12]
+        member_since = created_at.strftime("%B %Y") if created_at else ""
+
+        cur.execute(
+            """
+            SELECT ss.name
+            FROM CandidateSkills cs
+            JOIN SkillSets ss ON ss.id = cs.skill_id
+            WHERE cs.candidate_id = ?
+            ORDER BY ss.name
+            """,
+            candidate_id,
+        )
+        skills = [str(r[0]) for r in cur.fetchall()]
+
+        return CandidateProfileResponse(
+            candidate_id=candidate_id,
+            first_name=str(row[0]),
+            last_name=str(row[1]),
+            email=str(row[2]),
+            job_role_title=str(row[3]) if row[3] else "Not specified",
+            skills=skills,
+            experience_level=experience_level,
+            bio=str(row[7]) if row[7] else None,
+            linkedin_url=str(row[8]) if row[8] else None,
+            current_location=str(row[9]) if row[9] else None,
+            open_to_work=bool(row[10]),
+            resume_url=str(row[11]) if row[11] else None,
+            member_since=member_since,
+        )
+    finally:
+        conn.close()
+
+
+def get_recruiter_profile(recruiter_id: str) -> RecruiterProfileResponse:
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT
+                u.first_name, u.last_name, u.email,
+                c.name, rp.designation, rp.company_verified,
+                u.created_at
+            FROM RecruiterProfiles rp
+            JOIN Users u ON u.id = rp.user_id
+            LEFT JOIN Companies c ON c.id = rp.company_id
+            WHERE rp.id = ?
+            """,
+            recruiter_id,
+        )
+        row = cur.fetchone()
+        if not row:
+            raise ValueError("Recruiter not found")
+
+        created_at = row[6]
+        member_since = created_at.strftime("%B %Y") if created_at else ""
+
+        return RecruiterProfileResponse(
+            recruiter_id=recruiter_id,
+            first_name=str(row[0]),
+            last_name=str(row[1]),
+            email=str(row[2]),
+            company_name=str(row[3]) if row[3] else "Not specified",
+            designation=str(row[4]) if row[4] else "Not specified",
+            company_verified=bool(row[5]),
+            member_since=member_since,
         )
     finally:
         conn.close()

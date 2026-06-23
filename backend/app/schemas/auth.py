@@ -18,9 +18,15 @@ class SkillItem(BaseModel):
     job_role_ids: list[int]
 
 
+class ExperienceLevelItem(BaseModel):
+    id: int
+    name: str
+
+
 class SignupMetadataResponse(BaseModel):
     job_roles: list[JobRoleItem]
     skills: list[SkillItem]
+    experience_levels: list[ExperienceLevelItem]
 
 
 class SignupResponse(BaseModel):
@@ -97,3 +103,30 @@ class RecruiterSigninResponse(BaseModel):
     user_id: str
     recruiter_id: str
     message: str
+
+
+class CandidateProfileResponse(BaseModel):
+    candidate_id: str
+    first_name: str
+    last_name: str
+    email: str
+    job_role_title: str
+    skills: list[str]
+    experience_level: str
+    bio: str | None
+    linkedin_url: str | None
+    current_location: str | None
+    open_to_work: bool
+    resume_url: str | None
+    member_since: str
+
+
+class RecruiterProfileResponse(BaseModel):
+    recruiter_id: str
+    first_name: str
+    last_name: str
+    email: str
+    company_name: str
+    designation: str
+    company_verified: bool
+    member_since: str

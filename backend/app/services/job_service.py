@@ -24,7 +24,7 @@ def post_job(data: JobPostRequest) -> JobPostResponse:
         cur.execute(
             """
             INSERT INTO JobPostings
-                (id, recruiter_id, company_id, job_role_id, designation, description,
+                (id, recruiter_id, company_id, job_role_id, experience_level_id, description,
                  location, job_type, salary_range, status, posted_at, expires_at)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', GETDATE(), ?)
             """,
@@ -32,7 +32,7 @@ def post_job(data: JobPostRequest) -> JobPostResponse:
             data.recruiter_id,
             company_id,
             data.job_role_id,
-            data.designation,
+            data.experience_level_id,
             data.description,
             data.location,
             data.job_type,
@@ -46,47 +46,50 @@ def post_job(data: JobPostRequest) -> JobPostResponse:
 
 
 def _row_to_job(row) -> JobListItem:
-    skills_raw = row[10]
+    skills_raw = row[9]
     required_skills = [s.strip() for s in skills_raw.split(',') if s.strip()] if skills_raw else []
     return JobListItem(
         id=str(row[0]),
-        designation=str(row[1]),
-        description=str(row[2]),
-        company=str(row[3]),
-        job_role_title=str(row[4]),
-        location=str(row[5]),
-        job_type=str(row[6]),
-        salary_range=str(row[7]) if row[7] else None,
-        posted_at=str(row[8]),
-        expires_at=str(row[9]) if row[9] else None,
+        description=str(row[1]),
+        company=str(row[2]),
+        job_role_title=str(row[3]),
+        location=str(row[4]),
+        job_type=str(row[5]),
+        salary_range=str(row[6]) if row[6] else None,
+        posted_at=str(row[7]),
+        expires_at=str(row[8]) if row[8] else None,
         required_skills=required_skills,
-        job_role_id=int(row[11]),
+        job_role_id=int(row[10]),
+        experience_level_name=str(row[11]),
+        experience_level_id=int(row[12]),
     )
 
 
 _JOB_SELECT = """
-    SELECT jp.id, jp.designation, jp.description, c.name, jr.title,
+    SELECT jp.id, jp.description, c.name, jr.title,
            jp.location, jp.job_type, jp.salary_range,
            CONVERT(varchar, jp.posted_at, 127),
            CONVERT(varchar, jp.expires_at, 127),
            STRING_AGG(s.name, ',') WITHIN GROUP (ORDER BY s.name),
-           jp.job_role_id
+           jp.job_role_id, el.name, jp.experience_level_id
     FROM JobPostings jp
     JOIN Companies c ON c.id = jp.company_id
     JOIN JobRoles jr ON jr.id = jp.job_role_id
+    JOIN ExperienceLevels el ON el.id = jp.experience_level_id
     LEFT JOIN JobRequiredSkills jrs ON jrs.job_id = jp.id
     LEFT JOIN SkillSets s ON s.id = jrs.skill_id
 """
 
 _JOB_GROUP_BY = """
-    GROUP BY jp.id, jp.designation, jp.description, c.name, jr.title,
+    GROUP BY jp.id, jp.description, c.name, jr.title,
              jp.location, jp.job_type, jp.salary_range, jp.posted_at, jp.expires_at,
-             jp.job_role_id
+             jp.job_role_id, el.name, jp.experience_level_id
 """
 
 
 def list_jobs(
     job_role_id: int | None = None,
+    experience_level_id: int | None = None,
     location: str | None = None,
     job_type: str | None = None,
     salary_range: str | None = None,
@@ -109,14 +112,17 @@ def list_jobs(
         if job_role_id is not None:
             conditions.append("jp.job_role_id = ?")
             params.append(job_role_id)
+        if experience_level_id is not None:
+            conditions.append("jp.experience_level_id = ?")
+            params.append(experience_level_id)
         if location:
-            conditions.append("jp.location LIKE ? ESCAPE '\\'")
+            conditions.append("jp.location LIKE ?")
             params.append(f"%{_escape_like(location)}%")
         if job_type:
             conditions.append("jp.job_type = ?")
             params.append(job_type)
         if salary_range:
-            conditions.append("jp.salary_range LIKE ? ESCAPE '\\'")
+            conditions.append("jp.salary_range LIKE ?")
             params.append(f"%{_escape_like(salary_range)}%")
 
         where_clause = "WHERE " + " AND ".join(conditions) + " "

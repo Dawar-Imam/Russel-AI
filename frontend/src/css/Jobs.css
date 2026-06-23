@@ -92,6 +92,7 @@
   gap: 20px;
   align-items: stretch;
   padding-top: var(--space-3);
+  padding-bottom: var(--space-6);
 }
 
 .jobs-state-text {

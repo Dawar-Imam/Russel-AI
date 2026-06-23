@@ -81,6 +81,14 @@ async def run_voice_agent(
     disconnected = asyncio.Event()
     room.on("disconnected")(lambda *_: disconnected.set())
 
+    def _on_participant_disconnected(participant: rtc.RemoteParticipant) -> None:
+        # Candidate left the room — end the session without waiting for room close
+        if participant.identity and not participant.identity.startswith("russel-"):
+            _logger.info("Candidate %s disconnected — ending voice session", participant.identity)
+            disconnected.set()
+
+    room.on("participant_disconnected")(_on_participant_disconnected)
+
     async with http_context.open():
         vad = silero.VAD.load()
         session = AgentSession(

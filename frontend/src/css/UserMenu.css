@@ -162,6 +162,15 @@
   flex-shrink: 0;
 }
 
+.user-menu-btn--profile {
+  color: var(--color-text-secondary);
+}
+
+.user-menu-btn--profile:hover {
+  background-color: var(--color-surface-raised);
+  color: var(--color-primary);
+}
+
 .user-menu-btn--logout {
   color: #e05c5c;
 }

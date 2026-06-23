@@ -11,6 +11,7 @@ router = APIRouter()
 @router.get("", response_model=list[JobListItem])
 def get_jobs(
     job_role_id: Optional[int] = Query(None, ge=1, description="Filter by job role ID"),
+    experience_level_id: Optional[int] = Query(None, ge=1, description="Filter by experience level ID"),
     location: Optional[str] = Query(None, description="Filter by location (partial match)"),
     job_type: Optional[str] = Query(None, description="Filter by job type"),
     salary_range: Optional[str] = Query(None, description="Filter by salary range keyword"),
@@ -25,6 +26,7 @@ def get_jobs(
     try:
         return list_jobs(
             job_role_id=job_role_id,
+            experience_level_id=experience_level_id,
             location=location,
             job_type=job_type,
             salary_range=salary_range,

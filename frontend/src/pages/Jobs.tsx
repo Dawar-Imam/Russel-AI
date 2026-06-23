@@ -12,7 +12,7 @@ const JOB_TYPES = ['Full-time', 'Part-time', 'Remote', 'Contract', 'Hybrid']
 function Jobs() {
   const location = useLocation()
 
-  const [candidateId] = useState<string>(() => {
+  const [candidateId, setCandidateId] = useState<string>(() => {
     const fromState = (location.state as { candidateId?: string } | null)?.candidateId
     if (fromState) {
       sessionStorage.setItem('candidateId', fromState)
@@ -20,6 +20,14 @@ function Jobs() {
     }
     return sessionStorage.getItem('candidateId') ?? ''
   })
+
+  useEffect(() => {
+    function syncAuth() {
+      setCandidateId(sessionStorage.getItem('candidateId') ?? '')
+    }
+    window.addEventListener('auth-change', syncAuth)
+    return () => window.removeEventListener('auth-change', syncAuth)
+  }, [])
 
   const pendingJobId = (location.state as { pendingJobId?: string } | null)?.pendingJobId
 
@@ -40,21 +48,33 @@ function Jobs() {
     return [...seen.entries()].sort((a, b) => a[1].localeCompare(b[1]))
   }, [allJobs])
 
+  const experienceLevelOptions = useMemo(() => {
+    const seen = new Map<number, string>()
+    for (const j of allJobs) {
+      if (!seen.has(j.experience_level_id)) seen.set(j.experience_level_id, j.experience_level_name)
+    }
+    return [...seen.entries()].sort((a, b) => a[0] - b[0])
+  }, [allJobs])
+
   const filteredJobs = useMemo(() => {
     let result = allJobs
-    if (filters.job_role_id) {
-      result = result.filter((j) => j.job_role_id === filters.job_role_id)
+    if (filters.job_role_id != null) {
+      result = result.filter((j) => Number(j.job_role_id) === Number(filters.job_role_id))
+    }
+    if (filters.experience_level_id != null) {
+      result = result.filter((j) => Number(j.experience_level_id) === Number(filters.experience_level_id))
     }
     if (filters.job_type) {
-      result = result.filter((j) => j.job_type === filters.job_type)
+      const qt = filters.job_type.trim().toLowerCase()
+      result = result.filter((j) => j.job_type.trim().toLowerCase() === qt)
     }
     if (filters.location) {
       const q = filters.location.toLowerCase()
-      result = result.filter((j) => j.location?.toLowerCase().includes(q))
+      result = result.filter((j) => j.location?.trim().toLowerCase().includes(q))
     }
     if (filters.salary_range) {
       const q = filters.salary_range.toLowerCase()
-      result = result.filter((j) => j.salary_range?.toLowerCase().includes(q))
+      result = result.filter((j) => j.salary_range?.trim().toLowerCase().includes(q))
     }
     return result
   }, [allJobs, filters])
@@ -90,7 +110,11 @@ function Jobs() {
   }
 
   const hasActiveFilters =
-    !!filters.job_role_id || !!filters.location || !!filters.job_type || !!filters.salary_range
+    filters.job_role_id != null ||
+    filters.experience_level_id != null ||
+    !!filters.location ||
+    !!filters.job_type ||
+    !!filters.salary_range
 
   return (
     <main className="jobs-page">
@@ -132,6 +156,28 @@ function Jobs() {
               {jobRoleOptions.map(([id, title]) => (
                 <option key={id} value={id}>
                   {title}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div className="jobs-filter-field">
+            <label className="jobs-filter-label" htmlFor="filter-level">Experience Level</label>
+            <select
+              id="filter-level"
+              className="jobs-filter-select"
+              value={filters.experience_level_id ?? ''}
+              onChange={(e) =>
+                setFilters((f) => ({
+                  ...f,
+                  experience_level_id: e.target.value ? Number(e.target.value) : undefined,
+                }))
+              }
+            >
+              <option value="">All levels</option>
+              {experienceLevelOptions.map(([id, name]) => (
+                <option key={id} value={id}>
+                  {name}
                 </option>
               ))}
             </select>

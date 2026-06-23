@@ -5,7 +5,7 @@ import Input from '../components/Input'
 import Select from '../components/Select'
 import BackButton from '../components/BackButton'
 import logo from '../utils/logo.png'
-import { fetchSignupMetadata, type JobRole } from '../api/auth'
+import { fetchSignupMetadata, type ExperienceLevel, type JobRole } from '../api/auth'
 import { fetchRecruiterJobs, postJob, type JobListItem } from '../api/jobs'
 import '../css/RecruiterDashboard.css'
 
@@ -30,11 +30,12 @@ function RecruiterDashboard() {
 
   const [showForm, setShowForm] = useState(false)
   const [jobRoles, setJobRoles] = useState<JobRole[]>([])
+  const [experienceLevels, setExperienceLevels] = useState<ExperienceLevel[]>([])
   const [rolesLoading, setRolesLoading] = useState(false)
 
   // Post job form state
   const [jobRoleId, setJobRoleId] = useState<number | ''>('')
-  const [jobDesignation, setJobDesignation] = useState('')
+  const [experienceLevelId, setExperienceLevelId] = useState<number | ''>('')
   const [jobDescription, setJobDescription] = useState('')
   const [jobLocation, setJobLocation] = useState('')
   const [jobType, setJobType] = useState('')
@@ -58,7 +59,10 @@ function RecruiterDashboard() {
     if (jobRoles.length > 0) return
     setRolesLoading(true)
     fetchSignupMetadata()
-      .then(({ job_roles }) => setJobRoles(job_roles))
+      .then(({ job_roles, experience_levels }) => {
+        setJobRoles(job_roles)
+        setExperienceLevels(experience_levels)
+      })
       .catch(() => {})
       .finally(() => setRolesLoading(false))
   }
@@ -67,7 +71,7 @@ function RecruiterDashboard() {
     setShowForm(false)
     setPostError(null)
     setJobRoleId('')
-    setJobDesignation('')
+    setExperienceLevelId('')
     setJobDescription('')
     setJobLocation('')
     setJobType('')
@@ -77,14 +81,14 @@ function RecruiterDashboard() {
 
   async function handlePostJob(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (jobRoleId === '' || !jobType) return
+    if (jobRoleId === '' || experienceLevelId === '' || !jobType) return
     setPosting(true)
     setPostError(null)
     try {
       await postJob({
         recruiter_id: recruiterId,
         job_role_id: jobRoleId as number,
-        designation: jobDesignation,
+        experience_level_id: experienceLevelId as number,
         description: jobDescription,
         location: jobLocation,
         job_type: jobType,
@@ -159,16 +163,22 @@ function RecruiterDashboard() {
                   )}
                 </div>
 
-                <label className="field">
-                  <span className="field-label">Job Title</span>
-                  <Input
-                    type="text"
-                    placeholder="e.g. Senior React Developer"
-                    value={jobDesignation}
-                    onChange={(e) => setJobDesignation(e.target.value)}
-                    required
-                  />
-                </label>
+                <div className="field">
+                  <span className="field-label">Experience Level</span>
+                  {rolesLoading ? (
+                    <p className="rd-loading-text">Loading…</p>
+                  ) : (
+                    <Select
+                      value={experienceLevelId}
+                      onChange={(e: ChangeEvent<HTMLSelectElement>) => setExperienceLevelId(Number(e.target.value))}
+                    >
+                      <option value="" disabled>Select a level</option>
+                      {experienceLevels.map((l) => (
+                        <option key={l.id} value={l.id}>{l.name}</option>
+                      ))}
+                    </Select>
+                  )}
+                </div>
               </div>
 
               <label className="field">
@@ -236,7 +246,7 @@ function RecruiterDashboard() {
                 <Button type="button" variant="secondary" onClick={handleCloseForm}>
                   Cancel
                 </Button>
-                <Button type="submit" variant="primary" disabled={posting || jobRoleId === '' || !jobType}>
+                <Button type="submit" variant="primary" disabled={posting || jobRoleId === '' || experienceLevelId === '' || !jobType}>
                   {posting ? 'Posting…' : 'Post Job'}
                 </Button>
               </div>
@@ -263,7 +273,7 @@ function RecruiterDashboard() {
               <article key={job.id} className="rd-job-card">
                 <div className="rd-job-main">
                   <span className="rd-job-company">{job.company}</span>
-                  <h3 className="rd-job-title">{job.designation}</h3>
+                  <h3 className="rd-job-title">{`${job.experience_level_name} ${job.job_role_title}`}</h3>
                   <p className="rd-job-desc">{job.description}</p>
                 </div>
                 <div className="rd-job-meta">

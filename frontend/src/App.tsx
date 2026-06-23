@@ -6,6 +6,7 @@ import Jobs from './pages/Jobs'
 import RecruiterDashboard from './pages/RecruiterDashboard'
 import InterviewStages from './pages/InterviewStages'
 import InterviewRoom from './pages/InterviewRoom'
+import UserProfile from './pages/UserProfile'
 import PageTransition from './components/PageTransition'
 import UserMenu from './components/UserMenu'
 
@@ -62,6 +63,14 @@ function App() {
           element={
             <PageTransition>
               <InterviewRoom />
+            </PageTransition>
+          }
+        />
+        <Route
+          path="/profile"
+          element={
+            <PageTransition>
+              <UserProfile />
             </PageTransition>
           }
         />

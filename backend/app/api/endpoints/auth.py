@@ -2,8 +2,8 @@ import re
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
-from app.schemas.auth import RecruiterSigninResponse, RecruiterSignupRequest, RecruiterSignupResponse, SigninRequest, SigninResponse, SignupMetadataResponse, SignupResponse
-from app.services.auth_service import get_signup_metadata, signin_candidate, signin_recruiter, signup_candidate, signup_recruiter
+from app.schemas.auth import CandidateProfileResponse, RecruiterProfileResponse, RecruiterSigninResponse, RecruiterSignupRequest, RecruiterSignupResponse, SigninRequest, SigninResponse, SignupMetadataResponse, SignupResponse
+from app.services.auth_service import get_candidate_profile, get_recruiter_profile, get_signup_metadata, signin_candidate, signin_recruiter, signup_candidate, signup_recruiter
 
 router = APIRouter()
 
@@ -111,5 +111,25 @@ def recruiter_signin(body: SigninRequest) -> RecruiterSigninResponse:
         return signin_recruiter(email=body.email, password=body.password)
     except ValueError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get("/profile/candidate/{candidate_id}", response_model=CandidateProfileResponse)
+def candidate_profile(candidate_id: str) -> CandidateProfileResponse:
+    try:
+        return get_candidate_profile(candidate_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get("/profile/recruiter/{recruiter_id}", response_model=RecruiterProfileResponse)
+def recruiter_profile(recruiter_id: str) -> RecruiterProfileResponse:
+    try:
+        return get_recruiter_profile(recruiter_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
