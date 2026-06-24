@@ -4,7 +4,6 @@ import Button from '../components/Button'
 import Input from '../components/Input'
 import Select from '../components/Select'
 import Tag from '../components/Tag'
-import BackButton from '../components/BackButton'
 import logo from '../utils/logo.png'
 import {
   fetchSignupMetadata,
@@ -123,7 +122,7 @@ function Auth() {
           sessionStorage.setItem('candidateId', result.candidate_id)
           sessionStorage.setItem('candidateEmail', signinEmail)
           sessionStorage.setItem('userType', 'candidate')
-          navigate('/jobs', { state: { candidateId: result.candidate_id, pendingJobId } })
+          navigate('/my-applications', { state: { candidateId: result.candidate_id } })
         } else {
           const result = await signinRecruiter(signinEmail, signinPassword)
           sessionStorage.setItem('recruiterId', result.recruiter_id)
@@ -143,7 +142,7 @@ function Auth() {
     if (accountType === 'recruiter') {
       if (!firstName || !lastName || !signupEmail || !signupPassword || !companyName || !designation) return
     } else {
-      if (!firstName || !lastName || !signupEmail || !signupPassword || selectedRoleId === '' || selectedSkills.length === 0 || !experience) return
+      if (!firstName || !lastName || !signupEmail || !signupPassword || selectedRoleId === '' || selectedSkills.length === 0 || !experience || !cvFile) return
     }
 
     setSubmitting(true)
@@ -209,7 +208,6 @@ function Auth() {
 
   return (
     <main className="auth-page">
-      <BackButton />
       <div className="auth-card">
         <Link to="/" className="auth-brand">
           <span className="auth-brand-title">
@@ -606,12 +604,17 @@ function Auth() {
               </label>
 
               <div className="field">
-                <span className="field-label">CV / Resume</span>
+                <span className="field-label">
+                  CV / Resume<span className="required-star"> *</span>
+                </span>
                 <label className="file-input">
                   <input type="file" accept=".pdf,.doc,.docx" onChange={handleCvChange} hidden />
                   <span className="file-input-button">Choose File</span>
                   <span className="file-input-name">{cvFile ? cvFile.name : 'No file selected'}</span>
                 </label>
+                {attemptedSubmit && !cvFile && (
+                  <span className="field-error">CV / Resume is required.</span>
+                )}
               </div>
 
               {submitError && <p className="auth-submit-error">{submitError}</p>}

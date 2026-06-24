@@ -3,8 +3,9 @@
   flex-direction: column;
   justify-content: space-between;
   gap: var(--space-4);
-  width: 100%;
-  min-height: 340px;
+  width: 260px;
+  height: 340px;
+  flex-shrink: 0;
   background-color: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);
@@ -12,6 +13,7 @@
   box-shadow: var(--shadow-card);
   transition: border-color 0.2s ease, transform 0.15s ease;
   box-sizing: border-box;
+  overflow: hidden;
 }
 
 .job-card:hover {
@@ -88,18 +90,8 @@
 
 .job-card-apply {
   width: 100%;
+  font-size: 12px !important;
+  padding: 7px 24px !important;
+  margin-bottom: var(--space-2);
 }
 
-/* 900–1199px tablet */
-@media (max-width: 1199px) {
-  .job-card {
-    min-height: 320px;
-  }
-}
-
-/* <600px mobile */
-@media (max-width: 599px) {
-  .job-card {
-    min-height: auto;
-  }
-}

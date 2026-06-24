@@ -147,6 +147,7 @@ def _save_scores_and_complete(
     graded_answers,
     overall_score: float,
     interview_result: str,
+    ai_feedback: str | None = None,
 ) -> None:
     for iq_id, ga in zip(iq_ids, graded_answers):
         cur.execute(
@@ -160,10 +161,10 @@ def _save_scores_and_complete(
     cur.execute(
         """
         UPDATE Interviews
-        SET status = 'Completed', result = ?, feedback = ?, completed_at = GETDATE()
+        SET status = ?, result = ?, feedback = ?, completed_at = GETDATE()
         WHERE id = ?
         """,
-        interview_result, str(overall_score), interview_id,
+        interview_result, overall_score, ai_feedback, interview_id,
     )
 
 
@@ -289,7 +290,7 @@ async def score_interview_answers(
         status_row = cur.fetchone()
         if not status_row:
             raise ValueError(f"Interview {interview_id} not found")
-        if str(status_row[0]).lower() == "completed":
+        if str(status_row[0]).lower() in ("pass", "failed"):
             raise ValueError("This interview has already been completed and scored.")
 
         stored = _fetch_existing_questions(cur, interview_id)
@@ -330,7 +331,7 @@ async def score_interview_answers(
         raise RuntimeError("AI answer scoring failed")
 
     overall_score: float = result["overall_score"]
-    interview_result = "Pass" if overall_score > PASS_THRESHOLD else "Fail"
+    interview_result = "Pass" if overall_score > PASS_THRESHOLD else "Failed"
 
     # --- 3. Persist scores and mark interview completed ---
     conn = get_connection()

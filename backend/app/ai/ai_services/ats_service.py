@@ -1,7 +1,11 @@
+import logging
+
 from pydantic import BaseModel
 
 from app.core.config import get_llm
 from app.database import get_connection
+
+logger = logging.getLogger(__name__)
 
 
 class ATSCheckResult(BaseModel):
@@ -23,37 +27,43 @@ Rules:
 - If information is sparse, lean toward eligible."""
 
 
-async def check_ats_eligibility(candidate_id: str, job_posting_id: str) -> ATSCheckResult:
+async def check_ats_eligibility(
+    candidate_id: str,
+    job_posting_id: str,
+    parsed_text: str | None = None,
+) -> ATSCheckResult:
     conn = get_connection()
     try:
         cur = conn.cursor()
 
-        cur.execute(
-            """
-            SELECT cp.bio, el.name, jr.title
-            FROM CandidateProfiles cp
-            LEFT JOIN ExperienceLevels el ON el.id = cp.experience_level_id
-            LEFT JOIN JobRoles jr ON jr.id = cp.job_role_id
-            WHERE cp.id = ?
-            """,
-            candidate_id,
-        )
-        candidate_row = cur.fetchone()
-        if not candidate_row:
-            return ATSCheckResult(eligible=True, reason="Candidate profile not found; proceeding.")
+        if parsed_text is None:
+            cur.execute(
+                """
+                SELECT cp.bio, el.name, jr.title
+                FROM CandidateProfiles cp
+                LEFT JOIN ExperienceLevels el ON el.id = cp.experience_level_id
+                LEFT JOIN JobRoles jr ON jr.id = cp.job_role_id
+                WHERE cp.id = ?
+                """,
+                candidate_id,
+            )
+            candidate_row = cur.fetchone()
+            if not candidate_row:
+                logger.warning("ATS: candidate profile not found for candidate_id=%s", candidate_id)
+                raise ValueError(f"Candidate profile not found for candidate_id={candidate_id}")
 
-        candidate_bio, experience_level, candidate_role = candidate_row
+            candidate_bio, experience_level, candidate_role = candidate_row
 
-        cur.execute(
-            """
-            SELECT ss.name
-            FROM CandidateSkills cs
-            JOIN SkillSets ss ON ss.id = cs.skill_id
-            WHERE cs.candidate_id = ?
-            """,
-            candidate_id,
-        )
-        candidate_skills = [r[0] for r in cur.fetchall()]
+            cur.execute(
+                """
+                SELECT ss.name
+                FROM CandidateSkills cs
+                JOIN SkillSets ss ON ss.id = cs.skill_id
+                WHERE cs.candidate_id = ?
+                """,
+                candidate_id,
+            )
+            candidate_skills = [r[0] for r in cur.fetchall()]
 
         cur.execute(
             """
@@ -67,7 +77,8 @@ async def check_ats_eligibility(candidate_id: str, job_posting_id: str) -> ATSCh
         )
         job_row = cur.fetchone()
         if not job_row:
-            return ATSCheckResult(eligible=True, reason="Job not found; proceeding.")
+            logger.warning("ATS: job posting not found for job_posting_id=%s", job_posting_id)
+            raise ValueError(f"Job posting not found for job_posting_id={job_posting_id}")
 
         experience_level_name, job_role, job_description = job_row
         designation = f"{experience_level_name} {job_role}"
@@ -85,7 +96,6 @@ async def check_ats_eligibility(candidate_id: str, job_posting_id: str) -> ATSCh
     finally:
         conn.close()
 
-    candidate_skills_str = ", ".join(candidate_skills) if candidate_skills else "Not specified"
     required_skills_str = (
         ", ".join(
             f"{name} ({level or 'any level'}){' [required]' if mandatory else ''}"
@@ -95,11 +105,17 @@ async def check_ats_eligibility(candidate_id: str, job_posting_id: str) -> ATSCh
         else "Not specified"
     )
 
-    user_message = f"""Candidate Profile:
+    if parsed_text:
+        candidate_section = f"Candidate CV:\n{parsed_text[:2000]}"
+    else:
+        candidate_skills_str = ", ".join(candidate_skills) if candidate_skills else "Not specified"
+        candidate_section = f"""Candidate Profile:
 - Background: {candidate_bio or 'Not provided'}
 - Experience Level: {experience_level or 'Not specified'}
 - Current Role: {candidate_role or 'Not specified'}
-- Skills: {candidate_skills_str}
+- Skills: {candidate_skills_str}"""
+
+    user_message = f"""{candidate_section}
 
 Job Posting:
 - Title: {designation}
@@ -118,5 +134,6 @@ Is this candidate eligible for this job?"""
             ]
         )
         return result
-    except Exception:
-        return ATSCheckResult(eligible=True, reason="Eligibility check unavailable; you may proceed.")
+    except Exception as exc:
+        logger.error("ATS: LLM eligibility check failed for candidate=%s job=%s: %s", candidate_id, job_posting_id, exc)
+        raise

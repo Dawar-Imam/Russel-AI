@@ -1,10 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useLocation } from 'react-router-dom'
-import JobCard from '../components/JobCard'
-import JobApplyDialog from '../components/JobApplyDialog'
+import { useLocation, useNavigate } from 'react-router-dom'
+import ApplicationCard from '../components/ApplicationCard'
 import FilterPanel, { type FilterState } from '../components/FilterPanel'
-import { fetchJobs, type JobListItem } from '../api/jobs'
-import '../css/Jobs.css'
+import { fetchMyApplications, type MyApplicationItem } from '../api/applications'
+import '../css/MyApplications.css'
 
 function parseSalaryBounds(salaryRange: string | null): [number, number] | null {
   if (!salaryRange) return null
@@ -15,10 +14,11 @@ function parseSalaryBounds(salaryRange: string | null): [number, number] | null 
   return [Math.min(...nums), Math.max(...nums)]
 }
 
-function Jobs() {
+function MyApplications() {
   const location = useLocation()
+  const navigate = useNavigate()
 
-  const [candidateId, setCandidateId] = useState<string>(() => {
+  const [candidateId] = useState<string>(() => {
     const fromState = (location.state as { candidateId?: string } | null)?.candidateId
     if (fromState) {
       sessionStorage.setItem('candidateId', fromState)
@@ -27,20 +27,9 @@ function Jobs() {
     return sessionStorage.getItem('candidateId') ?? ''
   })
 
-  useEffect(() => {
-    function syncAuth() {
-      setCandidateId(sessionStorage.getItem('candidateId') ?? '')
-    }
-    window.addEventListener('auth-change', syncAuth)
-    return () => window.removeEventListener('auth-change', syncAuth)
-  }, [])
-
-  const pendingJobId = (location.state as { pendingJobId?: string } | null)?.pendingJobId
-
-  const [allJobs, setAllJobs] = useState<JobListItem[]>([])
+  const [allApplications, setAllApplications] = useState<MyApplicationItem[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
-  const [selectedJob, setSelectedJob] = useState<JobListItem | null>(null)
 
   const [filters, setFilters] = useState<FilterState>({})
   const [locationInput, setLocationInput] = useState('')
@@ -50,68 +39,69 @@ function Jobs() {
 
   const jobRoleOptions = useMemo(() => {
     const seen = new Map<number, string>()
-    for (const j of allJobs) {
-      if (!seen.has(j.job_role_id)) seen.set(j.job_role_id, j.job_role_title)
+    for (const a of allApplications) {
+      if (!seen.has(a.job_role_id)) seen.set(a.job_role_id, a.job_role_title)
     }
     return [...seen.entries()].sort((a, b) => a[1].localeCompare(b[1]))
-  }, [allJobs])
+  }, [allApplications])
 
   const experienceLevelOptions = useMemo(() => {
     const seen = new Map<number, string>()
-    for (const j of allJobs) {
-      if (!seen.has(j.experience_level_id)) seen.set(j.experience_level_id, j.experience_level_name)
+    for (const a of allApplications) {
+      if (!seen.has(a.experience_level_id)) seen.set(a.experience_level_id, a.experience_level_name)
     }
     return [...seen.entries()].sort((a, b) => a[0] - b[0])
-  }, [allJobs])
+  }, [allApplications])
 
-  const filteredJobs = useMemo(() => {
-    let result = allJobs
+  const filtered = useMemo(() => {
+    let result = allApplications
     if (filters.job_role_id != null) {
-      result = result.filter((j) => Number(j.job_role_id) === Number(filters.job_role_id))
+      result = result.filter((a) => Number(a.job_role_id) === Number(filters.job_role_id))
     }
     if (filters.experience_level_id != null) {
-      result = result.filter((j) => Number(j.experience_level_id) === Number(filters.experience_level_id))
+      result = result.filter((a) => Number(a.experience_level_id) === Number(filters.experience_level_id))
     }
     if (filters.job_type) {
       const qt = filters.job_type.trim().toLowerCase()
-      result = result.filter((j) => j.job_type.trim().toLowerCase() === qt)
+      result = result.filter((a) => a.job_type.trim().toLowerCase() === qt)
     }
     if (filters.location) {
       const q = filters.location.toLowerCase()
-      result = result.filter((j) => j.location?.trim().toLowerCase().includes(q))
+      result = result.filter((a) => a.location?.trim().toLowerCase().includes(q))
+    }
+    if (filters.status) {
+      result = result.filter((a) => a.status === filters.status)
     }
     if (!salaryError) {
       if (salaryMin !== '') {
         const min = Number(salaryMin)
-        result = result.filter((j) => {
-          const bounds = parseSalaryBounds(j.salary_range)
+        result = result.filter((a) => {
+          const bounds = parseSalaryBounds(a.salary_range)
           return bounds !== null && bounds[1] >= min
         })
       }
       if (salaryMax !== '') {
         const max = Number(salaryMax)
-        result = result.filter((j) => {
-          const bounds = parseSalaryBounds(j.salary_range)
+        result = result.filter((a) => {
+          const bounds = parseSalaryBounds(a.salary_range)
           return bounds !== null && bounds[0] <= max
         })
       }
     }
     return result
-  }, [allJobs, filters, salaryMin, salaryMax, salaryError])
+  }, [allApplications, filters, salaryMin, salaryMax, salaryError])
 
   useEffect(() => {
-    fetchJobs()
-      .then((data) => {
-        setAllJobs(data)
-        if (pendingJobId) {
-          const job = data.find((j) => j.id === pendingJobId)
-          if (job) setSelectedJob(job)
-        }
-      })
-      .catch((err: unknown) => setError(err instanceof Error ? err.message : 'Failed to load jobs'))
+    if (!candidateId) {
+      setLoading(false)
+      setError('You must be signed in as a candidate to view your applications.')
+      return
+    }
+    fetchMyApplications(candidateId)
+      .then(setAllApplications)
+      .catch((err: unknown) => setError(err instanceof Error ? err.message : 'Failed to load applications'))
       .finally(() => setLoading(false))
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [candidateId])
 
   function handleLocationChange(value: string) {
     setLocationInput(value)
@@ -149,16 +139,17 @@ function Jobs() {
     filters.experience_level_id != null ||
     !!filters.location ||
     !!filters.job_type ||
+    !!filters.status ||
     salaryMin !== '' ||
     salaryMax !== ''
 
   return (
-    <main className="jobs-page">
-      <header className="jobs-header">
-        <h1 className="jobs-heading">Open Positions</h1>
+    <main className="my-apps-page">
+      <header className="my-apps-header">
+        <h1 className="my-apps-heading">Dashboard</h1>
       </header>
 
-      <div className="jobs-content">
+      <div className="my-apps-content">
         <FilterPanel
           jobRoleOptions={jobRoleOptions}
           experienceLevelOptions={experienceLevelOptions}
@@ -168,9 +159,10 @@ function Jobs() {
           salaryMax={salaryMax}
           salaryError={salaryError}
           hasActiveFilters={hasActiveFilters}
-          count={filteredJobs.length}
-          countLabel="position"
+          count={filtered.length}
+          countLabel="application"
           loading={loading}
+          showStatus
           onFiltersChange={(update) => setFilters((f) => ({ ...f, ...update }))}
           onLocationChange={handleLocationChange}
           onSalaryMinChange={handleSalaryMinChange}
@@ -178,35 +170,27 @@ function Jobs() {
           onClearFilters={clearFilters}
         />
 
-        <div className="jobs-scroll-area">
+        <div className="my-apps-scroll-area">
           {loading ? (
-            <p className="jobs-state-text">Loading jobs…</p>
+            <p className="my-apps-state-text">Loading your applications…</p>
           ) : error ? (
-            <p className="jobs-state-error">{error}</p>
-          ) : filteredJobs.length === 0 ? (
-            <p className="jobs-state-text">
-              {hasActiveFilters
-                ? 'No jobs match your filters. Try adjusting or clearing them.'
-                : 'No open positions at the moment. Check back soon.'}
-            </p>
+            <p className="my-apps-state-error">{error}</p>
+          ) : allApplications.length === 0 ? (
+            <p className="my-apps-state-text">You haven't applied to any jobs yet.</p>
+          ) : filtered.length === 0 ? (
+            <p className="my-apps-state-text">No applications match your filters. Try adjusting or clearing them.</p>
           ) : (
-            <div className="jobs-list">
-              {filteredJobs.map((job) => (
-                <JobCard key={job.id} job={job} onApply={() => setSelectedJob(job)} />
+            <div className="my-apps-list">
+              {filtered.map((app) => (
+                <ApplicationCard key={app.application_id} application={app} />
               ))}
             </div>
           )}
         </div>
       </div>
 
-      <JobApplyDialog
-        job={selectedJob}
-        candidateId={candidateId}
-        isOpen={selectedJob !== null}
-        onClose={() => setSelectedJob(null)}
-      />
     </main>
   )
 }
 
-export default Jobs
+export default MyApplications

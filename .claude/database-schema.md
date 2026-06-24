@@ -4,7 +4,7 @@ Source of truth: [README.md](../README.md#database-schema). This file mirrors
 that ERD for quick reference by both `ai/` and `backend/` — keep it in sync
 if the schema changes.
 
-17 tables across 8 domains:
+18 tables across 8 domains:
 
 | Domain | Tables |
 |---|---|
@@ -12,7 +12,7 @@ if the schema changes.
 | Profiles | `RecruiterProfiles`, `CandidateProfiles` |
 | Company | `Companies` |
 | Jobs | `JobRoles`, `JobPostings`, `ExperienceLevels` |
-| Applications | `Applications` |
+| Applications | `Applications`, `Resumes` |
 | Skills | `SkillSets`, `CandidateSkills`, `JobRequiredSkills` |
 | Interviews | `InterviewRoundTypes`, `InterviewRounds`, `Interviews`, `InterviewQuestions` |
 | Questions | `Questions` |
@@ -142,15 +142,45 @@ if the schema changes.
 | proficiency_level | varchar |
 | is_mandatory | bit |
 
+### Resumes
+| Column | Type |
+|---|---|
+| id | uniqueidentifier PK |
+| candidate_id | uniqueidentifier FK -> CandidateProfiles |
+| file_url | varchar(500) |
+| file_name | varchar(255) |
+| parsed_text | nvarchar(MAX) NULL — JSON text extracted by CV parser |
+| uploaded_at | datetime2 |
+
+```sql
+CREATE TABLE Resumes (
+    id           uniqueidentifier PRIMARY KEY DEFAULT NEWID(),
+    candidate_id uniqueidentifier NOT NULL REFERENCES CandidateProfiles(id),
+    file_url     varchar(500)     NOT NULL,
+    file_name    varchar(255)     NOT NULL,
+    parsed_text  nvarchar(MAX)    NULL,
+    uploaded_at  datetime2        NOT NULL DEFAULT SYSUTCDATETIME()
+);
+```
+
 ### Applications
 | Column | Type |
 |---|---|
 | id | uniqueidentifier PK |
 | job_id | uniqueidentifier FK -> JobPostings |
 | candidate_id | uniqueidentifier FK -> CandidateProfiles |
-| status | varchar |
+| resume_id | uniqueidentifier FK -> Resumes NULL |
+| status | varchar — `ATS_PENDING` → `ATS_PASS` / `ATS_FAIL` → `IN_PROGRESS` → `HIRED` / `REJECTED` |
+| ats_reason | nvarchar(500) NULL — LLM-produced explanation stored after ATS runs |
 | cover_letter | nvarchar |
 | applied_at | datetime2 |
+
+> **Migrations required**:
+> ```sql
+> CREATE TABLE Resumes ( ... );   -- see above
+> ALTER TABLE Applications ADD resume_id uniqueidentifier NULL REFERENCES Resumes(id);
+> -- Legacy: ALTER TABLE Applications ADD ats_reason nvarchar(500) NULL;
+> ```
 
 ### InterviewRounds
 | Column | Type |
@@ -163,16 +193,16 @@ if the schema changes.
 | is_active | bit |
 
 ### Interviews
-| Column | Type |
-|---|---|
-| id | uniqueidentifier PK |
-| interview_round_id | uniqueidentifier FK -> InterviewRounds |
-| application_id | uniqueidentifier FK -> Applications |
-| status | varchar |
-| scheduled_at | datetime2 |
-| completed_at | datetime2 |
-| feedback | nvarchar |
-| result | varchar |
+| Column | Type | Notes |
+|---|---|---|
+| id | uniqueidentifier PK | |
+| interview_round_id | uniqueidentifier FK -> InterviewRounds | |
+| application_id | uniqueidentifier FK -> Applications | |
+| status | varchar | `Scheduled` / `In Progress` / `Pass` / `Failed` |
+| scheduled_at | datetime2 | |
+| completed_at | datetime2 | |
+| feedback | nvarchar | AI-generated text feedback about the round |
+| result | float | Final numeric score (0–10); NULL until round is scored |
 
 ### Questions
 | Column | Type |
@@ -212,8 +242,10 @@ if the schema changes.
 - `ExperienceLevels ||--o{ JobPostings` — level
 - `JobPostings ||--o{ JobRequiredSkills` — requires
 - `SkillSets ||--o{ JobRequiredSkills` — ref
+- `CandidateProfiles ||--o{ Resumes` — uploads
 - `JobPostings ||--o{ Applications` — receives
 - `CandidateProfiles ||--o{ Applications` — submits
+- `Resumes ||--o{ Applications` — attached to
 - `JobPostings ||--o{ InterviewRounds` — has
 - `InterviewRoundTypes ||--o{ InterviewRounds` — type
 - `InterviewRounds ||--o{ Interviews` — has

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import Button from '../components/Button'
 import { runAts } from '../api/applications'
-import '../css/InterviewStages.css'
+import '../css/ApplicationProgress.css'
 
 const API_BASE = (import.meta.env.VITE_API_URL as string | undefined) ?? 'http://localhost:8000'
 
@@ -25,6 +25,14 @@ interface StagesData {
   current_round_id: string | null
   ats_status: 'pending' | 'pass' | 'fail'
   ats_reason: string | null
+}
+
+interface QuestionItem {
+  question_id: string
+  question_text: string
+  candidate_answer: string | null
+  score: number | null
+  notes: string | null
 }
 
 function formatDuration(isoDate: string | null): string {
@@ -74,23 +82,47 @@ function getRoundLabel(round: RoundInfo): string {
   return 'Not Started'
 }
 
-function InterviewStages() {
+function getScoreColor(score: number): string {
+  if (score >= 7) return '#6fcf97'
+  if (score >= 4) return 'var(--color-primary)'
+  return '#e05c5c'
+}
+
+function ApplicationProgress() {
   const { applicationId } = useParams<{ applicationId: string }>()
   const navigate = useNavigate()
 
   const [data, setData] = useState<StagesData | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [atsError, setAtsError] = useState(false)
   const [openStages, setOpenStages] = useState<Set<string>>(new Set())
+  const [roundQuestions, setRoundQuestions] = useState<Record<string, QuestionItem[]>>({})
+  const [loadingQuestions, setLoadingQuestions] = useState<Record<string, boolean>>({})
   const atsTriggered = useRef(false)
+  const fetchedRounds = useRef<Set<string>>(new Set())
 
   function toggleStage(id: string) {
     setOpenStages(prev => {
       const next = new Set(prev)
-      if (next.has(id)) next.delete(id)
-      else next.add(id)
+      if (next.has(id)) {
+        next.delete(id)
+      } else {
+        next.add(id)
+      }
       return next
     })
+  }
+
+  function fetchRoundQuestions(round: RoundInfo) {
+    if (!round.interview_id || fetchedRounds.current.has(round.interview_round_id)) return
+    fetchedRounds.current.add(round.interview_round_id)
+    setLoadingQuestions(prev => ({ ...prev, [round.interview_round_id]: true }))
+    fetch(`${API_BASE}/api/applications/${applicationId}/interviews/${round.interview_id}/questions`)
+      .then(res => res.ok ? res.json() as Promise<QuestionItem[]> : Promise.resolve([]))
+      .then(items => setRoundQuestions(prev => ({ ...prev, [round.interview_round_id]: items })))
+      .catch(() => setRoundQuestions(prev => ({ ...prev, [round.interview_round_id]: [] })))
+      .finally(() => setLoadingQuestions(prev => ({ ...prev, [round.interview_round_id]: false })))
   }
 
   const currentRound = data?.rounds.find(
@@ -123,15 +155,32 @@ function InterviewStages() {
             : prev,
         )
       })
-      .catch(() => {})
+      .catch(() => {
+        setAtsError(true)
+      })
   }, [applicationId, data])
+
+  // Fetch questions when a completed round is opened for the first time
+  useEffect(() => {
+    if (!data) return
+    for (const round of data.rounds) {
+      if (
+        openStages.has(round.interview_round_id) &&
+        (round.status ?? '').toLowerCase() === 'completed' &&
+        !fetchedRounds.current.has(round.interview_round_id)
+      ) {
+        fetchRoundQuestions(round)
+      }
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [openStages, data])
 
   const atsOpen = openStages.has('ats')
 
   return (
-    <main className="interview-stages-page">
-      <div className="interview-stages-body">
-        <h1 className="interview-stages-heading">Application Progress</h1>
+    <main className="app-progress-page">
+      <div className="app-progress-body">
+        <h1 className="app-progress-heading">Application Progress</h1>
 
         {loading && <p className="stages-status-text">Loading…</p>}
         {error && <p className="stages-status-text stages-error">{error}</p>}
@@ -139,7 +188,7 @@ function InterviewStages() {
         {data && (
           <>
             {/* Bubble timeline */}
-            <div className="interview-stages-list">
+            <div className="app-progress-timeline">
               <div className="stage-bubble-wrapper">
                 <div
                   className={`stage-bubble${data.ats_status === 'pending' ? ' stage-bubble--ats-pending' : ''}`}
@@ -185,7 +234,11 @@ function InterviewStages() {
 
                 {atsOpen && (
                   <div className="ap-stage-panel">
-                    {data.ats_status === 'pending' ? (
+                    {atsError ? (
+                      <p className="ap-stage-detail-reason ap-stage-detail-value--fail">
+                        ATS screening encountered an issue. Please try again later or contact support.
+                      </p>
+                    ) : data.ats_status === 'pending' ? (
                       <p className="ap-stage-detail-reason ap-stage-detail-value--pending">
                         ATS screening is in progress. Please check back shortly.
                       </p>
@@ -218,6 +271,8 @@ function InterviewStages() {
                   : resultLower.includes('fail')
                   ? 'fail'
                   : 'pending'
+                const questions = roundQuestions[round.interview_round_id] ?? []
+                const questionsLoading = loadingQuestions[round.interview_round_id] ?? false
 
                 return (
                   <div
@@ -274,6 +329,41 @@ function InterviewStages() {
                             {round.feedback && (
                               <p className="ap-stage-detail-reason">{round.feedback}</p>
                             )}
+
+                            {/* Q&A section */}
+                            {questionsLoading ? (
+                              <p className="ap-qa-loading">Loading questions…</p>
+                            ) : questions.length > 0 ? (
+                              <div className="ap-qa-section">
+                                <p className="ap-qa-section-label">Interview Q&amp;A</p>
+                                <div className="ap-qa-list">
+                                  {questions.map((q, qi) => (
+                                    <div key={q.question_id} className="ap-qa-item">
+                                      <div className="ap-qa-header">
+                                        <span className="ap-qa-num">Q{qi + 1}</span>
+                                        {q.score != null && (
+                                          <span
+                                            className="ap-qa-score"
+                                            style={{ color: getScoreColor(q.score) }}
+                                          >
+                                            {q.score}/10
+                                          </span>
+                                        )}
+                                      </div>
+                                      <p className="ap-qa-question">{q.question_text}</p>
+                                      {q.candidate_answer ? (
+                                        <p className="ap-qa-answer">{q.candidate_answer}</p>
+                                      ) : (
+                                        <p className="ap-qa-answer ap-qa-answer--empty">No answer recorded</p>
+                                      )}
+                                      {q.notes && (
+                                        <p className="ap-qa-notes">{q.notes}</p>
+                                      )}
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            ) : null}
                           </>
                         )}
                       </div>
@@ -288,10 +378,10 @@ function InterviewStages() {
         {allRoundsCompleted ? (
           <p className="stages-completed-text">All interview rounds have been completed.</p>
         ) : (
-          data && data.ats_status !== 'fail' && (
+          data && data.ats_status !== 'fail' && !atsError && (
             <Button
               variant="primary"
-              className="interview-stages-cta"
+              className="app-progress-cta"
               onClick={() => {
                 if (currentRound?.interview_id) {
                   navigate(`/interview-room/${currentRound.interview_id}`)
@@ -308,4 +398,4 @@ function InterviewStages() {
   )
 }
 
-export default InterviewStages
+export default ApplicationProgress

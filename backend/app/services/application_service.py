@@ -1,12 +1,27 @@
 import uuid
 
 from app.database import get_connection
-from app.schemas.applications import ApplyResponse, InterviewRoundInfo, InterviewStagesResponse
+from app.schemas.applications import ATSCheckResponse, ApplyResponse, InterviewQuestionItem, InterviewRoundInfo, InterviewStagesResponse, MyApplicationItem
 
 ACTIVE_STATUSES = ("Scheduled", "In Progress")
 
+# Application statuses that indicate ATS has already passed
+_ATS_PASSED_STATUSES = ("ATS_PASS", "IN_PROGRESS", "HIRED")
+_ATS_FAILED_STATUSES = ("ATS_FAIL", "REJECTED")
 
-def apply_to_job(job_posting_id: str, candidate_id: str) -> ApplyResponse:
+
+def apply_to_job(
+    job_posting_id: str,
+    candidate_id: str,
+    cv_content: bytes | None = None,
+    cv_filename: str | None = None,
+) -> ApplyResponse:
+    resume_id: str | None = None
+    if cv_content:
+        from app.services.cv_parser_service import parse_and_store_cv
+        cv_result = parse_and_store_cv(cv_content, cv_filename, candidate_id)
+        resume_id = cv_result["resume_id"]
+
     conn = get_connection()
     try:
         cur = conn.cursor()
@@ -39,16 +54,23 @@ def apply_to_job(job_posting_id: str, candidate_id: str) -> ApplyResponse:
         if row:
             application_id = str(row[0])
             created = False
+            if resume_id:
+                cur.execute(
+                    "UPDATE Applications SET resume_id = ? WHERE id = ?",
+                    resume_id,
+                    application_id,
+                )
         else:
             application_id = str(uuid.uuid4())
             cur.execute(
                 """
-                INSERT INTO Applications (id, job_id, candidate_id, status, cover_letter, applied_at)
-                VALUES (?, ?, ?, 'Applied', NULL, GETDATE())
+                INSERT INTO Applications (id, job_id, candidate_id, resume_id, status, cover_letter, applied_at)
+                VALUES (?, ?, ?, ?, 'ATS_PENDING', NULL, GETDATE())
                 """,
                 application_id,
                 job_posting_id,
                 candidate_id,
+                resume_id,
             )
             created = True
 
@@ -95,14 +117,27 @@ def get_interview_stages(application_id: str) -> InterviewStagesResponse:
     try:
         cur = conn.cursor()
 
-        # Resolve job_posting_id from application
-        cur.execute("SELECT job_id FROM Applications WHERE id = ?", application_id)
+        # Resolve job_posting_id and ATS info from application
+        cur.execute(
+            "SELECT job_id, status, ats_reason FROM Applications WHERE id = ?",
+            application_id,
+        )
         row = cur.fetchone()
         if not row:
             raise ValueError(f"Application {application_id} not found")
         job_posting_id = str(row[0])
+        app_status = row[1]
+        ats_reason: str | None = row[2]
 
-        # Fetch rounds joined with interview type name and interview status
+        # Derive ats_status from application status
+        if app_status in _ATS_PASSED_STATUSES:
+            ats_status = "pass"
+        elif app_status in _ATS_FAILED_STATUSES:
+            ats_status = "fail"
+        else:
+            ats_status = "pending"
+
+        # Fetch rounds joined with interview type name and all interview detail fields
         cur.execute(
             """
             SELECT
@@ -110,7 +145,14 @@ def get_interview_stages(application_id: str) -> InterviewStagesResponse:
                 irt.name         AS title,
                 ir.round_order,
                 i.id             AS interview_id,
-                i.status
+                i.status,
+                i.feedback,
+                i.result,
+                i.scheduled_at,
+                i.completed_at,
+                (SELECT AVG(CAST(iq2.score AS FLOAT))
+                 FROM InterviewQuestions iq2
+                 WHERE iq2.interview_id = i.id) AS avg_score
             FROM InterviewRounds ir
             JOIN InterviewRoundTypes irt ON irt.id = ir.interview_round_type_id
             LEFT JOIN Interviews i
@@ -133,6 +175,11 @@ def get_interview_stages(application_id: str) -> InterviewStagesResponse:
             round_order = r[2]
             interview_id = str(r[3]) if r[3] else None
             status = r[4]
+            feedback: str | None = r[5]
+            result: str | None = r[6]
+            scheduled_at: str | None = r[7].isoformat() if r[7] else None
+            completed_at: str | None = r[8].isoformat() if r[8] else None
+            avg_score: float | None = float(r[9]) if r[9] is not None else None
 
             rounds.append(
                 InterviewRoundInfo(
@@ -141,6 +188,11 @@ def get_interview_stages(application_id: str) -> InterviewStagesResponse:
                     title=title,
                     round_order=round_order,
                     status=status,
+                    feedback=feedback,
+                    result=result,
+                    scheduled_at=scheduled_at,
+                    completed_at=completed_at,
+                    avg_score=avg_score,
                 )
             )
 
@@ -152,6 +204,137 @@ def get_interview_stages(application_id: str) -> InterviewStagesResponse:
             application_id=application_id,
             rounds=rounds,
             current_round_id=current_round_id,
+            ats_status=ats_status,
+            ats_reason=ats_reason,
         )
     finally:
         conn.close()
+
+
+def get_my_applications(candidate_id: str) -> list[MyApplicationItem]:
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT
+                a.id, a.job_id, a.status, a.applied_at,
+                jp.description, jp.location, jp.job_type, jp.salary_range,
+                jr.id, jr.title,
+                el.id, el.name,
+                c.name
+            FROM Applications a
+            JOIN JobPostings jp ON jp.id = a.job_id
+            JOIN JobRoles jr ON jr.id = jp.job_role_id
+            JOIN ExperienceLevels el ON el.id = jp.experience_level_id
+            JOIN Companies c ON c.id = jp.company_id
+            WHERE a.candidate_id = ?
+            ORDER BY a.applied_at DESC
+            """,
+            candidate_id,
+        )
+        rows = cur.fetchall()
+        return [
+            MyApplicationItem(
+                application_id=str(r[0]),
+                job_id=str(r[1]),
+                status=r[2],
+                applied_at=r[3].isoformat() if r[3] else "",
+                description=r[4] or "",
+                location=r[5],
+                job_type=r[6],
+                salary_range=r[7],
+                job_role_id=int(r[8]),
+                job_role_title=r[9],
+                experience_level_id=int(r[10]),
+                experience_level_name=r[11],
+                company=r[12],
+            )
+            for r in rows
+        ]
+    finally:
+        conn.close()
+
+
+def get_interview_questions(interview_id: str) -> list[InterviewQuestionItem]:
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT q.id, q.question_text, iq.candidate_answer, iq.score, iq.notes
+            FROM InterviewQuestions iq
+            JOIN Questions q ON q.id = iq.question_id
+            WHERE iq.interview_id = ?
+            ORDER BY q.created_at
+            """,
+            interview_id,
+        )
+        rows = cur.fetchall()
+        return [
+            InterviewQuestionItem(
+                question_id=str(r[0]),
+                question_text=r[1],
+                candidate_answer=r[2],
+                score=r[3],
+                notes=r[4],
+            )
+            for r in rows
+        ]
+    finally:
+        conn.close()
+
+
+async def run_ats_for_application(application_id: str) -> ATSCheckResponse:
+    """Run ATS eligibility check for an application and persist the result.
+
+    If ATS has already run (status is not ATS_PENDING), returns the cached result immediately.
+    Uses parsed CV text when available; falls back to profile/skills data.
+    """
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT job_id, candidate_id, status, ats_reason, resume_id FROM Applications WHERE id = ?",
+            application_id,
+        )
+        row = cur.fetchone()
+        if not row:
+            raise ValueError(f"Application {application_id} not found")
+        job_id, candidate_id, status, ats_reason = str(row[0]), str(row[1]), row[2], row[3]
+        resume_id = str(row[4]) if row[4] else None
+
+        parsed_text: str | None = None
+        if resume_id:
+            cur.execute("SELECT parsed_text FROM Resumes WHERE id = ?", resume_id)
+            resume_row = cur.fetchone()
+            if resume_row and resume_row[0]:
+                parsed_text = str(resume_row[0])
+    finally:
+        conn.close()
+
+    # Return cached result if ATS already ran
+    if status in _ATS_PASSED_STATUSES:
+        return ATSCheckResponse(eligible=True, reason=ats_reason or "Candidate passed ATS screening.")
+    if status in _ATS_FAILED_STATUSES:
+        return ATSCheckResponse(eligible=False, reason=ats_reason or "Candidate did not pass ATS screening.")
+
+    # Run the LLM-powered ATS check
+    from app.ai.ai_services.ats_service import check_ats_eligibility
+    result = await check_ats_eligibility(candidate_id, job_id, parsed_text=parsed_text)
+
+    new_status = "ATS_PASS" if result.eligible else "ATS_FAIL"
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE Applications SET status = ?, ats_reason = ? WHERE id = ?",
+            new_status,
+            result.reason,
+            application_id,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    return ATSCheckResponse(eligible=result.eligible, reason=result.reason)

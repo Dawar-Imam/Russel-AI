@@ -1,28 +1,35 @@
 import { useEffect, useRef, useState } from 'react'
-import { useLocation, useNavigate } from 'react-router-dom'
+import { NavLink, useLocation, useNavigate } from 'react-router-dom'
 import '../css/UserMenu.css'
 
 type UserType = 'candidate' | 'recruiter' | null
 
 function readAuthState() {
   const userType = sessionStorage.getItem('userType') as UserType
-  const isSignedIn = userType === 'candidate'
-    ? !!sessionStorage.getItem('candidateId')
-    : userType === 'recruiter'
-      ? !!sessionStorage.getItem('recruiterId')
-      : false
-  const email = userType === 'candidate'
-    ? (sessionStorage.getItem('candidateEmail') ?? '')
-    : userType === 'recruiter'
-      ? (sessionStorage.getItem('recruiterEmail') ?? '')
-      : ''
+  const isSignedIn =
+    userType === 'candidate'
+      ? !!sessionStorage.getItem('candidateId')
+      : userType === 'recruiter'
+        ? !!sessionStorage.getItem('recruiterId')
+        : false
+  const email =
+    userType === 'candidate'
+      ? (sessionStorage.getItem('candidateEmail') ?? '')
+      : userType === 'recruiter'
+        ? (sessionStorage.getItem('recruiterEmail') ?? '')
+        : ''
   return { isSignedIn, email, userType }
 }
+
+const CANDIDATE_NAV = [
+  { label: 'Dashboard', to: '/my-applications', activePrefix: '/my-applications' },
+  { label: 'Job Market', to: '/jobs', activePrefix: '/jobs' },
+]
 
 function UserMenu() {
   const navigate = useNavigate()
   const location = useLocation()
-  const menuRef = useRef<HTMLDivElement>(null)
+  const dropdownRef = useRef<HTMLDivElement>(null)
 
   const [isOpen, setIsOpen] = useState(false)
   const [showConfirm, setShowConfirm] = useState(false)
@@ -34,7 +41,7 @@ function UserMenu() {
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
-      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+      if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
         setIsOpen(false)
         setShowConfirm(false)
       }
@@ -42,11 +49,6 @@ function UserMenu() {
     if (isOpen) document.addEventListener('mousedown', handleClickOutside)
     return () => document.removeEventListener('mousedown', handleClickOutside)
   }, [isOpen])
-
-  function handleToggle() {
-    setIsOpen((prev) => !prev)
-    if (isOpen) setShowConfirm(false)
-  }
 
   function handleLogout() {
     sessionStorage.removeItem('candidateId')
@@ -58,14 +60,7 @@ function UserMenu() {
     setAuthState({ isSignedIn: false, email: '', userType: null })
     setIsOpen(false)
     setShowConfirm(false)
-
-    const isProtectedRoute =
-      location.pathname.startsWith('/interview-stages') ||
-      location.pathname.startsWith('/interview-room') ||
-      location.pathname.startsWith('/profile')
-    if (isProtectedRoute) {
-      navigate('/')
-    }
+    navigate('/')
   }
 
   function handleViewProfile() {
@@ -74,109 +69,112 @@ function UserMenu() {
   }
 
   const { isSignedIn, email, userType } = authState
+  const pathname = location.pathname
+
+  if (!isSignedIn && pathname === '/jobs') return null
 
   return (
-    <div className="user-menu" ref={menuRef}>
-      <button
-        className={`user-menu-trigger${isSignedIn ? ' user-menu-trigger--active' : ''}`}
-        onClick={handleToggle}
-        aria-label={isSignedIn ? 'Account menu' : 'Sign in'}
-        aria-expanded={isOpen}
-      >
-        <svg
-          className="user-menu-icon"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth="2"
-          strokeLinecap="round"
-          strokeLinejoin="round"
-        >
-          <circle cx="12" cy="8" r="4" />
-          <path d="M4 20c0-4 3.6-7 8-7s8 3 8 7" />
-        </svg>
-        <span className={`user-menu-dot${isSignedIn ? ' user-menu-dot--online' : ''}`} />
-      </button>
+    <nav className="navbar">
+      {/* Logo */}
+      <div className="navbar-logo" onClick={() => navigate('/')}>
+        <span className="navbar-logo-primary">Russel</span>
+        <span className="navbar-logo-accent">.AI</span>
+      </div>
 
-      <div className={`user-menu-dropdown${isOpen ? ' user-menu-dropdown--open' : ''}`}>
+      {/* Nav links — candidates only */}
+      {isSignedIn && userType === 'candidate' ? (
+        <div className="navbar-links">
+          {CANDIDATE_NAV.map(({ label, to, activePrefix }) => (
+            <NavLink
+              key={label}
+              to={to}
+              className={`navbar-link${pathname.startsWith(activePrefix) ? ' navbar-link--active' : ''}`}
+            >
+              {label}
+            </NavLink>
+          ))}
+        </div>
+      ) : (
+        <div className="navbar-links" />
+      )}
+
+      {/* Right side */}
+      <div className="navbar-right">
         {isSignedIn ? (
-          showConfirm ? (
-            <div className="user-menu-confirm">
-              <p className="user-menu-confirm-text">Are you sure you want to log out?</p>
-              <button className="user-menu-btn user-menu-btn--danger" onClick={handleLogout}>
-                Yes, Log Out
-              </button>
-              <button
-                className="user-menu-btn user-menu-btn--ghost"
-                onClick={() => setShowConfirm(false)}
-              >
-                Cancel
-              </button>
-            </div>
-          ) : (
-            <>
-              <div className="user-menu-profile">
-                <div className="user-menu-avatar">
-                  {email ? email[0].toUpperCase() : 'U'}
-                </div>
-                <div className="user-menu-info">
-                  <span className="user-menu-status">
-                    {userType === 'recruiter' ? 'Recruiter' : 'Candidate'}
-                  </span>
-                  <span className="user-menu-email" title={email}>
-                    {email || 'User'}
-                  </span>
-                </div>
+          <>
+          <span className="navbar-signed-in-label">
+            Signed in as {userType === 'recruiter' ? 'Recruiter' : 'Candidate'}
+          </span>
+          <div className="navbar-user" ref={dropdownRef}>
+            <button
+              className="navbar-avatar-btn"
+              onClick={() => setIsOpen((p) => !p)}
+              aria-expanded={isOpen}
+              aria-label="Account menu"
+            >
+              <div className="navbar-avatar">
+                {email ? email[0].toUpperCase() : 'U'}
               </div>
-              <div className="user-menu-divider" />
-              <button className="user-menu-btn user-menu-btn--profile" onClick={handleViewProfile}>
-                <svg
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <circle cx="12" cy="8" r="4" />
-                  <path d="M4 20c0-4 3.6-7 8-7s8 3 8 7" />
-                </svg>
-                My Profile
-              </button>
-              <div className="user-menu-divider" />
-              <button
-                className="user-menu-btn user-menu-btn--logout"
-                onClick={() => setShowConfirm(true)}
-              >
-                <svg
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
-                  <polyline points="16 17 21 12 16 7" />
-                  <line x1="21" y1="12" x2="9" y2="12" />
-                </svg>
-                Log Out
-              </button>
-            </>
-          )
+              <span className="navbar-user-dot" />
+            </button>
+
+            <div className={`navbar-dropdown${isOpen ? ' navbar-dropdown--open' : ''}`}>
+              {showConfirm ? (
+                <div className="navbar-confirm">
+                  <p className="navbar-confirm-text">Are you sure you want to log out?</p>
+                  <button className="navbar-dd-btn navbar-dd-btn--danger" onClick={handleLogout}>
+                    Yes, Log Out
+                  </button>
+                  <button
+                    className="navbar-dd-btn navbar-dd-btn--ghost"
+                    onClick={() => setShowConfirm(false)}
+                  >
+                    Cancel
+                  </button>
+                </div>
+              ) : (
+                <>
+                  <div className="navbar-dd-profile">
+                    <div className="navbar-dd-avatar">
+                      {email ? email[0].toUpperCase() : 'U'}
+                    </div>
+                    <div className="navbar-dd-info">
+                      <span className="navbar-dd-role">
+                        {userType === 'recruiter' ? 'Recruiter' : 'Candidate'}
+                      </span>
+                      <span className="navbar-dd-email" title={email}>
+                        {email || 'User'}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="navbar-dd-divider" />
+                  <button className="navbar-dd-btn navbar-dd-btn--profile" onClick={handleViewProfile}>
+                    My Profile
+                  </button>
+                  <div className="navbar-dd-divider" />
+                  <button
+                    className="navbar-dd-btn navbar-dd-btn--logout"
+                    onClick={() => setShowConfirm(true)}
+                  >
+                    Log Out
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+          </>
         ) : (
-          <button
-            className="user-menu-btn user-menu-btn--signin"
-            onClick={() => {
-              setIsOpen(false)
-              navigate('/auth')
-            }}
-          >
-            Sign In
-          </button>
+          <>
+            <button className="navbar-auth-btn" onClick={() => navigate('/auth')}>
+              Sign In
+            </button>
+            <button className="navbar-auth-btn" onClick={() => navigate('/auth')}>
+              Sign Up
+            </button>
+          </>
         )}
       </div>
-    </div>
+    </nav>
   )
 }
 

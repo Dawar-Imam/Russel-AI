@@ -2,6 +2,7 @@ from app.ai.ai_services.answer_scoring_service import grade_candidate_answers
 from app.ai.ai_services.cv_relevance_service import fetch_candidate_cv_relevance
 from app.ai.ai_services.question_bank_service import fetch_interview_context, fetch_questions_from_db
 from app.ai.ai_services.question_generation_service import generate_questions
+from app.ai.interview_tools.schemas import CandidateCVRelevance
 from app.ai.interview_tools.state import AgentState
 
 
@@ -21,9 +22,13 @@ async def generate_questions_tool(state: AgentState) -> dict:
             job_role_id=state["job_role_id"],
             experience_level_id=state["experience_level_id"],
         )
-        candidate_relevance = await fetch_candidate_cv_relevance(
-            candidate_id=state["candidate_id"],
-            job_posting_id=state["job_posting_id"],
+        parsed_cv_text = await fetch_candidate_cv_relevance(
+            application_id=state["application_id"],
+        )
+        candidate_relevance = CandidateCVRelevance(
+            job_experience_summary=parsed_cv_text,
+            relevant_skills=[],
+            relevant_projects=[],
         )
 
         generated = await generate_questions(

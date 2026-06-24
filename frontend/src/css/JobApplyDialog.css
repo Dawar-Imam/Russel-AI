@@ -108,6 +108,51 @@
   overflow-y: auto;
 }
 
+.job-apply-optional {
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--color-text-muted);
+  font-size: 10px;
+}
+
+.job-apply-cv-label {
+  cursor: pointer;
+  display: block;
+}
+
+.job-apply-cv-input {
+  display: none;
+}
+
+.job-apply-cv-btn {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px dashed var(--color-border);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+  transition: border-color 0.2s ease, color 0.2s ease, background-color 0.2s ease;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.job-apply-cv-label:hover .job-apply-cv-btn {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+  background-color: rgba(245, 166, 35, 0.04);
+}
+
+.job-apply-cv-icon {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+
 .job-apply-error {
   margin: 0;
   font-size: 13px;

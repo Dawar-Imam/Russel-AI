@@ -1,10 +1,8 @@
 import { useEffect, useState, type ChangeEvent, type FormEvent } from 'react'
-import { Link, useLocation, useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import Button from '../components/Button'
 import Input from '../components/Input'
 import Select from '../components/Select'
-import BackButton from '../components/BackButton'
-import logo from '../utils/logo.png'
 import { fetchSignupMetadata, type ExperienceLevel, type JobRole } from '../api/auth'
 import { fetchRecruiterJobs, postJob, type JobListItem } from '../api/jobs'
 import '../css/RecruiterDashboard.css'
@@ -113,16 +111,8 @@ function RecruiterDashboard() {
 
   return (
     <main className="rd-page">
-      <BackButton />
       <div className="rd-scroll-area">
       <header className="rd-header">
-        <Link to="/" className="rd-brand">
-          <span className="rd-brand-title">
-            <span className="rd-brand-primary">Russel</span>
-            <span className="rd-brand-accent">.AI</span>
-          </span>
-          <img src={logo} alt="Russel.AI logo" className="rd-logo" />
-        </Link>
         <div className="rd-header-row">
           <h1 className="rd-heading">Recruiter Dashboard</h1>
           <Button variant="primary" onClick={handleOpenForm}>

@@ -1,4 +1,4 @@
-.interview-stages-page {
+.app-progress-page {
   height: 100vh;
   overflow: hidden;
   background-color: var(--color-bg);
@@ -12,7 +12,7 @@
   padding: var(--space-8) var(--space-6) 0;
 }
 
-.interview-stages-body {
+.app-progress-body {
   flex: 1;
   width: 100%;
   max-width: 900px;
@@ -26,11 +26,11 @@
   scrollbar-color: var(--color-border) transparent;
 }
 
-.interview-stages-body::-webkit-scrollbar {
+.app-progress-body::-webkit-scrollbar {
   width: 4px;
 }
 
-.interview-stages-body::-webkit-scrollbar-thumb {
+.app-progress-body::-webkit-scrollbar-thumb {
   background: var(--color-border);
   border-radius: 2px;
 }
@@ -46,7 +46,7 @@
   color: #e05c5c;
 }
 
-.interview-stages-heading {
+.app-progress-heading {
   margin: var(--space-6) 0 var(--space-8);
   font-size: 28px;
   font-weight: 700;
@@ -55,7 +55,7 @@
   text-align: center;
 }
 
-.interview-stages-list {
+.app-progress-timeline {
   position: relative;
   width: 100%;
   max-width: 840px;
@@ -67,7 +67,7 @@
   margin: var(--space-4) auto var(--space-8);
 }
 
-.interview-stages-list::before {
+.app-progress-timeline::before {
   content: '';
   position: absolute;
   top: 50%;
@@ -142,7 +142,7 @@
   transform: translateX(-50%) scale(1);
 }
 
-.interview-stages-cta {
+.app-progress-cta {
   position: fixed;
   bottom: var(--space-8);
   right: var(--space-8);
@@ -164,45 +164,6 @@
 
 .stage-bubble--ats-pending {
   animation: ats-pending-glow 1.5s ease-in-out infinite;
-}
-
-/* ── ATS result card ── */
-.ats-result-card {
-  display: flex;
-  align-items: flex-start;
-  gap: var(--space-3);
-  padding: var(--space-3) var(--space-4);
-  border-radius: var(--radius-sm);
-  max-width: 520px;
-  width: 100%;
-  margin-bottom: var(--space-4);
-}
-
-.ats-result-card--pass,
-.ats-result-card--fail {
-  background: rgba(245, 166, 35, 0.07);
-  border: 1px solid rgba(245, 166, 35, 0.28);
-}
-
-.ats-result-icon {
-  font-size: 15px;
-  line-height: 1.5;
-  flex-shrink: 0;
-  color: inherit;
-}
-
-.ats-result-card--pass .ats-result-icon,
-.ats-result-card--fail .ats-result-icon { color: var(--color-primary); }
-
-.ats-result-text {
-  margin: 0;
-  font-size: 13px;
-  line-height: 1.55;
-  color: var(--color-text-secondary);
-}
-
-.stages-ats-fail-msg {
-  color: var(--color-primary);
 }
 
 /* ── Stage accordion list ── */
@@ -375,6 +336,93 @@
   color: var(--color-text-secondary);
 }
 
+/* ── Q&A section ── */
+.ap-qa-loading {
+  margin: var(--space-4) 0 0;
+  font-size: 13px;
+  color: var(--color-text-muted);
+}
+
+.ap-qa-section {
+  margin-top: var(--space-4);
+  border-top: 1px solid var(--color-border);
+  padding-top: var(--space-4);
+}
+
+.ap-qa-section-label {
+  margin: 0 0 var(--space-3);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--color-text-muted);
+}
+
+.ap-qa-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.ap-qa-item {
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-3) var(--space-4);
+}
+
+.ap-qa-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-2);
+}
+
+.ap-qa-num {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--color-primary);
+}
+
+.ap-qa-score {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.ap-qa-question {
+  margin: 0 0 var(--space-2);
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  line-height: 1.5;
+}
+
+.ap-qa-answer {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--color-text-secondary);
+  line-height: 1.55;
+  padding-left: var(--space-3);
+  border-left: 2px solid var(--color-border);
+}
+
+.ap-qa-answer--empty {
+  color: var(--color-text-muted);
+  font-style: italic;
+}
+
+.ap-qa-notes {
+  margin: var(--space-2) 0 0;
+  font-size: 11px;
+  color: var(--color-text-muted);
+  line-height: 1.5;
+  font-style: italic;
+}
+
 @media (max-width: 600px) {
   .stage-bubble-wrapper {
     width: 100px;
@@ -390,7 +438,7 @@
     bottom: -22px;
   }
 
-  .interview-stages-cta {
+  .app-progress-cta {
     position: static;
     margin-top: var(--space-8);
   }

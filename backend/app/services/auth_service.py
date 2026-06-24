@@ -6,9 +6,7 @@ from pathlib import Path
 
 from app.database import get_connection
 from app.schemas.auth import CandidateProfileResponse, ExperienceLevelItem, JobRoleItem, RecruiterProfileResponse, RecruiterSigninResponse, RecruiterSignupResponse, SigninResponse, SignupMetadataResponse, SignupResponse, SkillItem
-from app.services.cv_parser_service import parse_pdf_cv
-
-_UPLOADS_DIR = Path(__file__).parent.parent.parent / "uploads" / "resumes"
+from app.services.cv_parser_service import parse_and_store_cv
 
 
 def _hash_password(password: str) -> str:
@@ -101,18 +99,40 @@ def signup_candidate(
 
         experience_level_id = _get_experience_level_id(conn, experience_years)
 
-        cv_data: dict[str, str | None] = {"bio": None, "linkedin_url": None, "current_location": None}
-        resume_url: str | None = None
-
-        if cv_content:
-            cv_data = parse_pdf_cv(cv_content)
-            _UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
-            ext = Path(cv_filename).suffix if cv_filename else ".pdf"
-            filename = f"{uuid.uuid4()}{ext}"
-            (_UPLOADS_DIR / filename).write_bytes(cv_content)
-            resume_url = f"uploads/resumes/{filename}"
-
+        # Pre-generate IDs so parse_and_store_cv can reference the candidate
         user_id = str(uuid.uuid4())
+        candidate_id = str(uuid.uuid4())
+
+    finally:
+        conn.close()
+
+    # Parse and store CV outside the connection (opens its own connections internally)
+    cv_data: dict = {"bio": None, "linkedin_url": None, "current_location": None, "total_experience_years": None, "skills": []}
+    resume_url: str | None = None
+
+    if cv_content:
+        result = parse_and_store_cv(cv_content, cv_filename, candidate_id)
+        cv_data = result
+        resume_url = result["file_url"]
+
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+
+        # Re-check email uniqueness in case of race condition
+        cur.execute("SELECT id FROM Users WHERE email = ?", email)
+        if cur.fetchone():
+            raise ValueError("An account with this email already exists.")
+
+        cur.execute("SELECT id FROM Roles WHERE name = 'Candidate'")
+        row = cur.fetchone()
+        candidate_role_id = int(row[0]) if row else 3
+
+        experience_level_id = _get_experience_level_id(conn, experience_years)
+
+        if cv_data.get("total_experience_years") is not None:
+            experience_level_id = _get_experience_level_id(conn, float(cv_data["total_experience_years"]))
+
         cur.execute(
             """
             INSERT INTO Users
@@ -127,7 +147,6 @@ def signup_candidate(
             candidate_role_id,
         )
 
-        candidate_id = str(uuid.uuid4())
         cur.execute(
             """
             INSERT INTO CandidateProfiles
@@ -144,16 +163,26 @@ def signup_candidate(
             cv_data["current_location"],
         )
 
-        for skill_id in skill_ids:
+        # Merge manually selected skills with CV-extracted skills.
+        # CV-parsed proficiency/years take precedence for overlapping skills.
+        skill_data: dict[int, tuple[str, int]] = {}
+        for sid in skill_ids:
+            skill_data[sid] = ("Intermediate", int(experience_years))
+        for cv_skill in cv_data.get("skills", []):
+            sid = cv_skill["skill_id"]
+            skill_data[sid] = (cv_skill["proficiency_level"], cv_skill["years_of_experience"])
+
+        for skill_id, (proficiency, years) in skill_data.items():
             cur.execute(
                 """
                 INSERT INTO CandidateSkills (id, candidate_id, skill_id, proficiency_level, years_of_experience)
-                VALUES (?, ?, ?, 'Intermediate', ?)
+                VALUES (?, ?, ?, ?, ?)
                 """,
                 str(uuid.uuid4()),
                 candidate_id,
                 skill_id,
-                int(experience_years),
+                proficiency,
+                years,
             )
 
         conn.commit()
@@ -359,6 +388,80 @@ def get_recruiter_profile(recruiter_id: str) -> RecruiterProfileResponse:
         )
     finally:
         conn.close()
+
+
+def update_candidate_cv(candidate_id: str, cv_content: bytes, cv_filename: str | None) -> str:
+    """Parse a new CV, store it in Resumes, and update the candidate's profile + skills. Returns resume_id."""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM CandidateProfiles WHERE id = ?", candidate_id)
+        if not cur.fetchone():
+            raise ValueError("Candidate profile not found.")
+    finally:
+        conn.close()
+
+    result = parse_and_store_cv(cv_content, cv_filename, candidate_id)
+
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+
+        set_clauses: list[str] = ["resume_url = ?", "updated_at = GETDATE()"]
+        params: list = [result["file_url"]]
+
+        if result.get("bio"):
+            set_clauses.insert(0, "bio = ?")
+            params.insert(0, result["bio"])
+        if result.get("linkedin_url"):
+            set_clauses.insert(0, "linkedin_url = ?")
+            params.insert(0, result["linkedin_url"])
+        if result.get("current_location"):
+            set_clauses.insert(0, "current_location = ?")
+            params.insert(0, result["current_location"])
+        if result.get("total_experience_years") is not None:
+            exp_level_id = _get_experience_level_id(conn, float(result["total_experience_years"]))
+            set_clauses.insert(0, "experience_level_id = ?")
+            params.insert(0, exp_level_id)
+
+        params.append(candidate_id)
+        cur.execute(
+            f"UPDATE CandidateProfiles SET {', '.join(set_clauses)} WHERE id = ?",
+            *params,
+        )
+
+        for skill in result.get("skills", []):
+            cur.execute(
+                "SELECT id FROM CandidateSkills WHERE candidate_id = ? AND skill_id = ?",
+                candidate_id,
+                skill["skill_id"],
+            )
+            existing = cur.fetchone()
+            if existing:
+                cur.execute(
+                    """UPDATE CandidateSkills
+                    SET proficiency_level = ?, years_of_experience = ?
+                    WHERE id = ?""",
+                    skill["proficiency_level"],
+                    skill["years_of_experience"],
+                    str(existing[0]),
+                )
+            else:
+                cur.execute(
+                    """INSERT INTO CandidateSkills (id, candidate_id, skill_id, proficiency_level, years_of_experience)
+                    VALUES (?, ?, ?, ?, ?)""",
+                    str(uuid.uuid4()),
+                    candidate_id,
+                    skill["skill_id"],
+                    skill["proficiency_level"],
+                    skill["years_of_experience"],
+                )
+
+        conn.commit()
+    finally:
+        conn.close()
+
+    return result["resume_id"]
 
 
 def signin_recruiter(email: str, password: str) -> RecruiterSigninResponse:

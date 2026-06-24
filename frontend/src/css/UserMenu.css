@@ -1,67 +1,171 @@
-.user-menu {
+/* ── Navbar shell ── */
+.navbar {
   position: fixed;
-  top: var(--space-6);
-  right: var(--space-6);
+  top: 14px;
+  left: 25%;
+  right: 25%;
   z-index: 200;
+  height: 48px;
+  background: rgba(13, 13, 13, 0.55);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 14px;
+  display: flex;
+  align-items: center;
+  padding: 0 20px;
+  gap: 0;
 }
 
-/* ── Trigger button ── */
-.user-menu-trigger {
+/* ── Logo ── */
+.navbar-logo {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  cursor: pointer;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  user-select: none;
+  flex-shrink: 0;
+  margin-right: auto;
+}
+
+.navbar-logo-primary {
+  color: var(--color-text-primary);
+}
+
+.navbar-logo-accent {
+  color: var(--color-primary);
+}
+
+/* ── Nav links — absolutely centered ── */
+.navbar-links {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.navbar-link {
+  display: inline-flex;
+  align-items: center;
+  padding: 5px 12px;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-text-primary);
+  text-decoration: none;
+  background: none;
+  border: none;
+  border-radius: 6px;
+  transition: color 0.2s ease;
+  white-space: nowrap;
+  line-height: 1;
+}
+
+.navbar-link:hover,
+.navbar-link--active {
+  color: var(--color-primary);
+}
+
+/* ── Right section ── */
+.navbar-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  flex-shrink: 0;
+}
+
+/* ── Auth buttons ── */
+.navbar-auth-btn {
+  padding: 5px 14px;
+  font-family: var(--font-sans);
+  font-size: 13px;
+  font-weight: 600;
+  border-radius: 6px;
+  cursor: pointer;
+  background-color: var(--color-primary);
+  color: #000;
+  border: 1px solid var(--color-primary);
+  transition: background-color 0.2s ease, color 0.2s ease;
+  white-space: nowrap;
+  line-height: 1.4;
+}
+
+.navbar-auth-btn:hover {
+  background-color: #000;
+  color: var(--color-primary);
+  border-color: var(--color-primary);
+}
+
+/* ── Signed-in label ── */
+.navbar-signed-in-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--color-text-primary);
+  white-space: nowrap;
+}
+
+/* ── User avatar button ── */
+.navbar-user {
+  position: relative;
+}
+
+.navbar-avatar-btn {
   position: relative;
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 38px;
-  height: 38px;
-  background-color: var(--color-surface);
-  border: 1px solid var(--color-border);
+  width: 30px;
+  height: 30px;
+  background: none;
+  border: 1px solid rgba(245, 166, 35, 0.4);
   border-radius: var(--radius-full);
+  padding: 0;
   cursor: pointer;
-  color: var(--color-text-secondary);
-  transition: border-color 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
 
-.user-menu-trigger:hover {
+.navbar-avatar-btn:hover {
   border-color: var(--color-primary);
-  color: var(--color-primary);
-}
-
-.user-menu-trigger--active {
-  border-color: rgba(245, 166, 35, 0.4);
-  color: var(--color-text-primary);
-}
-
-.user-menu-trigger--active:hover {
   box-shadow: var(--shadow-glow-amber);
 }
 
-.user-menu-icon {
-  width: 18px;
-  height: 18px;
-}
-
-/* Status dot */
-.user-menu-dot {
-  position: absolute;
-  bottom: 1px;
-  right: 1px;
-  width: 9px;
-  height: 9px;
+.navbar-avatar {
+  width: 24px;
+  height: 24px;
   border-radius: var(--radius-full);
-  border: 2px solid var(--color-surface);
-  background-color: var(--color-text-muted);
+  background-color: var(--color-primary);
+  color: #000;
+  font-size: 11px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
-.user-menu-dot--online {
+.navbar-user-dot {
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  width: 7px;
+  height: 7px;
+  border-radius: var(--radius-full);
+  border: 2px solid transparent;
   background-color: #4caf72;
 }
 
 /* ── Dropdown ── */
-.user-menu-dropdown {
+.navbar-dropdown {
   position: absolute;
   top: calc(100% + 10px);
   right: 0;
-  width: 220px;
+  width: 210px;
   background-color: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);
@@ -70,35 +174,33 @@
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
-
-  /* Animation */
   opacity: 0;
   transform: translateY(-8px) scale(0.97);
   pointer-events: none;
   transition: opacity 0.18s ease, transform 0.18s ease;
 }
 
-.user-menu-dropdown--open {
+.navbar-dropdown--open {
   opacity: 1;
   transform: translateY(0) scale(1);
   pointer-events: auto;
 }
 
-/* ── Profile row ── */
-.user-menu-profile {
+/* ── Dropdown profile row ── */
+.navbar-dd-profile {
   display: flex;
   align-items: center;
   gap: var(--space-3);
   padding: var(--space-2) var(--space-1);
 }
 
-.user-menu-avatar {
-  width: 32px;
-  height: 32px;
+.navbar-dd-avatar {
+  width: 30px;
+  height: 30px;
   border-radius: var(--radius-full);
   background-color: var(--color-primary);
-  color: var(--color-bg);
-  font-size: 13px;
+  color: #000;
+  font-size: 12px;
   font-weight: 700;
   display: flex;
   align-items: center;
@@ -106,14 +208,14 @@
   flex-shrink: 0;
 }
 
-.user-menu-info {
+.navbar-dd-info {
   display: flex;
   flex-direction: column;
   gap: 2px;
   min-width: 0;
 }
 
-.user-menu-status {
+.navbar-dd-role {
   font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.06em;
@@ -121,7 +223,7 @@
   color: var(--color-text-muted);
 }
 
-.user-menu-email {
+.navbar-dd-email {
   font-size: 12px;
   font-weight: 600;
   color: var(--color-text-primary);
@@ -131,19 +233,19 @@
 }
 
 /* ── Divider ── */
-.user-menu-divider {
+.navbar-dd-divider {
   height: 1px;
   background-color: var(--color-border);
   margin: 0 calc(-1 * var(--space-1));
 }
 
-/* ── Buttons ── */
-.user-menu-btn {
+/* ── Dropdown buttons ── */
+.navbar-dd-btn {
   display: flex;
   align-items: center;
   gap: var(--space-2);
   width: 100%;
-  padding: var(--space-2) var(--space-2);
+  padding: var(--space-2);
   border-radius: var(--radius-sm);
   border: none;
   font-family: var(--font-sans);
@@ -156,74 +258,52 @@
   color: var(--color-text-secondary);
 }
 
-.user-menu-btn svg {
-  width: 15px;
-  height: 15px;
-  flex-shrink: 0;
-}
-
-.user-menu-btn--profile {
-  color: var(--color-text-secondary);
-}
-
-.user-menu-btn--profile:hover {
+.navbar-dd-btn--profile:hover {
   background-color: var(--color-surface-raised);
   color: var(--color-primary);
 }
 
-.user-menu-btn--logout {
+.navbar-dd-btn--logout {
   color: #e05c5c;
 }
 
-.user-menu-btn--logout:hover {
+.navbar-dd-btn--logout:hover {
   background-color: rgba(224, 92, 92, 0.08);
+}
+
+.navbar-dd-btn--danger {
+  background-color: rgba(224, 92, 92, 0.12);
+  border: 1px solid rgba(224, 92, 92, 0.3);
   color: #e05c5c;
-}
-
-.user-menu-btn--signin {
-  color: var(--color-primary);
   justify-content: center;
-  text-align: center;
 }
 
-.user-menu-btn--signin:hover {
-  background-color: rgba(245, 166, 35, 0.08);
+.navbar-dd-btn--danger:hover {
+  background-color: rgba(224, 92, 92, 0.2);
 }
 
-/* ── Confirm state ── */
-.user-menu-confirm {
+.navbar-dd-btn--ghost {
+  color: var(--color-text-secondary);
+  justify-content: center;
+}
+
+.navbar-dd-btn--ghost:hover {
+  background-color: var(--color-surface-raised);
+  color: var(--color-text-primary);
+}
+
+/* ── Confirm ── */
+.navbar-confirm {
   display: flex;
   flex-direction: column;
   gap: var(--space-2);
   padding: var(--space-1) 0;
 }
 
-.user-menu-confirm-text {
+.navbar-confirm-text {
   margin: 0;
   font-size: 13px;
   color: var(--color-text-primary);
   line-height: 1.4;
   padding: 0 var(--space-1);
-}
-
-.user-menu-btn--danger {
-  background-color: rgba(224, 92, 92, 0.12);
-  border: 1px solid rgba(224, 92, 92, 0.3);
-  color: #e05c5c;
-  justify-content: center;
-  border-radius: var(--radius-sm);
-}
-
-.user-menu-btn--danger:hover {
-  background-color: rgba(224, 92, 92, 0.2);
-}
-
-.user-menu-btn--ghost {
-  color: var(--color-text-secondary);
-  justify-content: center;
-}
-
-.user-menu-btn--ghost:hover {
-  background-color: var(--color-surface-raised);
-  color: var(--color-text-primary);
 }

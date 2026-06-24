@@ -42,4 +42,4 @@ class ScoreAnswersResponse(BaseModel):
     overall_score: float
     total_graded: int
     graded_answers: list[GradedAnswer]
-    result: str  # "Pass" or "Fail"
+    result: str  # "Pass" or "Failed"

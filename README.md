@@ -42,16 +42,24 @@ The `Interviews.status` column uses the following four values:
 |---|---|
 | `Scheduled` | Date/time assigned — interview is upcoming |
 | `In Progress` | Interview is currently happening |
-| `Completed` | Round finished and result stored |
-| `Failed` | Interview round failed due to network failure, system crash, etc. |
+| `Pass` | Round completed — candidate scored above the passing threshold |
+| `Failed` | Round completed — candidate scored below the passing threshold, or a system/network failure occurred |
 
 The **current round** displayed to the candidate is the interview with the lowest `round_order` (via `InterviewRounds`) whose status is `Scheduled` or `In Progress`.
+
+### Interviews column semantics
+
+| Column | Type | Stores |
+|---|---|---|
+| `status` | varchar | `Scheduled` / `In Progress` / `Pass` / `Failed` |
+| `result` | float | Final numeric score (0–10) after scoring completes |
+| `feedback` | nvarchar | AI-generated text feedback about the interview round |
 
 ---
 
 ## Database Schema
 
-17 tables across the following domains:
+18 tables across the following domains:
 
 | Domain | Tables |
 |---|---|
@@ -59,7 +67,7 @@ The **current round** displayed to the candidate is the interview with the lowes
 | Profiles | `RecruiterProfiles`, `CandidateProfiles` |
 | Company | `Companies` |
 | Jobs | `JobRoles`, `JobPostings`, `ExperienceLevels` |
-| Applications | `Applications` |
+| Applications | `Applications`, `Resumes` |
 | Skills | `SkillSets`, `CandidateSkills`, `JobRequiredSkills` |
 | Interviews | `InterviewRoundTypes`, `InterviewRounds`, `Interviews`, `InterviewQuestions` |
 | Questions | `Questions` |
@@ -179,11 +187,22 @@ erDiagram
     bit is_mandatory
   }
 
+  Resumes {
+    uniqueidentifier id PK
+    uniqueidentifier candidate_id FK
+    varchar file_url
+    varchar file_name
+    nvarchar parsed_text
+    datetime2 uploaded_at
+  }
+
   Applications {
     uniqueidentifier id PK
     uniqueidentifier job_id FK
     uniqueidentifier candidate_id FK
+    uniqueidentifier resume_id FK
     varchar status
+    nvarchar ats_reason
     nvarchar cover_letter
     datetime2 applied_at
   }
@@ -205,7 +224,7 @@ erDiagram
     datetime2 scheduled_at
     datetime2 completed_at
     nvarchar feedback
-    varchar result
+    float result
   }
 
   Questions {
@@ -242,8 +261,10 @@ erDiagram
   ExperienceLevels ||--o{ JobPostings : "level"
   JobPostings ||--o{ JobRequiredSkills : "requires"
   SkillSets ||--o{ JobRequiredSkills : "ref"
+  CandidateProfiles ||--o{ Resumes : "uploads"
   JobPostings ||--o{ Applications : "receives"
   CandidateProfiles ||--o{ Applications : "submits"
+  Resumes ||--o{ Applications : "attached to"
   JobPostings ||--o{ InterviewRounds : "has"
   InterviewRoundTypes ||--o{ InterviewRounds : "type"
   InterviewRounds ||--o{ Interviews : "has"

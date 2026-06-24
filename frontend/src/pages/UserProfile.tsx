@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import BackButton from '../components/BackButton'
 import Tag from '../components/Tag'
 import { fetchCandidateProfile, fetchRecruiterProfile, type CandidateProfile, type RecruiterProfile } from '../api/profile'
 import '../css/UserProfile.css'
@@ -47,7 +46,6 @@ function UserProfile() {
 
   return (
     <main className="profile-page">
-      <BackButton />
       <div className="profile-scroll-area">
         {loading ? (
           <div className="profile-loading">

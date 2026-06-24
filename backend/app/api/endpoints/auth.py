@@ -45,6 +45,8 @@ async def signup(
         errors.append("Password must be at least 8 characters")
     if experience_years < 0:
         errors.append("experience_years must be 0 or greater")
+    if not cv or not cv.filename:
+        errors.append("CV / Resume is required")
     if errors:
         raise HTTPException(status_code=422, detail="; ".join(errors))
 

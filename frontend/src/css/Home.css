@@ -53,12 +53,23 @@
 
 .home-actions {
   display: flex;
-  gap: var(--space-4);
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-3);
   margin-top: var(--space-6);
 }
 
+.home-actions-row {
+  display: flex;
+  gap: var(--space-4);
+}
+
+.home-dashboard-btn {
+  width: 100%;
+}
+
 @media (max-width: 480px) {
-  .home-actions {
+  .home-actions-row {
     flex-direction: column;
     width: 100%;
   }

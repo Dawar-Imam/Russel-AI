@@ -4,12 +4,9 @@ import Button from './Button'
 import Tag from './Tag'
 import Modal from './Modal'
 import type { JobListItem } from '../api/jobs'
-import { checkAtsEligibility } from '../api/applications'
 import '../css/JobApplyDialog.css'
 
 const API_BASE = (import.meta.env.VITE_API_URL as string | undefined) ?? 'http://localhost:8000'
-
-type DialogPhase = 'idle' | 'checking-ats' | 'ats-warning' | 'applying'
 
 interface JobApplyDialogProps {
   job: JobListItem | null
@@ -20,9 +17,10 @@ interface JobApplyDialogProps {
 
 function JobApplyDialog({ job, candidateId, isOpen, onClose }: JobApplyDialogProps) {
   const navigate = useNavigate()
-  const [phase, setPhase] = useState<DialogPhase>('idle')
-  const [atsReason, setAtsReason] = useState<string | null>(null)
+  const [applying, setApplying] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  const [cvFile, setCvFile] = useState<File | null>(null)
+  const cvInputRef = useRef<HTMLInputElement>(null)
 
   const isCancelled = useRef(false)
 
@@ -33,9 +31,10 @@ function JobApplyDialog({ job, candidateId, isOpen, onClose }: JobApplyDialogPro
   }, [isOpen])
 
   function resetState() {
-    setPhase('idle')
-    setAtsReason(null)
+    setApplying(false)
     setError(null)
+    setCvFile(null)
+    if (cvInputRef.current) cvInputRef.current.value = ''
   }
 
   function handleClose() {
@@ -44,18 +43,26 @@ function JobApplyDialog({ job, candidateId, isOpen, onClose }: JobApplyDialogPro
     onClose()
   }
 
-  async function submitApplication() {
-    if (isCancelled.current || !job) return
-    setPhase('applying')
+  async function handleApplyClick() {
+    if (!job) return
+    if (!candidateId) {
+      navigate('/auth', { state: { pendingJobId: job.id } })
+      return
+    }
+    if (isCancelled.current) return
+    setApplying(true)
     setError(null)
     try {
+      const formData = new FormData()
+      formData.append('job_posting_id', job.id)
+      formData.append('candidate_id', candidateId)
+      if (cvFile) {
+        formData.append('cv', cvFile)
+      }
+
       const res = await fetch(`${API_BASE}/api/applications/apply`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          job_posting_id: job.id,
-          candidate_id: candidateId,
-        }),
+        body: formData,
       })
       if (!res.ok) {
         const data = await res.json().catch(() => ({}))
@@ -64,37 +71,13 @@ function JobApplyDialog({ job, candidateId, isOpen, onClose }: JobApplyDialogPro
       const { application_id } = (await res.json()) as { application_id: string }
       if (isCancelled.current) return
       handleClose()
-      navigate(`/interview-stages/${application_id}`)
+      navigate(`/application-progress/${application_id}`)
     } catch (err) {
       if (isCancelled.current) return
       setError(err instanceof Error ? err.message : 'Something went wrong')
-      setPhase('idle')
+      setApplying(false)
     }
   }
-
-  async function handleApplyClick() {
-    if (!job) return
-    if (!candidateId) {
-      navigate('/auth', { state: { pendingJobId: job.id } })
-      return
-    }
-    setPhase('checking-ats')
-    setError(null)
-    try {
-      const ats = await checkAtsEligibility(job.id, candidateId)
-      if (isCancelled.current) return
-      if (!ats.eligible) {
-        setAtsReason(ats.reason)
-        setPhase('ats-warning')
-        return
-      }
-    } catch {
-      if (isCancelled.current) return
-    }
-    await submitApplication()
-  }
-
-  const isLoading = phase === 'checking-ats' || phase === 'applying'
 
   if (!job) return null
 
@@ -144,49 +127,52 @@ function JobApplyDialog({ job, candidateId, isOpen, onClose }: JobApplyDialogPro
             </div>
           )}
 
-          {phase === 'ats-warning' && atsReason && (
-            <div className="job-apply-ats-warning">
-              <span className="job-apply-ats-icon">⚠</span>
-              <div className="job-apply-ats-body">
-                <p className="job-apply-ats-heading">You may not meet all requirements</p>
-                <p className="job-apply-ats-reason">{atsReason}</p>
-              </div>
-            </div>
-          )}
+          <div className="job-apply-field">
+            <span className="job-apply-label">
+              CV / Resume <span className="job-apply-optional">(optional — updates your profile)</span>
+            </span>
+            <label className="job-apply-cv-label">
+              <input
+                ref={cvInputRef}
+                type="file"
+                accept=".pdf,.docx,.txt"
+                className="job-apply-cv-input"
+                onChange={(e) => setCvFile(e.target.files?.[0] ?? null)}
+              />
+              <span className="job-apply-cv-btn">
+                {cvFile ? (
+                  <>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="job-apply-cv-icon">
+                      <polyline points="20 6 9 17 4 12" />
+                    </svg>
+                    {cvFile.name}
+                  </>
+                ) : (
+                  <>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="job-apply-cv-icon">
+                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                      <polyline points="17 8 12 3 7 8" />
+                      <line x1="12" y1="3" x2="12" y2="15" />
+                    </svg>
+                    Upload CV (PDF, DOCX, TXT)
+                  </>
+                )}
+              </span>
+            </label>
+          </div>
 
           {error && <p className="job-apply-error">{error}</p>}
 
           <div className="job-apply-actions">
-            {phase === 'ats-warning' ? (
-              <>
-                <Button
-                  type="button"
-                  variant="primary"
-                  className="job-apply-submit"
-                  onClick={() => void submitApplication()}
-                  disabled={isLoading}
-                >
-                  Apply Anyway
-                </Button>
-                <button type="button" className="job-apply-cancel" onClick={handleClose}>
-                  Cancel
-                </button>
-              </>
-            ) : (
-              <Button
-                type="button"
-                variant="primary"
-                className="job-apply-submit"
-                onClick={() => void handleApplyClick()}
-                disabled={isLoading}
-              >
-                {phase === 'checking-ats'
-                  ? 'Checking eligibility…'
-                  : phase === 'applying'
-                    ? 'Applying…'
-                    : 'Apply to Job'}
-              </Button>
-            )}
+            <Button
+              type="button"
+              variant="primary"
+              className="job-apply-submit"
+              onClick={() => void handleApplyClick()}
+              disabled={applying}
+            >
+              {applying ? 'Applying…' : 'Apply to Job'}
+            </Button>
           </div>
         </div>
       </div>
