@@ -19,6 +19,7 @@ class GenerateQuestionsResponse(BaseModel):
     questions: list[QuestionItem]
     timer_seconds: int
     interview_type: str = ""
+    enable_fail_cases: bool = True
 
 
 class AnswerItem(BaseModel):
@@ -29,6 +30,10 @@ class AnswerItem(BaseModel):
 class ScoreAnswersRequest(BaseModel):
     fetch_from_db: bool = False
     answers: list[AnswerItem] = []
+    test_mode: bool = False
+    # timer_end | submit | normal_completion — tells the validator what triggered scoring
+    event_type: str = "submit"
+    interview_type: str = "written"
 
 
 class GradedAnswer(BaseModel):

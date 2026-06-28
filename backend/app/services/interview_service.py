@@ -3,6 +3,7 @@ import uuid
 from app.ai.interview_tools.schemas import AnswerItem as AIAnswerItem
 from app.ai.interview_tools.state import AgentState
 from app.ai.interview_tools.tools import generate_questions_tool, score_answers_tool
+from app.core.config import settings
 from app.database import get_connection
 from app.schemas.interviews import (
     AnswerItem,
@@ -11,9 +12,12 @@ from app.schemas.interviews import (
     QuestionItem,
     ScoreAnswersResponse,
 )
+from app.services.interview_validator import ValidationInput, validate_interview
 
 TIMER_SECONDS = 300
 PASS_THRESHOLD = 6.0
+
+LEAVE_FEEDBACK = "User left the interview, interview automatically closed."
 
 
 # ---------------------------------------------------------------------------
@@ -196,6 +200,64 @@ def save_voice_answers_bulk(interview_id: str, answers: list[tuple[str, str]]) -
         conn.close()
 
 
+def _fetch_current_status(cur, interview_id: str) -> str:
+    cur.execute("SELECT status FROM Interviews WHERE id = ?", interview_id)
+    row = cur.fetchone()
+    return str(row[0]) if row else "In Progress"
+
+
+def mark_interview_terminated(interview_id: str, reason: str) -> None:
+    """Mark an interview Failed after cheating detection — runs through validator for consistency."""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        vr = validate_interview(ValidationInput(
+            event_type="cheating",
+            computed_score=0.0,
+            failing_criteria=PASS_THRESHOLD,
+            enable_fail_cases=settings.ENABLE_FAIL_CASES,
+            current_status=_fetch_current_status(cur, interview_id),
+            cheating_detected=True,
+        ))
+        if vr.applied_rule == "idempotency_guard":
+            return
+        cur.execute(
+            """UPDATE Interviews
+               SET status = ?, result = ?, feedback = ?, completed_at = GETDATE()
+               WHERE id = ?""",
+            vr.final_status, vr.final_score, vr.final_feedback or reason, interview_id,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def mark_interview_failed_on_leave(interview_id: str, interview_type: str = "written") -> None:
+    """Force-fail an interview when the candidate leaves mid-session (tab switch / logout / refresh)."""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        vr = validate_interview(ValidationInput(
+            event_type="tab_switch",
+            computed_score=0.0,
+            failing_criteria=PASS_THRESHOLD,
+            enable_fail_cases=settings.ENABLE_FAIL_CASES,
+            current_status=_fetch_current_status(cur, interview_id),
+            interview_type=interview_type,
+        ))
+        if vr.applied_rule == "idempotency_guard":
+            return
+        cur.execute(
+            """UPDATE Interviews
+               SET status = ?, result = ?, feedback = ?, completed_at = GETDATE()
+               WHERE id = ?""",
+            vr.final_status, vr.final_score, vr.final_feedback, interview_id,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 async def generate_interview_questions(
     interview_id: str,
     return_questions: bool = True,
@@ -220,6 +282,7 @@ async def generate_interview_questions(
                 questions=existing if return_questions else [],
                 timer_seconds=TIMER_SECONDS,
                 interview_type=interview_type,
+                enable_fail_cases=settings.ENABLE_FAIL_CASES,
             )
         cur.execute(
             "SELECT experience_level_id FROM CandidateProfiles WHERE id = ?",
@@ -269,6 +332,7 @@ async def generate_interview_questions(
         questions=items if return_questions else [],
         timer_seconds=TIMER_SECONDS,
         interview_type=interview_type,
+        enable_fail_cases=settings.ENABLE_FAIL_CASES,
     )
 
 
@@ -276,6 +340,9 @@ async def score_interview_answers(
     interview_id: str,
     fetch_from_db: bool,
     answers: list[AnswerItem],
+    test_mode: bool = False,
+    event_type: str = "submit",
+    interview_type: str = "written",
 ) -> ScoreAnswersResponse:
     if not fetch_from_db and not answers:
         raise ValueError("No answers submitted and fetch_from_db is False")
@@ -290,7 +357,7 @@ async def score_interview_answers(
         status_row = cur.fetchone()
         if not status_row:
             raise ValueError(f"Interview {interview_id} not found")
-        if str(status_row[0]).lower() in ("pass", "failed"):
+        if not test_mode and str(status_row[0]).lower() in ("pass", "failed"):
             raise ValueError("This interview has already been completed and scored.")
 
         stored = _fetch_existing_questions(cur, interview_id)
@@ -302,12 +369,12 @@ async def score_interview_answers(
         else:
             _save_candidate_answers(cur, interview_id, answers)
             conn.commit()
-            iq_map = {q.iq_id: q for q in stored}
+            iq_map = {q.iq_id.lower(): q for q in stored}
             to_score = [
                 QuestionItem(
                     iq_id=a.iq_id,
-                    question_id=iq_map[a.iq_id].question_id if a.iq_id in iq_map else "",
-                    question_text=iq_map[a.iq_id].question_text if a.iq_id in iq_map else a.iq_id,
+                    question_id=iq_map[a.iq_id.lower()].question_id if a.iq_id.lower() in iq_map else "",
+                    question_text=iq_map[a.iq_id.lower()].question_text if a.iq_id.lower() in iq_map else a.iq_id,
                     candidate_answer=a.candidate_answer,
                     score=None,
                     notes=None,
@@ -330,10 +397,17 @@ async def score_interview_answers(
     if result["status"] != "success":
         raise RuntimeError("AI answer scoring failed")
 
-    overall_score: float = result["overall_score"]
-    interview_result = "Pass" if overall_score > PASS_THRESHOLD else "Failed"
+    # --- 3. Validate result before DB commit ---
+    vr = validate_interview(ValidationInput(
+        event_type=event_type,
+        computed_score=result["overall_score"],
+        failing_criteria=PASS_THRESHOLD,
+        enable_fail_cases=settings.ENABLE_FAIL_CASES,
+        current_status="In Progress",  # guard already confirmed it's not terminal
+        interview_type=interview_type,
+    ))
 
-    # --- 3. Persist scores and mark interview completed ---
+    # --- 4. Persist scores and mark interview completed ---
     conn = get_connection()
     try:
         cur = conn.cursor()
@@ -341,23 +415,24 @@ async def score_interview_answers(
             cur, interview_id,
             [item.iq_id for item in to_score],
             result["graded_answers"],
-            overall_score, interview_result,
+            vr.final_score, vr.final_status,
+            vr.final_feedback or None,
         )
         conn.commit()
     finally:
         conn.close()
 
     return ScoreAnswersResponse(
-        overall_score=overall_score,
+        overall_score=vr.final_score,
         total_graded=result["total_graded"],
         graded_answers=[
             GradedAnswer(
-                question_text=g.question_text,
+                question_text=to_score[i].question_text,
                 candidate_answer=g.candidate_answer,
                 score=g.score,
                 notes=g.notes,
             )
-            for g in result["graded_answers"]
+            for i, g in enumerate(result["graded_answers"])
         ],
-        result=interview_result,
+        result=vr.final_status,
     )

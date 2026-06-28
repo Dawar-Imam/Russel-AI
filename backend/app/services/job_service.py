@@ -1,12 +1,52 @@
 import uuid
 
 from app.database import get_connection
-from app.schemas.jobs import JobListItem, JobPostRequest, JobPostResponse
+from app.schemas.jobs import InterviewRoundTypeItem, JobInterviewRoundItem, JobListItem, JobPostRequest, JobPostResponse
+
+
+def get_job_rounds(job_id: str) -> list[JobInterviewRoundItem]:
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT ir.round_order, irt.name, ir.failing_criteria, ir.description
+            FROM InterviewRounds ir
+            JOIN InterviewRoundTypes irt ON irt.id = ir.interview_round_type_id
+            WHERE ir.job_posting_id = ? AND ir.is_active = 1
+            ORDER BY ir.round_order
+            """,
+            job_id,
+        )
+        return [
+            JobInterviewRoundItem(
+                round_order=int(row[0]),
+                round_type_name=str(row[1]),
+                failing_criteria=int(row[2]) if row[2] is not None else None,
+                description=str(row[3]) if row[3] else None,
+            )
+            for row in cur.fetchall()
+        ]
+    finally:
+        conn.close()
 
 
 def _escape_like(value: str) -> str:
     """Escape SQL Server LIKE special characters so user input is treated literally."""
     return value.replace("[", "[[]").replace("%", "[%]").replace("_", "[_]")
+
+
+def list_interview_round_types() -> list[InterviewRoundTypeItem]:
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT id, name, description FROM InterviewRoundTypes ORDER BY id")
+        return [
+            InterviewRoundTypeItem(id=int(row[0]), name=str(row[1]), description=str(row[2]) if row[2] else None)
+            for row in cur.fetchall()
+        ]
+    finally:
+        conn.close()
 
 
 def post_job(data: JobPostRequest) -> JobPostResponse:
@@ -39,6 +79,35 @@ def post_job(data: JobPostRequest) -> JobPostResponse:
             data.salary_range,
             data.expires_at,
         )
+
+        for skill_id in data.skill_ids:
+            cur.execute(
+                """
+                INSERT INTO JobRequiredSkills (id, job_id, skill_id, proficiency_level, is_mandatory)
+                VALUES (?, ?, ?, 'Intermediate', 1)
+                """,
+                str(uuid.uuid4()),
+                job_id,
+                skill_id,
+            )
+
+        for round_input in data.interview_rounds:
+            round_id = str(uuid.uuid4())
+            cur.execute(
+                """
+                INSERT INTO InterviewRounds
+                    (id, job_posting_id, interview_round_type_id, round_order,
+                     description, failing_criteria, is_active)
+                VALUES (?, ?, ?, ?, ?, ?, 1)
+                """,
+                round_id,
+                job_id,
+                round_input.round_type_id,
+                round_input.round_order,
+                round_input.description,
+                round_input.failing_criteria,
+            )
+
         conn.commit()
         return JobPostResponse(job_id=job_id, message="Job posted successfully.")
     finally:

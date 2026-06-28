@@ -35,6 +35,36 @@
   border-radius: 2px;
 }
 
+/* ── Job info card ── */
+.ap-job-info-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-1);
+  padding: var(--space-3) var(--space-6);
+  background: rgba(20, 20, 20, 0.4);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  margin-bottom: var(--space-4);
+}
+
+.ap-job-info-title {
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--color-text-primary);
+}
+
+.ap-job-info-company {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-primary);
+}
+
 .stages-status-text {
   margin: var(--space-8) 0;
   font-size: 14px;
@@ -47,12 +77,125 @@
 }
 
 .app-progress-heading {
-  margin: var(--space-6) 0 var(--space-8);
+  margin: var(--space-10) 0 var(--space-8);
   font-size: 28px;
   font-weight: 700;
   letter-spacing: -0.02em;
   color: var(--color-text-primary);
   text-align: center;
+}
+
+/* ── Heading row with test mode toggle ── */
+.app-progress-heading-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  /* margin: var(--space-30) 0 var(--space-18); */
+  margin-top: 50px;
+}
+
+.app-progress-heading-row .app-progress-heading {
+  margin: 0;
+}
+
+.test-mode-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  background: transparent;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill);
+  padding: 5px 10px 5px 6px;
+  cursor: pointer;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  transition: border-color 0.2s ease, color 0.2s ease;
+  white-space: nowrap;
+}
+
+.test-mode-toggle--on {
+  border-color: rgba(245, 166, 35, 0.5);
+  color: var(--color-primary);
+}
+
+.test-mode-toggle-track {
+  position: relative;
+  width: 28px;
+  height: 16px;
+  background-color: var(--color-border);
+  border-radius: var(--radius-pill);
+  flex-shrink: 0;
+  transition: background-color 0.2s ease;
+}
+
+.test-mode-toggle--on .test-mode-toggle-track {
+  background-color: var(--color-primary);
+}
+
+.test-mode-toggle-thumb {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  background-color: var(--color-text-primary);
+  border-radius: 50%;
+  transition: transform 0.2s ease;
+}
+
+.test-mode-toggle--on .test-mode-toggle-thumb {
+  transform: translateX(12px);
+  background-color: var(--color-bg);
+}
+
+/* ── Test mode jump bar ── */
+.test-mode-jumper {
+  width: 100%;
+  max-width: 720px;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background-color: rgba(245, 166, 35, 0.05);
+  border: 1px solid rgba(245, 166, 35, 0.2);
+  border-radius: var(--radius-sm);
+  margin-bottom: var(--space-4);
+  flex-wrap: wrap;
+}
+
+.test-mode-jumper-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--color-primary);
+  flex-shrink: 0;
+}
+
+.test-mode-jumper-btns {
+  display: flex;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+}
+
+.test-mode-jump-btn {
+  padding: 4px 12px;
+  background: transparent;
+  border: 1px solid rgba(245, 166, 35, 0.4);
+  border-radius: var(--radius-pill);
+  color: var(--color-primary);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+  letter-spacing: 0.02em;
+}
+
+.test-mode-jump-btn:hover {
+  background-color: rgba(245, 166, 35, 0.1);
 }
 
 .app-progress-timeline {

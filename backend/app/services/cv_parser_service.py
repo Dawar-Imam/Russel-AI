@@ -154,10 +154,38 @@ Return ONLY the JSON object, no markdown fences, no explanation."""
     }
 
 
+def store_resume_record(
+    resume_id: str,
+    candidate_id: str,
+    file_url: str,
+    file_name: str | None,
+    parsed_text: str | None,
+) -> None:
+    """Insert a row into the Resumes table. Call this only after CandidateProfiles is committed."""
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO Resumes (id, candidate_id, file_url, file_name, parsed_text, uploaded_at)
+            VALUES (?, ?, ?, ?, ?, SYSUTCDATETIME())
+            """,
+            resume_id,
+            candidate_id,
+            file_url,
+            file_name,
+            parsed_text or None,
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def parse_and_store_cv(
     file_content: bytes,
     file_name: str | None,
     candidate_id: str,
+    store_resume: bool = True,
 ) -> dict:
     """Full CV pipeline: save file → LlamaParse → LLM extract → store in Resumes table.
 
@@ -194,23 +222,8 @@ def parse_and_store_cv(
     structured = _llm_extract(parsed_text, available_skills)
 
     resume_id = str(uuid.uuid4())
-    conn = get_connection()
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            """
-            INSERT INTO Resumes (id, candidate_id, file_url, file_name, parsed_text, uploaded_at)
-            VALUES (?, ?, ?, ?, ?, SYSUTCDATETIME())
-            """,
-            resume_id,
-            candidate_id,
-            file_url,
-            file_name or stored_name,
-            parsed_text or None,
-        )
-        conn.commit()
-    finally:
-        conn.close()
+    if store_resume:
+        store_resume_record(resume_id, candidate_id, file_url, file_name or stored_name, parsed_text)
 
     return {
         "resume_id": resume_id,

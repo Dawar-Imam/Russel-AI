@@ -2,10 +2,27 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
 
-from app.schemas.jobs import VALID_JOB_TYPES, JobListItem, JobPostRequest, JobPostResponse
-from app.services.job_service import list_jobs, list_recruiter_jobs, post_job
+from app.schemas.jobs import VALID_JOB_TYPES, InterviewRoundTypeItem, JobInterviewRoundItem, JobListItem, JobPostRequest, JobPostResponse
+from app.services.job_service import get_job_rounds, list_interview_round_types, list_jobs, list_recruiter_jobs, post_job
 
 router = APIRouter()
+
+
+# Literal routes first so they are never shadowed by /{job_id}/rounds
+@router.get("/round-types", response_model=list[InterviewRoundTypeItem])
+def get_interview_round_types() -> list[InterviewRoundTypeItem]:
+    try:
+        return list_interview_round_types()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get("/mine", response_model=list[JobListItem])
+def get_recruiter_jobs(recruiter_id: str) -> list[JobListItem]:
+    try:
+        return list_recruiter_jobs(recruiter_id)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @router.get("", response_model=list[JobListItem])
@@ -37,19 +54,20 @@ def get_jobs(
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
-@router.get("/mine", response_model=list[JobListItem])
-def get_recruiter_jobs(recruiter_id: str) -> list[JobListItem]:
-    try:
-        return list_recruiter_jobs(recruiter_id)
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
-
-
 @router.post("", response_model=JobPostResponse)
 def create_job(body: JobPostRequest) -> JobPostResponse:
     try:
         return post_job(body)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+# Parameterised routes last
+@router.get("/{job_id}/rounds", response_model=list[JobInterviewRoundItem])
+def get_rounds_for_job(job_id: str) -> list[JobInterviewRoundItem]:
+    try:
+        return get_job_rounds(job_id)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc

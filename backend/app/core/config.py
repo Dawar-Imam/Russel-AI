@@ -18,6 +18,10 @@ class Settings(BaseSettings):
     LIVEKIT_API_KEY: str = ""
     LIVEKIT_API_SECRET: str = ""
     DEEPGRAM_API_KEY: str = ""
+    ELEVENLABS_API_KEY: str = ""
+    ELEVENLABS_VOICE_ID: str = "onwK4e9ZLuTAKqWW03F9"
+    # Kill-switch: set to False in dev/test to disable all fail-case enforcement
+    ENABLE_FAIL_CASES: bool = True
 
     model_config = SettingsConfigDict(env_file=str(_ENV_FILE), env_file_encoding="utf-8")
 

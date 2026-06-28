@@ -1265,6 +1265,9 @@ codecs = [
 deepgram = [
     { name = "livekit-plugins-deepgram" },
 ]
+elevenlabs = [
+    { name = "livekit-plugins-elevenlabs" },
+]
 images = [
     { name = "pillow" },
 ]
@@ -1334,6 +1337,18 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/93/7c/adb5b8ad04189cfea3ee9af8f9844ed8705324c6db35133e5eed388f5bbb/livekit_plugins_deepgram-1.6.0.tar.gz", hash = "sha256:f8eb9a336ae1d295031e91699c42ee5094424d0f0f14757fbedf2f71d6decd54", size = 18348, upload-time = "2026-06-11T21:37:27.832Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/d2/e7/c4a9cb689fc9934170fd8a57e55f266c48607846b6f154551e2ec5e792e1/livekit_plugins_deepgram-1.6.0-py3-none-any.whl", hash = "sha256:320b04a5ad74444679e9d9ed502aa215fe80506471bb86ba0146bc72ef5ec219", size = 23087, upload-time = "2026-06-11T21:37:26.634Z" },
+]
+
+[[package]]
+name = "livekit-plugins-elevenlabs"
+version = "1.6.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "livekit-agents", extra = ["codecs"] },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/36/7f/bcd85bb841b29cb0e26fc55b1a2a73a5e6dae88c9e65af9309262bb9e353/livekit_plugins_elevenlabs-1.6.0.tar.gz", hash = "sha256:532673a0af8bdd9713f811f4b66d91d902e89edd68c864db4b36dfd0f441a0cf", size = 18300, upload-time = "2026-06-11T21:37:22.759Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a0/55/ef7f5a912c227599bd3ae830ac2ef47347bd589bfb1f8aa2124b067cae95/livekit_plugins_elevenlabs-1.6.0-py3-none-any.whl", hash = "sha256:dbb13b5861d57b4628684712b62305e528eada852fb92ad78395a2200947b161", size = 20865, upload-time = "2026-06-11T21:37:21.598Z" },
 ]
 
 [[package]]
@@ -2990,7 +3005,7 @@ dependencies = [
     { name = "langchain-core" },
     { name = "langchain-openai" },
     { name = "langgraph" },
-    { name = "livekit-agents", extra = ["deepgram", "openai", "silero"] },
+    { name = "livekit-agents", extra = ["deepgram", "elevenlabs", "openai", "silero"] },
     { name = "livekit-api" },
     { name = "llama-parse" },
     { name = "pydantic-settings" },
@@ -3016,7 +3031,7 @@ requires-dist = [
     { name = "langchain-core", specifier = ">=0.3.0" },
     { name = "langchain-openai", specifier = ">=0.2.0" },
     { name = "langgraph", specifier = ">=0.2.0" },
-    { name = "livekit-agents", extras = ["deepgram", "openai", "silero"], specifier = ">=1.0.0" },
+    { name = "livekit-agents", extras = ["deepgram", "openai", "silero", "elevenlabs"], specifier = ">=1.0.0" },
     { name = "livekit-api", specifier = ">=0.8.0" },
     { name = "llama-parse", specifier = ">=0.5.0" },
     { name = "pydantic-settings", specifier = ">=2.6.0" },

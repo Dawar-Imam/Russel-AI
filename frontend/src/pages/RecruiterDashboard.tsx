@@ -1,13 +1,51 @@
-import { useEffect, useState, type ChangeEvent, type FormEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import Button from '../components/Button'
-import Input from '../components/Input'
 import Select from '../components/Select'
-import { fetchSignupMetadata, type ExperienceLevel, type JobRole } from '../api/auth'
-import { fetchRecruiterJobs, postJob, type JobListItem } from '../api/jobs'
+import Modal from '../components/Modal'
+import FilterPanel, { type FilterState } from '../components/FilterPanel'
+import { fetchSignupMetadata, type ExperienceLevel, type JobRole, type Skill } from '../api/auth'
+import {
+  fetchInterviewRoundTypes,
+  fetchJobRounds,
+  fetchRecruiterJobs,
+  postJob,
+  type InterviewRoundType,
+  type JobInterviewRoundItem,
+  type JobListItem,
+} from '../api/jobs'
 import '../css/RecruiterDashboard.css'
 
+interface SelectedRound {
+  uid: string
+  round_type_id: number
+  name: string
+  failing_criteria: string
+}
+
 const JOB_TYPES = ['Full-time', 'Part-time', 'Remote', 'Contract', 'Hybrid']
+
+function parseSalaryBounds(salaryRange: string | null): [number, number] | null {
+  if (!salaryRange) return null
+  const normalized = salaryRange.replace(/\$/g, '').replace(/,/g, '').replace(/k/gi, '000')
+  const nums = normalized.match(/\d+/g)?.map(Number) ?? []
+  if (nums.length === 0) return null
+  if (nums.length === 1) return [nums[0], nums[0]]
+  return [Math.min(...nums), Math.max(...nums)]
+}
+
+function formatSalaryRange(min: string, max: string): string | undefined {
+  const hasMin = min.trim() !== ''
+  const hasMax = max.trim() !== ''
+  if (!hasMin && !hasMax) return undefined
+  if (hasMin && hasMax) return `$${Number(min).toLocaleString()}–$${Number(max).toLocaleString()}`
+  if (hasMin) return `$${Number(min).toLocaleString()}+`
+  return `Up to $${Number(max).toLocaleString()}`
+}
+
+function formatDate(iso: string) {
+  return new Date(iso).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })
+}
 
 function RecruiterDashboard() {
   const navigate = useNavigate()
@@ -27,21 +65,72 @@ function RecruiterDashboard() {
   const [jobsError, setJobsError] = useState<string | null>(null)
 
   const [showForm, setShowForm] = useState(false)
+
   const [jobRoles, setJobRoles] = useState<JobRole[]>([])
   const [experienceLevels, setExperienceLevels] = useState<ExperienceLevel[]>([])
-  const [rolesLoading, setRolesLoading] = useState(false)
+  const [allSkills, setAllSkills] = useState<Skill[]>([])
+  const [roundTypes, setRoundTypes] = useState<InterviewRoundType[]>([])
+  const [metaLoading, setMetaLoading] = useState(false)
 
-  // Post job form state
+  // Draft form state — persists across open/close; cleared only after successful post
   const [jobRoleId, setJobRoleId] = useState<number | ''>('')
   const [experienceLevelId, setExperienceLevelId] = useState<number | ''>('')
   const [jobDescription, setJobDescription] = useState('')
   const [jobLocation, setJobLocation] = useState('')
   const [jobType, setJobType] = useState('')
-  const [salaryRange, setSalaryRange] = useState('')
+  const [formSalaryMin, setFormSalaryMin] = useState('')
+  const [formSalaryMax, setFormSalaryMax] = useState('')
+  const [formSalaryError, setFormSalaryError] = useState<string | null>(null)
   const [expiresAt, setExpiresAt] = useState('')
-
+  const [selectedSkillIds, setSelectedSkillIds] = useState<number[]>([])
+  const [selectedSkillId, setSelectedSkillId] = useState<string>('')
+  const [selectedRounds, setSelectedRounds] = useState<SelectedRound[]>([])
+  const [selectedRoundTypeId, setSelectedRoundTypeId] = useState<string>('')
   const [posting, setPosting] = useState(false)
   const [postError, setPostError] = useState<string | null>(null)
+
+  const dragIndexRef = useRef<number | null>(null)
+
+  // Job detail dialog
+  const [detailJob, setDetailJob] = useState<JobListItem | null>(null)
+  const [detailRounds, setDetailRounds] = useState<JobInterviewRoundItem[]>([])
+  const [detailRoundsLoading, setDetailRoundsLoading] = useState(false)
+
+  // Filter state
+  const [filters, setFilters] = useState<FilterState>({})
+  const [locationInput, setLocationInput] = useState('')
+  const [salaryMin, setSalaryMin] = useState('')
+  const [salaryMax, setSalaryMax] = useState('')
+  const [salaryError, setSalaryError] = useState<string | null>(null)
+
+  const jobRoleOptions = useMemo(() => {
+    const seen = new Map<number, string>()
+    for (const j of jobs) if (!seen.has(j.job_role_id)) seen.set(j.job_role_id, j.job_role_title)
+    return [...seen.entries()].sort((a, b) => a[1].localeCompare(b[1]))
+  }, [jobs])
+
+  const experienceLevelOptions = useMemo(() => {
+    const seen = new Map<number, string>()
+    for (const j of jobs) if (!seen.has(j.experience_level_id)) seen.set(j.experience_level_id, j.experience_level_name)
+    return [...seen.entries()].sort((a, b) => a[0] - b[0])
+  }, [jobs])
+
+  const filteredJobs = useMemo(() => {
+    let result = jobs
+    if (filters.job_role_id != null) result = result.filter((j) => Number(j.job_role_id) === Number(filters.job_role_id))
+    if (filters.experience_level_id != null) result = result.filter((j) => Number(j.experience_level_id) === Number(filters.experience_level_id))
+    if (filters.job_type) { const qt = filters.job_type.trim().toLowerCase(); result = result.filter((j) => j.job_type.trim().toLowerCase() === qt) }
+    if (filters.location) { const q = filters.location.toLowerCase(); result = result.filter((j) => j.location?.trim().toLowerCase().includes(q)) }
+    if (!salaryError) {
+      if (salaryMin !== '') { const min = Number(salaryMin); result = result.filter((j) => { const b = parseSalaryBounds(j.salary_range); return b !== null && b[1] >= min }) }
+      if (salaryMax !== '') { const max = Number(salaryMax); result = result.filter((j) => { const b = parseSalaryBounds(j.salary_range); return b !== null && b[0] <= max }) }
+    }
+    return result
+  }, [jobs, filters, salaryMin, salaryMax, salaryError])
+
+  const hasActiveFilters =
+    filters.job_role_id != null || filters.experience_level_id != null ||
+    !!filters.location || !!filters.job_type || salaryMin !== '' || salaryMax !== ''
 
   useEffect(() => {
     if (!recruiterId) return
@@ -52,34 +141,81 @@ function RecruiterDashboard() {
       .finally(() => setJobsLoading(false))
   }, [recruiterId])
 
+  // ── Post job form ─────────────────────────────────────────────────────────
+
   function handleOpenForm() {
     setShowForm(true)
     if (jobRoles.length > 0) return
-    setRolesLoading(true)
-    fetchSignupMetadata()
-      .then(({ job_roles, experience_levels }) => {
-        setJobRoles(job_roles)
-        setExperienceLevels(experience_levels)
+    setMetaLoading(true)
+    Promise.all([fetchSignupMetadata(), fetchInterviewRoundTypes()])
+      .then(([meta, rts]) => {
+        setJobRoles(meta.job_roles)
+        setExperienceLevels(meta.experience_levels)
+        setAllSkills(meta.skills)
+        setRoundTypes(rts)
       })
       .catch(() => {})
-      .finally(() => setRolesLoading(false))
+      .finally(() => setMetaLoading(false))
   }
 
   function handleCloseForm() {
     setShowForm(false)
     setPostError(null)
-    setJobRoleId('')
-    setExperienceLevelId('')
-    setJobDescription('')
-    setJobLocation('')
-    setJobType('')
-    setSalaryRange('')
-    setExpiresAt('')
   }
+
+  function handleResetForm() {
+    setJobRoleId(''); setExperienceLevelId(''); setJobDescription(''); setJobLocation('')
+    setJobType(''); setFormSalaryMin(''); setFormSalaryMax(''); setFormSalaryError(null)
+    setExpiresAt(''); setSelectedSkillIds([]); setSelectedSkillId('')
+    setSelectedRounds([]); setSelectedRoundTypeId(''); setPostError(null)
+  }
+
+  function handleFormSalaryMinChange(value: string) {
+    setFormSalaryMin(value)
+    setFormSalaryError(value !== '' && formSalaryMax !== '' && Number(value) > Number(formSalaryMax) ? 'Min must not exceed max' : null)
+  }
+
+  function handleFormSalaryMaxChange(value: string) {
+    setFormSalaryMax(value)
+    setFormSalaryError(formSalaryMin !== '' && value !== '' && Number(formSalaryMin) > Number(value) ? 'Min must not exceed max' : null)
+  }
+
+  function handleAddRound() {
+    if (!selectedRoundTypeId) return
+    const rt = roundTypes.find((r) => r.id === Number(selectedRoundTypeId))
+    if (!rt) return
+    setSelectedRounds((prev) => [...prev, { uid: crypto.randomUUID(), round_type_id: rt.id, name: rt.name, failing_criteria: '50' }])
+    setSelectedRoundTypeId('')
+  }
+
+  function handleRemoveRound(uid: string) {
+    setSelectedRounds((prev) => prev.filter((r) => r.uid !== uid))
+  }
+
+  function handleFailingCriteriaChange(uid: string, value: string) {
+    setSelectedRounds((prev) => prev.map((r) => (r.uid === uid ? { ...r, failing_criteria: value } : r)))
+  }
+
+  function handleDragStart(index: number) { dragIndexRef.current = index }
+
+  function handleDragOver(e: React.DragEvent, index: number) {
+    e.preventDefault()
+    const from = dragIndexRef.current
+    if (from === null || from === index) return
+    setSelectedRounds((prev) => {
+      const next = [...prev]
+      const [item] = next.splice(from, 1)
+      next.splice(index, 0, item)
+      dragIndexRef.current = index
+      return next
+    })
+  }
+
+  function handleDragEnd() { dragIndexRef.current = null }
 
   async function handlePostJob(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (jobRoleId === '' || experienceLevelId === '' || !jobType) return
+    if (jobRoleId === '' || experienceLevelId === '' || !jobType || formSalaryError) return
     setPosting(true)
     setPostError(null)
     try {
@@ -90,12 +226,18 @@ function RecruiterDashboard() {
         description: jobDescription,
         location: jobLocation,
         job_type: jobType,
-        salary_range: salaryRange || undefined,
+        salary_range: formatSalaryRange(formSalaryMin, formSalaryMax),
         expires_at: expiresAt || undefined,
+        skill_ids: selectedSkillIds,
+        interview_rounds: selectedRounds.map((r, i) => ({
+          round_type_id: r.round_type_id,
+          round_order: i + 1,
+          failing_criteria: r.failing_criteria !== '' ? Math.min(100, Math.max(0, Number(r.failing_criteria))) : null,
+        })),
       })
-      handleCloseForm()
-      const updated = await fetchRecruiterJobs(recruiterId)
-      setJobs(updated)
+      setShowForm(false)
+      handleResetForm()
+      setJobs(await fetchRecruiterJobs(recruiterId))
     } catch (err: unknown) {
       setPostError(err instanceof Error ? err.message : 'Failed to post job')
     } finally {
@@ -103,181 +245,430 @@ function RecruiterDashboard() {
     }
   }
 
-  function formatDate(iso: string) {
-    return new Date(iso).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' })
+  // ── Job detail dialog ─────────────────────────────────────────────────────
+
+  function handleOpenDetail(job: JobListItem) {
+    setDetailJob(job)
+    setDetailRounds([])
+    setDetailRoundsLoading(true)
+    fetchJobRounds(job.id)
+      .then(setDetailRounds)
+      .catch(() => {})
+      .finally(() => setDetailRoundsLoading(false))
+  }
+
+  function handleCloseDetail() { setDetailJob(null); setDetailRounds([]) }
+
+  // ── Filter sidebar ────────────────────────────────────────────────────────
+
+  function handleLocationChange(value: string) {
+    setLocationInput(value)
+    setFilters((f) => ({ ...f, location: value.trim() || undefined }))
+  }
+
+  function handleSalaryMinChange(value: string) {
+    setSalaryMin(value)
+    setSalaryError(value !== '' && salaryMax !== '' && Number(value) > Number(salaryMax) ? 'Min must not exceed max' : null)
+  }
+
+  function handleSalaryMaxChange(value: string) {
+    setSalaryMax(value)
+    setSalaryError(salaryMin !== '' && value !== '' && Number(salaryMin) > Number(value) ? 'Min must not exceed max' : null)
+  }
+
+  function clearFilters() {
+    setLocationInput(''); setSalaryMin(''); setSalaryMax(''); setSalaryError(null); setFilters({})
   }
 
   if (!recruiterId) return null
 
   return (
     <main className="rd-page">
-      <div className="rd-scroll-area">
       <header className="rd-header">
-        <div className="rd-header-row">
-          <h1 className="rd-heading">Recruiter Dashboard</h1>
-          <Button variant="primary" onClick={handleOpenForm}>
-            Post a Job
-          </Button>
-        </div>
+        <h1 className="rd-heading">Recruiter Dashboard</h1>
       </header>
 
-      {showForm && (
-        <section className="rd-form-section">
-          <div className="rd-form-card">
-            <div className="rd-form-header">
-              <h2 className="rd-form-title">Post a New Job</h2>
-              <button type="button" className="rd-form-close" onClick={handleCloseForm} aria-label="Close">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <line x1="18" y1="6" x2="6" y2="18" />
-                  <line x1="6" y1="6" x2="18" y2="18" />
+      <div className="rd-content">
+        <FilterPanel
+          jobRoleOptions={jobRoleOptions}
+          experienceLevelOptions={experienceLevelOptions}
+          filters={filters}
+          locationInput={locationInput}
+          salaryMin={salaryMin}
+          salaryMax={salaryMax}
+          salaryError={salaryError}
+          hasActiveFilters={hasActiveFilters}
+          count={filteredJobs.length}
+          countLabel="job"
+          loading={jobsLoading}
+          onFiltersChange={(update) => setFilters((f) => ({ ...f, ...update }))}
+          onLocationChange={handleLocationChange}
+          onSalaryMinChange={handleSalaryMinChange}
+          onSalaryMaxChange={handleSalaryMaxChange}
+          onClearFilters={clearFilters}
+        />
+
+        <div className="rd-scroll-area">
+          {jobsLoading ? (
+            <p className="rd-state-text">Loading your jobs…</p>
+          ) : jobsError ? (
+            <p className="rd-state-error">{jobsError}</p>
+          ) : jobs.length === 0 ? (
+            <div className="rd-empty">
+              <p className="rd-empty-text">No jobs posted yet.</p>
+              <p className="rd-empty-sub">Click "Post a Job" to publish your first listing.</p>
+            </div>
+          ) : filteredJobs.length === 0 ? (
+            <p className="rd-state-text">No jobs match your filters. Try adjusting or clearing them.</p>
+          ) : (
+            <div className="rd-jobs-grid">
+              {filteredJobs.map((job) => (
+                <article
+                  key={job.id}
+                  className="rd-job-card"
+                  onClick={() => handleOpenDetail(job)}
+                  role="button"
+                  tabIndex={0}
+                  onKeyDown={(e) => e.key === 'Enter' && handleOpenDetail(job)}
+                >
+                  <div className="rd-job-main">
+                    <span className="rd-job-company">{job.company}</span>
+                    <h3 className="rd-job-title">{`${job.experience_level_name} ${job.job_role_title}`}</h3>
+                    <p className="rd-job-desc">{job.description}</p>
+                  </div>
+                  <div className="rd-job-footer">
+                    <div className="rd-job-tags">
+                      <span className="rd-badge">{job.job_type}</span>
+                      {job.salary_range && <span className="rd-badge rd-badge--salary">{job.salary_range}</span>}
+                    </div>
+                    <div className="rd-job-meta-row">
+                      <span className="rd-job-location">📍 {job.location}</span>
+                      <span className="rd-job-date">Posted {formatDate(job.posted_at)}</span>
+                    </div>
+                  </div>
+                </article>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* FAB */}
+      <button className="rd-fab" onClick={handleOpenForm} aria-label="Post a Job">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+          <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
+        </svg>
+        Post a Job
+      </button>
+
+      {/* ── Post Job Dialog ── */}
+      <Modal isOpen={showForm} onClose={handleCloseForm}>
+        <div className="rd-post-dialog">
+          {/* Header */}
+          <div className="rd-dialog-header">
+            <div className="rd-dialog-header-text">
+              <span className="rd-dialog-eyebrow">New Listing</span>
+              <h2 className="rd-dialog-title">Post a Job</h2>
+            </div>
+            <button type="button" className="rd-close-btn" onClick={handleCloseForm} aria-label="Close">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+              </svg>
+            </button>
+          </div>
+
+          {/* Two-column body */}
+          <form className="rd-form" onSubmit={handlePostJob}>
+            <div className="rd-form-cols">
+              {/* Left — job details */}
+              <div className="rd-form-left">
+                <div className="rd-field-group">
+                  <div className="rd-field">
+                    <label className="rd-label">Job Category</label>
+                    {metaLoading ? <p className="rd-state-text">Loading…</p> : (
+                      <Select value={jobRoleId} onChange={(e: ChangeEvent<HTMLSelectElement>) => {
+                        setJobRoleId(Number(e.target.value))
+                        setSelectedSkillIds([])
+                        setSelectedSkillId('')
+                      }}>
+                        <option value="" disabled>Select a category</option>
+                        {jobRoles.map((r) => <option key={r.id} value={r.id}>{r.title}</option>)}
+                      </Select>
+                    )}
+                  </div>
+                  <div className="rd-field">
+                    <label className="rd-label">Experience Level</label>
+                    {metaLoading ? <p className="rd-state-text">Loading…</p> : (
+                      <Select value={experienceLevelId} onChange={(e: ChangeEvent<HTMLSelectElement>) => setExperienceLevelId(Number(e.target.value))}>
+                        <option value="" disabled>Select a level</option>
+                        {experienceLevels.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
+                      </Select>
+                    )}
+                  </div>
+                </div>
+
+                <div className="rd-field">
+                  <label className="rd-label">Description</label>
+                  <textarea
+                    className="rd-textarea"
+                    placeholder="Describe the role, responsibilities, and requirements…"
+                    value={jobDescription}
+                    onChange={(e) => setJobDescription(e.target.value)}
+                    required
+                    rows={5}
+                  />
+                </div>
+
+                <div className="rd-field-group">
+                  <div className="rd-field">
+                    <label className="rd-label">Location</label>
+                    <input className="rd-input" type="text" placeholder="e.g. New York, NY" value={jobLocation} onChange={(e) => setJobLocation(e.target.value)} required />
+                  </div>
+                  <div className="rd-field">
+                    <label className="rd-label">Job Type</label>
+                    <Select value={jobType} onChange={(e: ChangeEvent<HTMLSelectElement>) => setJobType(e.target.value)}>
+                      <option value="" disabled>Select type</option>
+                      {JOB_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+                    </Select>
+                  </div>
+                </div>
+
+                <div className="rd-field">
+                  <label className="rd-label">Salary Range <span className="rd-optional">(optional)</span></label>
+                  <div className="rd-salary-row">
+                    <div className="rd-salary-field">
+                      <span className="rd-salary-prefix">$</span>
+                      <input className="rd-input rd-salary-input" type="number" min="0" step="1000" placeholder="Min" value={formSalaryMin} onChange={(e) => handleFormSalaryMinChange(e.target.value)} />
+                    </div>
+                    <span className="rd-salary-sep">—</span>
+                    <div className="rd-salary-field">
+                      <span className="rd-salary-prefix">$</span>
+                      <input className="rd-input rd-salary-input" type="number" min="0" step="1000" placeholder="Max" value={formSalaryMax} onChange={(e) => handleFormSalaryMaxChange(e.target.value)} />
+                    </div>
+                  </div>
+                  {formSalaryError && <span className="rd-field-error">{formSalaryError}</span>}
+                </div>
+
+                <div className="rd-field">
+                  <label className="rd-label">Expires On <span className="rd-optional">(optional)</span></label>
+                  <input className="rd-input" type="date" value={expiresAt} onChange={(e) => setExpiresAt(e.target.value)} />
+                </div>
+
+                <div className="rd-field">
+                  <label className="rd-label">Required Skills <span className="rd-optional">(optional)</span></label>
+                  <div className="rd-skill-add-row">
+                    <select
+                      className="rd-rounds-select"
+                      value={selectedSkillId}
+                      onChange={(e) => setSelectedSkillId(e.target.value)}
+                      disabled={metaLoading || jobRoleId === ''}
+                    >
+                      <option value="">{jobRoleId === '' ? 'Select a job category first…' : 'Select a skill…'}</option>
+                      {allSkills
+                        .filter((s) =>
+                          !selectedSkillIds.includes(s.id) &&
+                          (jobRoleId === '' || s.job_role_ids.includes(Number(jobRoleId)))
+                        )
+                        .map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+                    </select>
+                    <button
+                      type="button"
+                      className="rd-add-btn"
+                      disabled={!selectedSkillId}
+                      onClick={() => {
+                        const id = Number(selectedSkillId)
+                        setSelectedSkillIds((prev) => [...prev, id])
+                        setSelectedSkillId('')
+                      }}
+                    >
+                      Add
+                    </button>
+                  </div>
+                  {selectedSkillIds.length > 0 && (
+                    <div className="rd-skill-tags">
+                      {selectedSkillIds.map((id) => {
+                        const skill = allSkills.find((s) => s.id === id)
+                        return skill ? (
+                          <span key={id} className="rd-skill-tag">
+                            {skill.name}
+                            <button
+                              type="button"
+                              className="rd-skill-tag-remove"
+                              onClick={() => setSelectedSkillIds((prev) => prev.filter((sid) => sid !== id))}
+                              aria-label={`Remove ${skill.name}`}
+                            >✕</button>
+                          </span>
+                        ) : null
+                      })}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Divider */}
+              <div className="rd-form-divider" />
+
+              {/* Right — interview rounds */}
+              <div className="rd-form-right">
+                <div className="rd-rounds-header">
+                  <span className="rd-label">Interview Rounds</span>
+                  <span className="rd-rounds-count">{selectedRounds.length} added</span>
+                </div>
+
+                <div className="rd-rounds-add-row">
+                  <select
+                    className="rd-rounds-select"
+                    value={selectedRoundTypeId}
+                    onChange={(e) => setSelectedRoundTypeId(e.target.value)}
+                    disabled={metaLoading}
+                  >
+                    <option value="">Select round type…</option>
+                    {roundTypes.map((rt) => <option key={rt.id} value={rt.id}>{rt.name}</option>)}
+                  </select>
+                  <button type="button" className="rd-add-btn" onClick={handleAddRound} disabled={!selectedRoundTypeId}>
+                    Add
+                  </button>
+                </div>
+
+                {selectedRounds.length === 0 ? (
+                  <div className="rd-rounds-empty-state">
+                    <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="rd-rounds-empty-icon">
+                      <circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" />
+                    </svg>
+                    <p className="rd-rounds-empty-text">No rounds yet.</p>
+                    <p className="rd-rounds-empty-sub">Candidates will proceed directly to hiring.</p>
+                  </div>
+                ) : (
+                  <ol className="rd-rounds-list">
+                    {selectedRounds.map((round, index) => (
+                      <li
+                        key={round.uid}
+                        className="rd-round-item"
+                        draggable
+                        onDragStart={() => handleDragStart(index)}
+                        onDragOver={(e) => handleDragOver(e, index)}
+                        onDragEnd={handleDragEnd}
+                      >
+                        <span className="rd-round-drag" aria-hidden>⠿</span>
+                        <span className="rd-round-badge">{index + 1}</span>
+                        <span className="rd-round-name">{round.name}</span>
+                        <div className="rd-round-threshold">
+                          <input
+                            className="rd-threshold-input"
+                            type="number" min="0" max="100"
+                            value={round.failing_criteria}
+                            onChange={(e) => handleFailingCriteriaChange(round.uid, e.target.value)}
+                          />
+                          <span className="rd-threshold-suffix">%</span>
+                        </div>
+                        <button type="button" className="rd-round-remove" onClick={() => handleRemoveRound(round.uid)} aria-label="Remove">✕</button>
+                      </li>
+                    ))}
+                  </ol>
+                )}
+
+                <p className="rd-threshold-hint">% = minimum score to pass this round</p>
+              </div>
+            </div>
+
+            {postError && <p className="rd-field-error rd-post-error">{postError}</p>}
+
+            <div className="rd-form-actions">
+              <Button type="button" variant="secondary" onClick={handleCloseForm}>Discard</Button>
+              <Button type="submit" variant="primary" disabled={posting || jobRoleId === '' || experienceLevelId === '' || !jobType || !!formSalaryError}>
+                {posting ? 'Publishing…' : 'Publish Job'}
+              </Button>
+            </div>
+          </form>
+        </div>
+      </Modal>
+
+      {/* ── Job Detail Dialog ── */}
+      <Modal isOpen={detailJob !== null} onClose={handleCloseDetail}>
+        {detailJob && (
+          <div className="rd-detail-dialog">
+            {/* Header */}
+            <div className="rd-dialog-header">
+              <div className="rd-dialog-header-text">
+                <span className="rd-dialog-eyebrow">{detailJob.company}</span>
+                <h2 className="rd-dialog-title">{`${detailJob.experience_level_name} ${detailJob.job_role_title}`}</h2>
+              </div>
+              <button type="button" className="rd-close-btn" onClick={handleCloseDetail} aria-label="Close">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                  <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
                 </svg>
               </button>
             </div>
 
-            <form className="rd-form" onSubmit={handlePostJob}>
-              <div className="rd-form-row">
-                <div className="field">
-                  <span className="field-label">Job Category</span>
-                  {rolesLoading ? (
-                    <p className="rd-loading-text">Loading…</p>
-                  ) : (
-                    <Select
-                      value={jobRoleId}
-                      onChange={(e: ChangeEvent<HTMLSelectElement>) => setJobRoleId(Number(e.target.value))}
-                    >
-                      <option value="" disabled>Select a category</option>
-                      {jobRoles.map((r) => (
-                        <option key={r.id} value={r.id}>{r.title}</option>
+            {/* Two-column body */}
+            <div className="rd-detail-cols">
+              {/* Left — description */}
+              <div className="rd-detail-left">
+                <div className="rd-detail-tags">
+                  <span className="rd-badge">{detailJob.job_type}</span>
+                  {detailJob.salary_range && <span className="rd-badge rd-badge--salary">{detailJob.salary_range}</span>}
+                </div>
+                <p className="rd-detail-description">{detailJob.description}</p>
+              </div>
+
+              {/* Divider */}
+              <div className="rd-form-divider" />
+
+              {/* Right — meta + rounds */}
+              <div className="rd-detail-right">
+                <div className="rd-detail-meta">
+                  <div className="rd-meta-item">
+                    <span className="rd-label">Location</span>
+                    <span className="rd-meta-value">{detailJob.location}</span>
+                  </div>
+                  {detailJob.expires_at && (
+                    <div className="rd-meta-item">
+                      <span className="rd-label">Expires</span>
+                      <span className="rd-meta-value">{formatDate(detailJob.expires_at)}</span>
+                    </div>
+                  )}
+                  <div className="rd-meta-item">
+                    <span className="rd-label">Posted</span>
+                    <span className="rd-meta-value">{formatDate(detailJob.posted_at)}</span>
+                  </div>
+                </div>
+
+                {detailJob.required_skills.length > 0 && (
+                  <div className="rd-detail-skills-section">
+                    <span className="rd-label">Required Skills</span>
+                    <div className="rd-skill-tags">
+                      {detailJob.required_skills.map((skill) => (
+                        <span key={skill} className="rd-skill-tag rd-skill-tag--readonly">{skill}</span>
                       ))}
-                    </Select>
+                    </div>
+                  </div>
+                )}
+
+                <div className="rd-detail-rounds-section">
+                  <span className="rd-label">Interview Pipeline</span>
+                  {detailRoundsLoading ? (
+                    <p className="rd-state-text">Loading rounds…</p>
+                  ) : detailRounds.length === 0 ? (
+                    <p className="rd-rounds-empty-text" style={{ marginTop: 8 }}>No rounds configured.</p>
+                  ) : (
+                    <ol className="rd-detail-rounds">
+                      {detailRounds.map((r) => (
+                        <li key={r.round_order} className="rd-detail-round-item">
+                          <span className="rd-round-badge">{r.round_order}</span>
+                          <span className="rd-round-name">{r.round_type_name}</span>
+                          {r.failing_criteria !== null && (
+                            <span className="rd-pass-pill">{r.failing_criteria}% pass</span>
+                          )}
+                        </li>
+                      ))}
+                    </ol>
                   )}
                 </div>
-
-                <div className="field">
-                  <span className="field-label">Experience Level</span>
-                  {rolesLoading ? (
-                    <p className="rd-loading-text">Loading…</p>
-                  ) : (
-                    <Select
-                      value={experienceLevelId}
-                      onChange={(e: ChangeEvent<HTMLSelectElement>) => setExperienceLevelId(Number(e.target.value))}
-                    >
-                      <option value="" disabled>Select a level</option>
-                      {experienceLevels.map((l) => (
-                        <option key={l.id} value={l.id}>{l.name}</option>
-                      ))}
-                    </Select>
-                  )}
-                </div>
               </div>
-
-              <label className="field">
-                <span className="field-label">Job Description</span>
-                <textarea
-                  className="rd-textarea"
-                  placeholder="Describe the role, responsibilities, and requirements…"
-                  value={jobDescription}
-                  onChange={(e) => setJobDescription(e.target.value)}
-                  required
-                  rows={4}
-                />
-              </label>
-
-              <div className="rd-form-row">
-                <label className="field">
-                  <span className="field-label">Location</span>
-                  <Input
-                    type="text"
-                    placeholder="e.g. New York, NY"
-                    value={jobLocation}
-                    onChange={(e) => setJobLocation(e.target.value)}
-                    required
-                  />
-                </label>
-
-                <div className="field">
-                  <span className="field-label">Job Type</span>
-                  <Select
-                    value={jobType}
-                    onChange={(e: ChangeEvent<HTMLSelectElement>) => setJobType(e.target.value)}
-                  >
-                    <option value="" disabled>Select type</option>
-                    {JOB_TYPES.map((t) => (
-                      <option key={t} value={t}>{t}</option>
-                    ))}
-                  </Select>
-                </div>
-              </div>
-
-              <div className="rd-form-row">
-                <label className="field">
-                  <span className="field-label">Salary Range <span className="rd-optional">(optional)</span></span>
-                  <Input
-                    type="text"
-                    placeholder="e.g. $80k–$100k/year"
-                    value={salaryRange}
-                    onChange={(e) => setSalaryRange(e.target.value)}
-                  />
-                </label>
-
-                <label className="field">
-                  <span className="field-label">Expires On <span className="rd-optional">(optional)</span></span>
-                  <Input
-                    type="date"
-                    value={expiresAt}
-                    onChange={(e) => setExpiresAt(e.target.value)}
-                  />
-                </label>
-              </div>
-
-              {postError && <p className="rd-error">{postError}</p>}
-
-              <div className="rd-form-actions">
-                <Button type="button" variant="secondary" onClick={handleCloseForm}>
-                  Cancel
-                </Button>
-                <Button type="submit" variant="primary" disabled={posting || jobRoleId === '' || experienceLevelId === '' || !jobType}>
-                  {posting ? 'Posting…' : 'Post Job'}
-                </Button>
-              </div>
-            </form>
-          </div>
-        </section>
-      )}
-
-      <section className="rd-jobs-section">
-        <h2 className="rd-section-title">Your Job Postings</h2>
-
-        {jobsLoading ? (
-          <p className="rd-loading-text">Loading your jobs…</p>
-        ) : jobsError ? (
-          <p className="rd-error">{jobsError}</p>
-        ) : jobs.length === 0 ? (
-          <div className="rd-empty">
-            <p className="rd-empty-text">No jobs posted yet.</p>
-            <p className="rd-empty-sub">Click "Post a Job" to publish your first listing.</p>
-          </div>
-        ) : (
-          <div className="rd-jobs-list">
-            {jobs.map((job) => (
-              <article key={job.id} className="rd-job-card">
-                <div className="rd-job-main">
-                  <span className="rd-job-company">{job.company}</span>
-                  <h3 className="rd-job-title">{`${job.experience_level_name} ${job.job_role_title}`}</h3>
-                  <p className="rd-job-desc">{job.description}</p>
-                </div>
-                <div className="rd-job-meta">
-                  <span className="rd-job-badge">{job.job_type}</span>
-                  <span className="rd-job-meta-item">{job.location}</span>
-                  {job.salary_range && <span className="rd-job-meta-item">{job.salary_range}</span>}
-                  <span className="rd-job-meta-date">Posted {formatDate(job.posted_at)}</span>
-                </div>
-              </article>
-            ))}
+            </div>
           </div>
         )}
-      </section>
-      </div>
+      </Modal>
     </main>
   )
 }

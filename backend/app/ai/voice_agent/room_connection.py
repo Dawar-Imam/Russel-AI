@@ -10,7 +10,12 @@ from pydantic import BaseModel
 
 from app.ai.voice_agent.agent import run_voice_agent
 from app.core.config import get_llm, settings
-from app.services.interview_service import get_interview_questions, save_voice_answers_bulk
+from app.services.interview_service import (
+    get_interview_questions,
+    mark_interview_failed_on_leave,
+    mark_interview_terminated,
+    save_voice_answers_bulk,
+)
 
 _logger = logging.getLogger("russel.voice_agent")
 
@@ -25,6 +30,11 @@ def _get_done_event(interview_id: str) -> asyncio.Event:
     if interview_id not in _interview_done:
         _interview_done[interview_id] = asyncio.Event()
     return _interview_done[interview_id]
+
+
+def signal_interview_done(interview_id: str) -> None:
+    """Immediately set the done-event so the SSE endpoint resolves (used after force-termination)."""
+    _get_done_event(interview_id).set()
 
 
 async def wait_for_interview_done(interview_id: str, timeout: float = 600.0) -> bool:
@@ -91,11 +101,22 @@ async def _extract_answers_with_llm(questions: list, conversation_history: list[
         f"{questions_block}\n\n"
         "This is the full conversation between the interviewer and the candidate:\n"
         f"{history_block}\n\n"
-        "Extract the candidate's final answer for each question. "
-        "Return a JSON array of strings — one answer per question, in the same order as the questions. "
-        "If the candidate did not answer a question, use an empty string for that position. "
+        "Your task: extract the candidate's final answer for each question.\n"
+        "Return a JSON array of strings — one entry per question, in the same order.\n\n"
+        "STRICT RULES — read carefully:\n"
+        "1. A question was answered ONLY if the candidate's voice turns in the transcript "
+        "contain a substantive response to that specific question.\n"
+        "2. If the interviewer asked a question but the candidate never responded to it "
+        "(the interview ended, the candidate was silent, or the session was cut short before "
+        "they replied), use an empty string \"\" for that position.\n"
+        "3. Do NOT infer, fabricate, or carry over answers from adjacent questions. "
+        "If there is no clear candidate response mapped to the question, it is unanswered.\n"
+        "4. The interviewer may have asked follow-up or counter-questions — "
+        "consolidate all candidate turns related to a single base question into one answer string.\n"
+        "5. If the candidate gave a partial reply and then the interview ended mid-answer, "
+        "include only what was actually said — do not complete or extend it.\n\n"
         "Return ONLY the JSON array, no explanation.\n\n"
-        'Example: ["answer to Q1", "answer to Q2", "answer to Q3"]'
+        'Example: ["full answer to Q1", "", "partial answer to Q3", ""]'
     )
 
     llm = get_llm(temperature=0)
@@ -119,8 +140,19 @@ async def _run_and_store(agent_room: rtc.Room, interview_id: str, questions: lis
     """Fire-and-forget task: run voice session, post-process, bulk-save."""
     done_event = _get_done_event(interview_id)
     try:
-        conversation_history = await run_voice_agent(agent_room, questions)
+        conversation_history, terminated_reason = await run_voice_agent(
+            agent_room, questions, enable_fail_cases=settings.ENABLE_FAIL_CASES
+        )
         await agent_room.disconnect()
+
+        # Cheating or policy termination — mark failed, do not score
+        if terminated_reason:
+            _logger.warning(
+                "Interview %s terminated early: %s", interview_id, terminated_reason
+            )
+            mark_interview_terminated(interview_id, terminated_reason)
+            done_event.set()
+            return
 
         if not conversation_history:
             _logger.warning("Empty conversation history for interview %s — SSE will timeout", interview_id)

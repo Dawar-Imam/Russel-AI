@@ -3,9 +3,8 @@
   flex-direction: column;
   justify-content: space-between;
   gap: var(--space-4);
-  width: 260px;
-  height: 340px;
-  flex-shrink: 0;
+  width: 100%;
+  min-height: 340px;
   background-color: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);
@@ -92,6 +91,5 @@
   width: 100%;
   font-size: 12px !important;
   padding: 7px 24px !important;
-  margin-bottom: var(--space-2);
 }
 

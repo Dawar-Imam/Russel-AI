@@ -1,20 +1,22 @@
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  background-color: rgba(0, 0, 0, 0.5);
+  background-color: rgba(0, 0, 0, 0.6);
   backdrop-filter: blur(6px);
   -webkit-backdrop-filter: blur(6px);
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: var(--space-6);
+  /* 88px top clears the navbar (~64px) with a comfortable gap */
+  padding: 88px var(--space-6) var(--space-6);
   z-index: 100;
 }
 
 .modal {
   width: 100%;
-  max-width: 820px;
-  max-height: calc(100vh - var(--space-6) * 2);
+  max-width: 860px;
+  /* height is fixed: available viewport minus the top + bottom padding */
+  height: calc(100vh - 88px - var(--space-6));
   background-color: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);

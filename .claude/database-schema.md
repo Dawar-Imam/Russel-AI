@@ -190,7 +190,10 @@ CREATE TABLE Resumes (
 | interview_round_type_id | int FK -> InterviewRoundTypes |
 | round_order | int |
 | description | varchar |
+| failing_criteria | int NULL — pass threshold (0–100 %) set by recruiter |
 | is_active | bit |
+
+> **Migration required**: `ALTER TABLE InterviewRounds ADD failing_criteria INT NULL;`
 
 ### Interviews
 | Column | Type | Notes |

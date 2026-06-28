@@ -117,9 +117,18 @@ def get_interview_stages(application_id: str) -> InterviewStagesResponse:
     try:
         cur = conn.cursor()
 
-        # Resolve job_posting_id and ATS info from application
+        # Resolve job_posting_id and ATS info from application (join for job meta)
         cur.execute(
-            "SELECT job_id, status, ats_reason FROM Applications WHERE id = ?",
+            """
+            SELECT a.job_id, a.status, a.ats_reason,
+                   jr.title, el.name, c.name
+            FROM Applications a
+            JOIN JobPostings jp ON jp.id = a.job_id
+            JOIN JobRoles jr ON jr.id = jp.job_role_id
+            JOIN ExperienceLevels el ON el.id = jp.experience_level_id
+            JOIN Companies c ON c.id = jp.company_id
+            WHERE a.id = ?
+            """,
             application_id,
         )
         row = cur.fetchone()
@@ -128,6 +137,9 @@ def get_interview_stages(application_id: str) -> InterviewStagesResponse:
         job_posting_id = str(row[0])
         app_status = row[1]
         ats_reason: str | None = row[2]
+        job_role_title: str | None = row[3]
+        experience_level_name: str | None = row[4]
+        company: str | None = row[5]
 
         # Derive ats_status from application status
         if app_status in _ATS_PASSED_STATUSES:
@@ -206,9 +218,27 @@ def get_interview_stages(application_id: str) -> InterviewStagesResponse:
             current_round_id=current_round_id,
             ats_status=ats_status,
             ats_reason=ats_reason,
+            job_role_title=job_role_title,
+            experience_level_name=experience_level_name,
+            company=company,
         )
     finally:
         conn.close()
+
+
+def _derive_status(app_status: str, latest_interview_status: str | None) -> str:
+    """Return the most meaningful status to show the candidate."""
+    if app_status in ("HIRED", "REJECTED", "ATS_FAIL", "ATS_PENDING"):
+        return app_status
+    if latest_interview_status:
+        s = latest_interview_status.lower()
+        if s == "failed":
+            return "INTERVIEW_FAILED"
+        if s == "pass":
+            return "INTERVIEW_PASS"
+        if s == "in progress":
+            return "IN_PROGRESS"
+    return app_status
 
 
 def get_my_applications(candidate_id: str) -> list[MyApplicationItem]:
@@ -222,7 +252,22 @@ def get_my_applications(candidate_id: str) -> list[MyApplicationItem]:
                 jp.description, jp.location, jp.job_type, jp.salary_range,
                 jr.id, jr.title,
                 el.id, el.name,
-                c.name
+                c.name,
+                (
+                    SELECT TOP 1 i2.status
+                    FROM Interviews i2
+                    JOIN InterviewRounds ir2 ON ir2.id = i2.interview_round_id
+                    WHERE i2.application_id = a.id
+                    ORDER BY ir2.round_order DESC
+                ) AS latest_interview_status,
+                (
+                    SELECT TOP 1 irt2.name
+                    FROM Interviews i2
+                    JOIN InterviewRounds ir2 ON ir2.id = i2.interview_round_id
+                    JOIN InterviewRoundTypes irt2 ON irt2.id = ir2.interview_round_type_id
+                    WHERE i2.application_id = a.id
+                    ORDER BY ir2.round_order DESC
+                ) AS latest_interview_round_title
             FROM Applications a
             JOIN JobPostings jp ON jp.id = a.job_id
             JOIN JobRoles jr ON jr.id = jp.job_role_id
@@ -238,7 +283,7 @@ def get_my_applications(candidate_id: str) -> list[MyApplicationItem]:
             MyApplicationItem(
                 application_id=str(r[0]),
                 job_id=str(r[1]),
-                status=r[2],
+                status=_derive_status(str(r[2]), str(r[13]) if r[13] else None),
                 applied_at=r[3].isoformat() if r[3] else "",
                 description=r[4] or "",
                 location=r[5],
@@ -249,6 +294,7 @@ def get_my_applications(candidate_id: str) -> list[MyApplicationItem]:
                 experience_level_id=int(r[10]),
                 experience_level_name=r[11],
                 company=r[12],
+                latest_interview_round_title=str(r[14]) if r[14] else None,
             )
             for r in rows
         ]

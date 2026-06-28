@@ -1,5 +1,25 @@
 const BASE_URL = (import.meta.env.VITE_API_URL as string | undefined) ?? 'http://localhost:8000'
 
+export interface InterviewRoundType {
+  id: number
+  name: string
+  description: string | null
+}
+
+export interface InterviewRoundInput {
+  round_type_id: number
+  round_order: number
+  failing_criteria: number | null
+  description?: string
+}
+
+export interface JobInterviewRoundItem {
+  round_order: number
+  round_type_name: string
+  failing_criteria: number | null
+  description: string | null
+}
+
 export interface JobListItem {
   id: string
   description: string
@@ -35,11 +55,25 @@ export interface JobPostRequest {
   job_type: string
   salary_range?: string
   expires_at?: string
+  skill_ids?: number[]
+  interview_rounds?: InterviewRoundInput[]
 }
 
 export interface JobPostResponse {
   job_id: string
   message: string
+}
+
+export async function fetchInterviewRoundTypes(): Promise<InterviewRoundType[]> {
+  const res = await fetch(`${BASE_URL}/api/jobs/round-types`)
+  if (!res.ok) throw new Error('Failed to load interview round types')
+  return res.json() as Promise<InterviewRoundType[]>
+}
+
+export async function fetchJobRounds(jobId: string): Promise<JobInterviewRoundItem[]> {
+  const res = await fetch(`${BASE_URL}/api/jobs/${encodeURIComponent(jobId)}/rounds`)
+  if (!res.ok) throw new Error('Failed to load interview rounds')
+  return res.json() as Promise<JobInterviewRoundItem[]>
 }
 
 export async function fetchJobs(

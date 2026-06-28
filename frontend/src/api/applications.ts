@@ -19,6 +19,7 @@ export interface MyApplicationItem {
   experience_level_id: number
   experience_level_name: string
   company: string
+  latest_interview_round_title: string | null
 }
 
 export async function runAts(applicationId: string): Promise<ATSCheckResponse> {

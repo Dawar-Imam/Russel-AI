@@ -4,17 +4,20 @@ import Button from '../components/Button'
 import logo from '../utils/logo.png'
 import '../css/Home.css'
 
+function readDashboardRoute(): string | null {
+  const userType = sessionStorage.getItem('userType')
+  if (userType === 'candidate' && sessionStorage.getItem('candidateId')) return '/my-applications'
+  if (userType === 'recruiter' && sessionStorage.getItem('recruiterId')) return '/recruiter-dashboard'
+  return null
+}
+
 function Home() {
   const navigate = useNavigate()
-  const [isCandidate, setIsCandidate] = useState(
-    () => sessionStorage.getItem('userType') === 'candidate' && !!sessionStorage.getItem('candidateId'),
-  )
+  const [dashboardRoute, setDashboardRoute] = useState<string | null>(readDashboardRoute)
 
   useEffect(() => {
     function syncAuth() {
-      setIsCandidate(
-        sessionStorage.getItem('userType') === 'candidate' && !!sessionStorage.getItem('candidateId'),
-      )
+      setDashboardRoute(readDashboardRoute())
     }
     window.addEventListener('auth-change', syncAuth)
     return () => window.removeEventListener('auth-change', syncAuth)
@@ -43,11 +46,11 @@ function Home() {
             </Button>
           </div>
 
-          {isCandidate && (
+          {dashboardRoute && (
             <Button
               variant="secondary"
               className="home-dashboard-btn"
-              onClick={() => navigate('/my-applications')}
+              onClick={() => navigate(dashboardRoute)}
             >
               Dashboard
             </Button>

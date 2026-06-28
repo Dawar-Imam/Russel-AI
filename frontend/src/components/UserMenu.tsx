@@ -26,6 +26,10 @@ const CANDIDATE_NAV = [
   { label: 'Job Market', to: '/jobs', activePrefix: '/jobs' },
 ]
 
+const RECRUITER_NAV = [
+  { label: 'Dashboard', to: '/recruiter-dashboard', activePrefix: '/recruiter-dashboard' },
+]
+
 function UserMenu() {
   const navigate = useNavigate()
   const location = useLocation()
@@ -81,10 +85,10 @@ function UserMenu() {
         <span className="navbar-logo-accent">.AI</span>
       </div>
 
-      {/* Nav links — candidates only */}
-      {isSignedIn && userType === 'candidate' ? (
+      {/* Nav links */}
+      {isSignedIn && (userType === 'candidate' || userType === 'recruiter') ? (
         <div className="navbar-links">
-          {CANDIDATE_NAV.map(({ label, to, activePrefix }) => (
+          {(userType === 'recruiter' ? RECRUITER_NAV : CANDIDATE_NAV).map(({ label, to, activePrefix }) => (
             <NavLink
               key={label}
               to={to}

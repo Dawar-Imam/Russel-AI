@@ -58,9 +58,9 @@
 
 .jobs-list {
   display: grid;
-  grid-template-columns: repeat(auto-fill, 260px);
+  grid-template-columns: repeat(3, 1fr);
   gap: 20px;
-  justify-content: start;
+  align-items: stretch;
   padding-top: var(--space-3);
 }
 
@@ -80,12 +80,27 @@
   padding-top: var(--space-8);
 }
 
+/* 900–1199px: 2 card columns */
 @media (max-width: 1199px) {
   .jobs-page {
     padding: 80px 16px 0;
   }
+
+  .jobs-list {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 16px;
+  }
 }
 
+/* 600–899px: 1 card column */
+@media (max-width: 899px) {
+  .jobs-list {
+    grid-template-columns: 1fr;
+    gap: 16px;
+  }
+}
+
+/* <600px: sidebar collapses to top */
 @media (max-width: 599px) {
   .jobs-page {
     padding: 80px 12px 0;
@@ -94,5 +109,10 @@
   .jobs-content {
     flex-direction: column;
     gap: var(--space-4);
+  }
+
+  .jobs-list {
+    grid-template-columns: 1fr;
+    gap: 12px;
   }
 }

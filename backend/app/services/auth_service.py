@@ -6,7 +6,7 @@ from pathlib import Path
 
 from app.database import get_connection
 from app.schemas.auth import CandidateProfileResponse, ExperienceLevelItem, JobRoleItem, RecruiterProfileResponse, RecruiterSigninResponse, RecruiterSignupResponse, SigninResponse, SignupMetadataResponse, SignupResponse, SkillItem
-from app.services.cv_parser_service import parse_and_store_cv
+from app.services.cv_parser_service import parse_and_store_cv, store_resume_record
 
 
 def _hash_password(password: str) -> str:
@@ -111,7 +111,7 @@ def signup_candidate(
     resume_url: str | None = None
 
     if cv_content:
-        result = parse_and_store_cv(cv_content, cv_filename, candidate_id)
+        result = parse_and_store_cv(cv_content, cv_filename, candidate_id, store_resume=False)
         cv_data = result
         resume_url = result["file_url"]
 
@@ -186,13 +186,24 @@ def signup_candidate(
             )
 
         conn.commit()
-        return SignupResponse(
-            user_id=user_id,
-            candidate_id=candidate_id,
-            message="Account created successfully.",
-        )
     finally:
         conn.close()
+
+    # Insert Resumes row only after CandidateProfiles is committed (FK constraint)
+    if cv_content and cv_data.get("resume_id"):
+        store_resume_record(
+            cv_data["resume_id"],
+            candidate_id,
+            cv_data["file_url"],
+            cv_filename,
+            cv_data.get("parsed_text"),
+        )
+
+    return SignupResponse(
+        user_id=user_id,
+        candidate_id=candidate_id,
+        message="Account created successfully.",
+    )
 
 
 def signin_candidate(email: str, password: str) -> SigninResponse:

@@ -33,7 +33,6 @@ interface ConversationMessage {
   role: 'user' | 'assistant'
   text: string
   streaming?: boolean
-  fullText?: string
 }
 
 type Phase =
@@ -43,6 +42,7 @@ type Phase =
   | 'answering'
   | 'submitting'
   | 'results'
+  | 'terminated'
   | 'error'
 
 function fmtTime(secs: number): string {
@@ -71,9 +71,15 @@ function InterviewRoom() {
   const [messages, setMessages] = useState<ConversationMessage[]>([])
   const [audioBlocked, setAudioBlocked] = useState(false)
 
+  const [enableFailCases, setEnableFailCases] = useState(true)
+  const [terminatedReason, setTerminatedReason] = useState<string | null>(null)
+
   const answersRef = useRef<string[]>([])
   const questionsRef = useRef<QuestionItem[]>([])
   const isSubmittingRef = useRef(false)
+  const isTerminatedRef = useRef(false)
+  const enableFailCasesRef = useRef(true)
+  const phaseRef = useRef<Phase>('loading')
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const warnTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const isOralRef = useRef(false)
@@ -86,6 +92,8 @@ function InterviewRoom() {
   useEffect(() => { answersRef.current = answers }, [answers])
   useEffect(() => { questionsRef.current = questions }, [questions])
   useEffect(() => { setShowMandatoryWarn(false) }, [answers])
+  useEffect(() => { enableFailCasesRef.current = enableFailCases }, [enableFailCases])
+  useEffect(() => { phaseRef.current = phase }, [phase])
   useEffect(() => {
     isOralRef.current =
       interviewType.toLowerCase() === 'oral' || interviewType.toLowerCase().includes('voice')
@@ -97,27 +105,6 @@ function InterviewRoom() {
     }
   }, [messages])
 
-  // Typewriter effect: advance streaming AI messages 3 chars per 18ms
-  useEffect(() => {
-    const last = messages[messages.length - 1]
-    if (!last?.streaming || !last.fullText) return
-    if (last.text.length >= last.fullText.length) {
-      setMessages((prev) =>
-        prev.map((m, i) => (i === prev.length - 1 ? { ...m, streaming: false } : m))
-      )
-      return
-    }
-    const t = setTimeout(() => {
-      setMessages((prev) =>
-        prev.map((m, i) =>
-          i === prev.length - 1 && m.streaming
-            ? { ...m, text: m.fullText!.slice(0, m.text.length + 3) }
-            : m
-        )
-      )
-    }, 18)
-    return () => clearTimeout(t)
-  }, [messages])
 
   // Cleanup LiveKit room and SSE on unmount
   useEffect(() => {
@@ -129,10 +116,54 @@ function InterviewRoom() {
   }, [])
 
   // ---------------------------------------------------------------------------
+  // Leave / cheat detection
+  // ---------------------------------------------------------------------------
+
+  const handleUserLeft = useCallback(async (reason?: string) => {
+    if (isTerminatedRef.current) return
+    isTerminatedRef.current = true
+    if (timerRef.current) clearInterval(timerRef.current)
+    eventSourceRef.current?.close()
+    eventSourceRef.current = null
+    roomRef.current?.disconnect()
+    setTerminatedReason(reason ?? 'User left the interview, interview automatically closed.')
+    setPhase('terminated')
+    try {
+      await fetch(`${API_BASE}/api/interviews/${interviewId}/report-leave`, { method: 'POST' })
+    } catch { /* fire-and-forget */ }
+  }, [interviewId])
+
+  // Tab switch / window blur
+  useEffect(() => {
+    const onVisibility = () => {
+      if (!enableFailCasesRef.current) return
+      if (document.hidden && (phaseRef.current === 'answering' || phaseRef.current === 'voice-active')) {
+        void handleUserLeft()
+      }
+    }
+    document.addEventListener('visibilitychange', onVisibility)
+    return () => document.removeEventListener('visibilitychange', onVisibility)
+  }, [handleUserLeft])
+
+  // Page close / refresh / navigation
+  useEffect(() => {
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (!enableFailCasesRef.current) return
+      if (phaseRef.current !== 'answering' && phaseRef.current !== 'voice-active') return
+      e.preventDefault()
+      e.returnValue = ''
+      const blob = new Blob(['{}'], { type: 'application/json' })
+      navigator.sendBeacon(`${API_BASE}/api/interviews/${interviewId}/report-leave`, blob)
+    }
+    window.addEventListener('beforeunload', onBeforeUnload)
+    return () => window.removeEventListener('beforeunload', onBeforeUnload)
+  }, [interviewId])
+
+  // ---------------------------------------------------------------------------
   // Written interview submit
   // ---------------------------------------------------------------------------
 
-  const doSubmit = useCallback(async () => {
+  const doSubmit = useCallback(async (triggeredByTimer = false) => {
     if (isSubmittingRef.current) return
     isSubmittingRef.current = true
     if (timerRef.current) clearInterval(timerRef.current)
@@ -141,6 +172,9 @@ function InterviewRoom() {
     try {
       const body = {
         fetch_from_db: false,
+        test_mode: localStorage.getItem('russell_test_mode') === '1',
+        event_type: triggeredByTimer ? 'timer_end' : 'submit',
+        interview_type: 'written',
         answers: questionsRef.current.map((q, i) => ({
           iq_id: q.iq_id,
           candidate_answer: answersRef.current[i] ?? '',
@@ -173,7 +207,13 @@ function InterviewRoom() {
       const res = await fetch(`${API_BASE}/api/interviews/${interviewId}/score-answers`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ fetch_from_db: true, answers: [] }),
+        body: JSON.stringify({
+          fetch_from_db: true,
+          answers: [],
+          test_mode: localStorage.getItem('russell_test_mode') === '1',
+          event_type: 'normal_completion',
+          interview_type: 'oral',
+        }),
       })
       if (!res.ok) {
         const d = await res.json().catch(() => ({}))
@@ -224,8 +264,13 @@ function InterviewRoom() {
       // Receive live transcript messages from the agent via data channel
       lkRoom.on(RoomEvent.DataReceived, (payload: Uint8Array) => {
         try {
-          const msg = JSON.parse(new TextDecoder().decode(payload)) as { role: string; text: string }
-          if (!msg.role || !msg.text) return
+          const msg = JSON.parse(new TextDecoder().decode(payload)) as { role: string; text?: string; event?: string; reason?: string }
+          if (!msg.role) return
+          if (msg.role === 'control' && msg.event === 'terminated') {
+            void handleUserLeft(msg.reason ?? undefined)
+            return
+          }
+          if (!msg.text) return
           if (msg.role === 'user') {
             // Append consecutive user chunks into the same bubble
             setMessages((prev) => {
@@ -237,12 +282,29 @@ function InterviewRoom() {
               }
               return [...prev, { role: 'user' as const, text: msg.text }]
             })
-          } else {
-            // AI message: start empty and stream it in via typewriter effect
-            setMessages((prev) => [
-              ...prev,
-              { role: 'assistant' as const, text: '', streaming: true, fullText: msg.text },
-            ])
+          } else if (msg.role === 'assistant_chunk') {
+            // Append chunk to the current streaming bubble, or open a new one
+            setMessages((prev) => {
+              const last = prev[prev.length - 1]
+              if (last?.role === 'assistant' && last.streaming) {
+                return prev.map((m, i) =>
+                  i === prev.length - 1 ? { ...m, text: m.text + msg.text } : m
+                )
+              }
+              return [...prev, { role: 'assistant' as const, text: msg.text, streaming: true }]
+            })
+          } else if (msg.role === 'assistant') {
+            // Finalize the streaming bubble — search backwards since a user message
+            // may have arrived between the last chunk and this completion event
+            setMessages((prev) => {
+              const streamingIdx = prev.map(m => m.role === 'assistant' && m.streaming).lastIndexOf(true)
+              if (streamingIdx !== -1) {
+                return prev.map((m, i) =>
+                  i === streamingIdx ? { ...m, text: msg.text, streaming: false } : m
+                )
+              }
+              return [...prev, { role: 'assistant' as const, text: msg.text, streaming: false }]
+            })
           }
         } catch {
           // ignore malformed data
@@ -251,6 +313,7 @@ function InterviewRoom() {
 
       // When room disconnects, wait for backend processing then score
       lkRoom.on(RoomEvent.Disconnected, () => {
+        if (isTerminatedRef.current) return  // handleUserLeft already took over
         if (timerRef.current) clearInterval(timerRef.current)
         setPhase('submitting')
 
@@ -262,7 +325,7 @@ function InterviewRoom() {
         es.addEventListener('done', () => {
           es.close()
           eventSourceRef.current = null
-          void scoreFromDb()
+          if (!isTerminatedRef.current) void scoreFromDb()
         })
 
         es.addEventListener('timeout', () => {
@@ -319,6 +382,9 @@ function InterviewRoom() {
         const oral =
           type.toLowerCase() === 'oral' || type.toLowerCase().includes('voice')
         isOralRef.current = oral
+        const failCases = (data.enable_fail_cases ?? true) as boolean
+        setEnableFailCases(failCases)
+        enableFailCasesRef.current = failCases
         setTimer(data.timer_seconds)
         setTotalTimer(data.timer_seconds)
 
@@ -350,7 +416,7 @@ function InterviewRoom() {
     timerRef.current = setInterval(() => {
       setTimer((prev) => {
         if (prev <= 1) {
-          doSubmit()
+          doSubmit(true)
           return 0
         }
         return prev - 1
@@ -583,6 +649,17 @@ function InterviewRoom() {
         </div>
       )}
 
+      {/* ── Terminated (cheating / leave detection) ── */}
+      {phase === 'terminated' && (
+        <div className="ir-center">
+          <BackButton />
+          <p className="ir-error-text" style={{ color: '#e05c5c' }}>Interview Terminated</p>
+          <p className="ir-status-sub" style={{ marginTop: '8px' }}>
+            {terminatedReason ?? 'This interview has been closed.'}
+          </p>
+        </div>
+      )}
+
       {/* ── Error ── */}
       {phase === 'error' && (
         <div className="ir-center">
@@ -603,12 +680,18 @@ function InterviewRoom() {
           <div className="ir-answering-body ir-answering-body--no-bar">
             <div className="ir-form-container">
               <div className="ir-overall-card">
-                <span className="ir-overall-label">Overall Score</span>
+                <div
+                  className="ir-overall-accent-bar"
+                  style={{ width: `${results.overall_score * 10}%` }}
+                />
+                <div className="ir-overall-left">
+                  <span className="ir-overall-label">Overall Score</span>
+                  <span className="ir-overall-sub">{results.total_graded} questions graded</span>
+                </div>
                 <div className="ir-overall-score-row">
                   <span className="ir-overall-score">{results.overall_score.toFixed(1)}</span>
                   <span className="ir-overall-out">/ 10</span>
                 </div>
-                <span className="ir-overall-sub">{results.total_graded} questions graded</span>
               </div>
 
               <div className="ir-graded-list">

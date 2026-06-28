@@ -8,6 +8,8 @@ const STATUS_LABELS: Record<string, string> = {
   ATS_PASS: 'ATS Passed',
   ATS_FAIL: 'ATS Failed',
   IN_PROGRESS: 'In Progress',
+  INTERVIEW_PASS: 'Interview Passed',
+  INTERVIEW_FAILED: 'Interview Failed',
   HIRED: 'Hired',
   REJECTED: 'Rejected',
 }
@@ -17,8 +19,18 @@ const STATUS_VARIANTS: Record<string, string> = {
   ATS_PASS: 'pass',
   ATS_FAIL: 'fail',
   IN_PROGRESS: 'progress',
+  INTERVIEW_PASS: 'pass',
+  INTERVIEW_FAILED: 'fail',
   HIRED: 'hired',
   REJECTED: 'rejected',
+}
+
+function buildStatusLabel(status: string, roundTitle: string | null): string {
+  if ((status === 'INTERVIEW_PASS' || status === 'INTERVIEW_FAILED') && roundTitle) {
+    const outcome = status === 'INTERVIEW_PASS' ? 'Passed' : 'Failed'
+    return `${roundTitle} ${outcome}`
+  }
+  return STATUS_LABELS[status] ?? status
 }
 
 interface ApplicationCardProps {
@@ -27,7 +39,7 @@ interface ApplicationCardProps {
 
 function ApplicationCard({ application: app }: ApplicationCardProps) {
   const navigate = useNavigate()
-  const statusLabel = STATUS_LABELS[app.status] ?? app.status
+  const statusLabel = buildStatusLabel(app.status, app.latest_interview_round_title)
   const statusVariant = STATUS_VARIANTS[app.status] ?? 'pending'
 
   return (

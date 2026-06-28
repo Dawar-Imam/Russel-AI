@@ -13,7 +13,7 @@ interface RoundInfo {
   round_order: number
   status: string | null
   feedback: string | null
-  result: string | null
+  result: number | null
   scheduled_at: string | null
   completed_at: string | null
   avg_score: number | null
@@ -25,6 +25,9 @@ interface StagesData {
   current_round_id: string | null
   ats_status: 'pending' | 'pass' | 'fail'
   ats_reason: string | null
+  job_role_title: string | null
+  experience_level_name: string | null
+  company: string | null
 }
 
 interface QuestionItem {
@@ -56,12 +59,24 @@ function getAtsLabel(status: string): string {
   return 'Checking…'
 }
 
+function scoreVerdict(result: number | null): 'pass' | 'fail' | null {
+  if (result == null) return null
+  return result >= 6 ? 'pass' : 'fail'
+}
+
+function isRoundCompleted(round: RoundInfo): boolean {
+  const s = (round.status ?? '').toLowerCase()
+  return s === 'pass' || s === 'failed' || s === 'completed'
+}
+
 function getRoundBadgeClass(round: RoundInfo): string {
   const s = (round.status ?? '').toLowerCase()
-  if (s === 'completed') {
-    const r = (round.result ?? '').toLowerCase()
-    if (r.includes('pass')) return 'ap-stage-badge--pass'
-    if (r.includes('fail')) return 'ap-stage-badge--fail'
+  if (isRoundCompleted(round)) {
+    if (s === 'pass') return 'ap-stage-badge--pass'
+    if (s === 'failed' || s === 'fail') return 'ap-stage-badge--fail'
+    const v = scoreVerdict(round.result)
+    if (v === 'pass') return 'ap-stage-badge--pass'
+    if (v === 'fail') return 'ap-stage-badge--fail'
     return 'ap-stage-badge--pass'
   }
   if (s === 'in progress') return 'ap-stage-badge--in-progress'
@@ -71,10 +86,12 @@ function getRoundBadgeClass(round: RoundInfo): string {
 
 function getRoundLabel(round: RoundInfo): string {
   const s = (round.status ?? '').toLowerCase()
+  if (s === 'pass') return 'Passed'
+  if (s === 'failed' || s === 'fail') return 'Failed'
   if (s === 'completed') {
-    const r = (round.result ?? '').toLowerCase()
-    if (r.includes('pass')) return 'Passed'
-    if (r.includes('fail')) return 'Failed'
+    const v = scoreVerdict(round.result)
+    if (v === 'pass') return 'Passed'
+    if (v === 'fail') return 'Failed'
     return 'Completed'
   }
   if (s === 'in progress') return 'In Progress'
@@ -92,6 +109,7 @@ function ApplicationProgress() {
   const { applicationId } = useParams<{ applicationId: string }>()
   const navigate = useNavigate()
 
+  const [testMode, setTestMode] = useState(() => localStorage.getItem('russell_test_mode') === '1')
   const [data, setData] = useState<StagesData | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -101,6 +119,14 @@ function ApplicationProgress() {
   const [loadingQuestions, setLoadingQuestions] = useState<Record<string, boolean>>({})
   const atsTriggered = useRef(false)
   const fetchedRounds = useRef<Set<string>>(new Set())
+
+  function toggleTestMode() {
+    setTestMode(prev => {
+      const next = !prev
+      localStorage.setItem('russell_test_mode', next ? '1' : '0')
+      return next
+    })
+  }
 
   function toggleStage(id: string) {
     setOpenStages(prev => {
@@ -166,7 +192,7 @@ function ApplicationProgress() {
     for (const round of data.rounds) {
       if (
         openStages.has(round.interview_round_id) &&
-        (round.status ?? '').toLowerCase() === 'completed' &&
+        isRoundCompleted(round) &&
         !fetchedRounds.current.has(round.interview_round_id)
       ) {
         fetchRoundQuestions(round)
@@ -180,10 +206,35 @@ function ApplicationProgress() {
   return (
     <main className="app-progress-page">
       <div className="app-progress-body">
-        <h1 className="app-progress-heading">Application Progress</h1>
+        <div className="app-progress-heading-row">
+          <h1 className="app-progress-heading">Application Progress</h1>
+          <button
+            className={`test-mode-toggle${testMode ? ' test-mode-toggle--on' : ''}`}
+            onClick={toggleTestMode}
+            title="Toggle test mode to jump to any interview round"
+          >
+            <span className="test-mode-toggle-track">
+              <span className="test-mode-toggle-thumb" />
+            </span>
+            <span className="test-mode-toggle-label">Test Mode</span>
+          </button>
+        </div>
 
         {loading && <p className="stages-status-text">Loading…</p>}
         {error && <p className="stages-status-text stages-error">{error}</p>}
+
+        {data && (data.job_role_title || data.company) && (
+          <div className="ap-job-info-card">
+            {(data.experience_level_name || data.job_role_title) && (
+              <span className="ap-job-info-title">
+                {[data.experience_level_name, data.job_role_title].filter(Boolean).join(' ')}
+              </span>
+            )}
+            {data.company && (
+              <span className="ap-job-info-company">{data.company}</span>
+            )}
+          </div>
+        )}
 
         {data && (
           <>
@@ -264,13 +315,8 @@ function ApplicationProgress() {
               {/* Interview round rows */}
               {data.rounds.map((round, i) => {
                 const isOpen = openStages.has(round.interview_round_id)
-                const isCompleted = (round.status ?? '').toLowerCase() === 'completed'
-                const resultLower = (round.result ?? '').toLowerCase()
-                const verdictKey = resultLower.includes('pass')
-                  ? 'pass'
-                  : resultLower.includes('fail')
-                  ? 'fail'
-                  : 'pending'
+                const isCompleted = isRoundCompleted(round)
+                const verdictKey = scoreVerdict(round.result) ?? 'pending'
                 const questions = roundQuestions[round.interview_round_id] ?? []
                 const questionsLoading = loadingQuestions[round.interview_round_id] ?? false
 
@@ -314,7 +360,7 @@ function ApplicationProgress() {
                               <div className="ap-stage-detail-item">
                                 <span className="ap-stage-detail-label">Verdict</span>
                                 <span className={`ap-stage-detail-value ap-stage-detail-value--${verdictKey}`}>
-                                  {round.result ?? 'Completed'}
+                                  {verdictKey === 'pass' ? 'Passed' : verdictKey === 'fail' ? 'Failed' : 'Completed'}
                                 </span>
                               </div>
                               {round.avg_score != null && (
@@ -372,6 +418,25 @@ function ApplicationProgress() {
                 )
               })}
             </div>
+
+            {testMode && (
+              <div className="test-mode-jumper">
+                <span className="test-mode-jumper-label">Jump to round</span>
+                <div className="test-mode-jumper-btns">
+                  {data.rounds.map((round) => (
+                    round.interview_id && (
+                      <button
+                        key={round.interview_round_id}
+                        className="test-mode-jump-btn"
+                        onClick={() => navigate(`/interview-room/${round.interview_id}`)}
+                      >
+                        {round.title}
+                      </button>
+                    )
+                  ))}
+                </div>
+              </div>
+            )}
           </>
         )}
 
