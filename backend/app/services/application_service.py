@@ -36,7 +36,7 @@ def apply_to_job(
             """
             SELECT id FROM JobPostings
             WHERE id = ? AND status = 'active'
-              AND (expires_at IS NULL OR expires_at > GETDATE())
+              AND (expires_at IS NULL OR CAST(expires_at AS DATE) >= CAST(GETDATE() AS DATE))
             """,
             job_posting_id,
         )
@@ -218,6 +218,7 @@ def get_interview_stages(application_id: str) -> InterviewStagesResponse:
             current_round_id=current_round_id,
             ats_status=ats_status,
             ats_reason=ats_reason,
+            application_status=app_status,
             job_role_title=job_role_title,
             experience_level_name=experience_level_name,
             company=company,
@@ -226,18 +227,20 @@ def get_interview_stages(application_id: str) -> InterviewStagesResponse:
         conn.close()
 
 
-def _derive_status(app_status: str, latest_interview_status: str | None) -> str:
+def _derive_status(app_status: str, active_interview_status: str | None) -> str:
     """Return the most meaningful status to show the candidate."""
     if app_status in ("HIRED", "REJECTED", "ATS_FAIL", "ATS_PENDING"):
         return app_status
-    if latest_interview_status:
-        s = latest_interview_status.lower()
+    if active_interview_status:
+        s = active_interview_status.lower()
         if s == "failed":
             return "INTERVIEW_FAILED"
         if s == "pass":
             return "INTERVIEW_PASS"
         if s == "in progress":
             return "IN_PROGRESS"
+        if s == "scheduled":
+            return "INTERVIEW_SCHEDULED"
     return app_status
 
 
@@ -258,16 +261,18 @@ def get_my_applications(candidate_id: str) -> list[MyApplicationItem]:
                     FROM Interviews i2
                     JOIN InterviewRounds ir2 ON ir2.id = i2.interview_round_id
                     WHERE i2.application_id = a.id
-                    ORDER BY ir2.round_order DESC
-                ) AS latest_interview_status,
+                      AND LOWER(i2.status) IN ('scheduled', 'in progress', 'failed')
+                    ORDER BY ir2.round_order ASC
+                ) AS active_interview_status,
                 (
                     SELECT TOP 1 irt2.name
                     FROM Interviews i2
                     JOIN InterviewRounds ir2 ON ir2.id = i2.interview_round_id
                     JOIN InterviewRoundTypes irt2 ON irt2.id = ir2.interview_round_type_id
                     WHERE i2.application_id = a.id
-                    ORDER BY ir2.round_order DESC
-                ) AS latest_interview_round_title
+                      AND LOWER(i2.status) IN ('scheduled', 'in progress', 'failed')
+                    ORDER BY ir2.round_order ASC
+                ) AS active_interview_round_title
             FROM Applications a
             JOIN JobPostings jp ON jp.id = a.job_id
             JOIN JobRoles jr ON jr.id = jp.job_role_id

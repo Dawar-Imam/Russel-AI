@@ -25,6 +25,7 @@ interface StagesData {
   current_round_id: string | null
   ats_status: 'pending' | 'pass' | 'fail'
   ats_reason: string | null
+  application_status: string | null
   job_role_title: string | null
   experience_level_name: string | null
   company: string | null
@@ -36,27 +37,6 @@ interface QuestionItem {
   candidate_answer: string | null
   score: number | null
   notes: string | null
-}
-
-function formatDuration(isoDate: string | null): string {
-  if (!isoDate) return '—'
-  const diff = Date.now() - new Date(isoDate).getTime()
-  const days = Math.floor(diff / 86400000)
-  if (days < 1) return 'Less than a day'
-  if (days === 1) return '1 day'
-  return `${days} days`
-}
-
-function getAtsBadgeClass(status: string): string {
-  if (status === 'pass') return 'ap-stage-badge--pass'
-  if (status === 'fail') return 'ap-stage-badge--fail'
-  return 'ap-stage-badge--pending'
-}
-
-function getAtsLabel(status: string): string {
-  if (status === 'pass') return 'Pass'
-  if (status === 'fail') return 'Failed'
-  return 'Checking…'
 }
 
 function scoreVerdict(result: number | null): 'pass' | 'fail' | null {
@@ -84,6 +64,10 @@ function getRoundBadgeClass(round: RoundInfo): string {
   return 'ap-stage-badge--not-started'
 }
 
+function isRoundNotNeeded(round: RoundInfo): boolean {
+  return (round.status ?? '').toLowerCase() === 'not needed'
+}
+
 function getRoundLabel(round: RoundInfo): string {
   const s = (round.status ?? '').toLowerCase()
   if (s === 'pass') return 'Passed'
@@ -96,6 +80,7 @@ function getRoundLabel(round: RoundInfo): string {
   }
   if (s === 'in progress') return 'In Progress'
   if (s === 'scheduled') return 'Pending'
+  if (s === 'not needed') return 'Not Needed'
   return 'Not Started'
 }
 
@@ -114,7 +99,7 @@ function ApplicationProgress() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [atsError, setAtsError] = useState(false)
-  const [openStages, setOpenStages] = useState<Set<string>>(new Set())
+  const [selectedRoundId, setSelectedRoundId] = useState<string | null>(null)
   const [roundQuestions, setRoundQuestions] = useState<Record<string, QuestionItem[]>>({})
   const [loadingQuestions, setLoadingQuestions] = useState<Record<string, boolean>>({})
   const atsTriggered = useRef(false)
@@ -124,18 +109,6 @@ function ApplicationProgress() {
     setTestMode(prev => {
       const next = !prev
       localStorage.setItem('russell_test_mode', next ? '1' : '0')
-      return next
-    })
-  }
-
-  function toggleStage(id: string) {
-    setOpenStages(prev => {
-      const next = new Set(prev)
-      if (next.has(id)) {
-        next.delete(id)
-      } else {
-        next.add(id)
-      }
       return next
     })
   }
@@ -151,61 +124,241 @@ function ApplicationProgress() {
       .finally(() => setLoadingQuestions(prev => ({ ...prev, [round.interview_round_id]: false })))
   }
 
-  const currentRound = data?.rounds.find(
-    (r) => r.interview_round_id === data.current_round_id,
-  )
+  const currentRound = data?.rounds.find(r => r.interview_round_id === data.current_round_id)
   const allRoundsCompleted =
     data != null && data.ats_status === 'pass' &&
     (!data.current_round_id || currentRound?.status === 'Completed')
 
+  const failedRound = data?.rounds.find(r => (r.status ?? '').toLowerCase() === 'failed')
+  const isTerminal = data != null && data.ats_status === 'pass' &&
+    (failedRound != null || (allRoundsCompleted && data.rounds.length > 0))
+  const latestRound = isTerminal
+    ? (failedRound ?? [...(data?.rounds ?? [])].reverse().find(r => r.status != null) ?? null)
+    : null
+
+  function getOutcomeInfo(): { title: string } {
+    const appStatus = data?.application_status
+    if (appStatus === 'HIRED') return { title: 'Congratulations! You have been hired.' }
+    if (appStatus === 'REJECTED') return { title: 'Your application was not successful.' }
+    if (failedRound) return { title: `You did not pass the ${failedRound.title} round.` }
+    if (allRoundsCompleted && data && data.rounds.length > 0)
+      return { title: 'You have completed all interview rounds.' }
+    return { title: 'Interview process complete.' }
+  }
+
   useEffect(() => {
     if (!applicationId) return
     fetch(`${API_BASE}/api/applications/${applicationId}/interview-stages`)
-      .then((res) => {
+      .then(res => {
         if (!res.ok) throw new Error(`Server error ${res.status}`)
         return res.json() as Promise<StagesData>
       })
       .then(setData)
-      .catch((err) => setError(err instanceof Error ? err.message : 'Failed to load stages'))
+      .catch(err => setError(err instanceof Error ? err.message : 'Failed to load stages'))
       .finally(() => setLoading(false))
   }, [applicationId])
+
+  // Set default selected breadcrumb once data loads
+  useEffect(() => {
+    if (!data || selectedRoundId !== null) return
+    if (data.ats_status !== 'pass') {
+      setSelectedRoundId('ats')
+    } else if (data.current_round_id) {
+      setSelectedRoundId(data.current_round_id)
+    } else {
+      const last = data.rounds[data.rounds.length - 1]
+      setSelectedRoundId(last?.interview_round_id ?? 'ats')
+    }
+  }, [data, selectedRoundId])
 
   useEffect(() => {
     if (!applicationId || !data || data.ats_status !== 'pending' || atsTriggered.current) return
     atsTriggered.current = true
     runAts(applicationId)
-      .then((result) => {
-        setData((prev) =>
-          prev
-            ? { ...prev, ats_status: result.eligible ? 'pass' : 'fail', ats_reason: result.reason }
-            : prev,
+      .then(result => {
+        setData(prev =>
+          prev ? { ...prev, ats_status: result.eligible ? 'pass' : 'fail', ats_reason: result.reason } : prev
         )
       })
-      .catch(() => {
-        setAtsError(true)
-      })
+      .catch(() => setAtsError(true))
   }, [applicationId, data])
 
-  // Fetch questions when a completed round is opened for the first time
+  // Fetch questions when a completed round is selected
   useEffect(() => {
-    if (!data) return
-    for (const round of data.rounds) {
-      if (
-        openStages.has(round.interview_round_id) &&
-        isRoundCompleted(round) &&
-        !fetchedRounds.current.has(round.interview_round_id)
-      ) {
-        fetchRoundQuestions(round)
-      }
-    }
+    if (!data || !selectedRoundId || selectedRoundId === 'ats') return
+    const round = data.rounds.find(r => r.interview_round_id === selectedRoundId)
+    if (round && isRoundCompleted(round)) fetchRoundQuestions(round)
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [openStages, data])
+  }, [selectedRoundId, data])
 
-  const atsOpen = openStages.has('ats')
+  // True when the panel is showing a completed round's Q&A (× button should appear)
+  const qaRound = (selectedRoundId && selectedRoundId !== 'ats')
+    ? data?.rounds.find(r => r.interview_round_id === selectedRoundId && isRoundCompleted(r)) ?? null
+    : null
+  const isQAView = qaRound !== null
+
+  function closeQA() { setSelectedRoundId(null) }
+
+  function renderQABlock(round: RoundInfo) {
+    const verdictKey = scoreVerdict(round.result) ?? 'pending'
+    const questions = roundQuestions[round.interview_round_id] ?? []
+    const questionsLoading = loadingQuestions[round.interview_round_id] ?? false
+    return (
+      <div className="ap-detail-qa">
+        <div className="ap-detail-meta">
+          <div className="ap-detail-meta-item">
+            <span className="ap-detail-meta-label">Verdict</span>
+            <span className={`ap-detail-meta-value ap-detail-meta-value--${verdictKey}`}>
+              {verdictKey === 'pass' ? 'Passed' : verdictKey === 'fail' ? 'Failed' : 'Completed'}
+            </span>
+          </div>
+          {round.avg_score != null && (
+            <div className="ap-detail-meta-item">
+              <span className="ap-detail-meta-label">Avg. Score</span>
+              <span className="ap-detail-meta-value">{round.avg_score.toFixed(1)} / 10</span>
+            </div>
+          )}
+        </div>
+        {round.feedback && <p className="ap-detail-feedback">{round.feedback}</p>}
+        {questionsLoading ? (
+          <p className="ap-qa-loading">Loading questions…</p>
+        ) : questions.length > 0 ? (
+          <div className="ap-qa-section">
+            <p className="ap-qa-section-label">Interview Q&amp;A</p>
+            <div className="ap-qa-list">
+              {questions.map((q, qi) => (
+                <div key={q.question_id} className="ap-qa-item">
+                  <div className="ap-qa-header">
+                    <span className="ap-qa-num">Q{qi + 1}</span>
+                    {q.score != null && (
+                      <span className="ap-qa-score" style={{ color: getScoreColor(q.score) }}>
+                        {q.score}/10
+                      </span>
+                    )}
+                  </div>
+                  <p className="ap-qa-question">{q.question_text}</p>
+                  {q.candidate_answer ? (
+                    <p className="ap-qa-answer">{q.candidate_answer}</p>
+                  ) : (
+                    <p className="ap-qa-answer ap-qa-answer--empty">No answer recorded</p>
+                  )}
+                  {q.notes && <p className="ap-qa-notes">{q.notes}</p>}
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
+      </div>
+    )
+  }
+
+  function renderDetailContent() {
+    if (!data) return null
+
+    // ATS failed / error
+    if (data.ats_status === 'fail' || atsError) {
+      return (
+        <div className="ap-detail-msg">
+          <p className="ap-detail-msg-title">ATS Screening Failed</p>
+          {data.ats_reason && <p className="ap-detail-msg-body">{data.ats_reason}</p>}
+        </div>
+      )
+    }
+
+    // ATS pending
+    if (data.ats_status === 'pending') {
+      return (
+        <div className="ap-detail-msg">
+          <p className="ap-detail-msg-title">ATS Screening in progress…</p>
+          <p className="ap-detail-msg-body">Please check back shortly.</p>
+        </div>
+      )
+    }
+
+    // Terminal state
+    if (isTerminal) {
+      const outcomeBanner = (
+        <div className="ap-detail-outcome">
+          <p className="ap-detail-outcome-title">{getOutcomeInfo().title}</p>
+          {latestRound?.status && (
+            <span className={`ap-stage-badge ${getRoundBadgeClass(latestRound)}`}>
+              {latestRound.title}: {getRoundLabel(latestRound)}
+            </span>
+          )}
+          {latestRound?.feedback && (
+            <p className="ap-detail-outcome-feedback">{latestRound.feedback}</p>
+          )}
+        </div>
+      )
+      // No breadcrumb / ATS selected — just outcome
+      if (!selectedRoundId || selectedRoundId === 'ats') return outcomeBanner
+      // Completed round selected — outcome + Q&A
+      const pickedRound = data.rounds.find(r => r.interview_round_id === selectedRoundId)
+      if (!pickedRound || !isRoundCompleted(pickedRound)) return outcomeBanner
+      return <>{outcomeBanner}{renderQABlock(pickedRound)}</>
+    }
+
+    // Nothing selected (after closing Q&A)
+    if (!selectedRoundId) {
+      return (
+        <div className="ap-detail-msg">
+          <p className="ap-detail-msg-title">Select a round</p>
+          <p className="ap-detail-msg-body">Click an interview round on the left to view its Q&amp;A and status.</p>
+        </div>
+      )
+    }
+
+    // ATS breadcrumb selected
+    if (selectedRoundId === 'ats') {
+      return (
+        <div className="ap-detail-msg">
+          <p className="ap-detail-msg-title">ATS Screening Passed</p>
+          {data.ats_reason && <p className="ap-detail-msg-body">{data.ats_reason}</p>}
+        </div>
+      )
+    }
+
+    // Round breadcrumb selected
+    const round = data.rounds.find(r => r.interview_round_id === selectedRoundId)
+    if (!round) return null
+
+    const s = (round.status ?? '').toLowerCase()
+
+    if (s === 'in progress') {
+      return (
+        <div className="ap-detail-msg">
+          <p className="ap-detail-msg-title">{round.title} interview in progress</p>
+        </div>
+      )
+    }
+
+    if (isRoundNotNeeded(round)) {
+      return (
+        <div className="ap-detail-msg">
+          <p className="ap-detail-msg-title">{round.title}</p>
+          <p className="ap-detail-msg-body">Not needed — a prior round was not passed.</p>
+        </div>
+      )
+    }
+
+    if (!isRoundCompleted(round)) {
+      return (
+        <div className="ap-detail-msg">
+          <p className="ap-detail-msg-title">{round.title}</p>
+          <p className="ap-detail-msg-body">This round hasn't started yet.</p>
+        </div>
+      )
+    }
+
+    // Completed — Q&A
+    return renderQABlock(round)
+  }
 
   return (
     <main className="app-progress-page">
       <div className="app-progress-body">
+
+        {/* Heading row */}
         <div className="app-progress-heading-row">
           <h1 className="app-progress-heading">Application Progress</h1>
           <button
@@ -223,27 +376,12 @@ function ApplicationProgress() {
         {loading && <p className="stages-status-text">Loading…</p>}
         {error && <p className="stages-status-text stages-error">{error}</p>}
 
-        {data && (data.job_role_title || data.company) && (
-          <div className="ap-job-info-card">
-            {(data.experience_level_name || data.job_role_title) && (
-              <span className="ap-job-info-title">
-                {[data.experience_level_name, data.job_role_title].filter(Boolean).join(' ')}
-              </span>
-            )}
-            {data.company && (
-              <span className="ap-job-info-company">{data.company}</span>
-            )}
-          </div>
-        )}
-
         {data && (
           <>
-            {/* Bubble timeline */}
+            {/* Horizontal bubble timeline */}
             <div className="app-progress-timeline">
               <div className="stage-bubble-wrapper">
-                <div
-                  className={`stage-bubble${data.ats_status === 'pending' ? ' stage-bubble--ats-pending' : ''}`}
-                >
+                <div className={`stage-bubble${data.ats_status === 'pending' ? ' stage-bubble--ats-pending' : ''}`}>
                   {data.ats_status === 'pending' && 'ATS\nChecking…'}
                   {data.ats_status === 'pass' && 'ATS\nPass'}
                   {data.ats_status === 'fail' && 'ATS\nFailed'}
@@ -255,209 +393,116 @@ function ApplicationProgress() {
                   <span className="stage-current-label stage-current-label--static">ATS Failed</span>
                 )}
               </div>
-
-              {data.rounds.map((round) => (
+              {data.rounds.map(round => (
                 <div key={round.interview_round_id} className="stage-bubble-wrapper">
                   <div className="stage-bubble">{round.title}</div>
-                  {data.ats_status === 'pass' && round.interview_round_id === data.current_round_id && (
+                  {!isTerminal && data.ats_status === 'pass' && round.interview_round_id === data.current_round_id && (
                     <span className="stage-current-label">Current Round</span>
                   )}
                 </div>
               ))}
             </div>
 
-            {/* Stage accordion list */}
-            <div className="ap-stages-list">
+            {/* Left / right pane row */}
+            <div className="ap-content-row">
 
-              {/* ATS row */}
-              <div className={`ap-stage${atsOpen ? ' ap-stage--open' : ''}`}>
-                <button
-                  className={`ap-stage-btn${atsOpen ? ' ap-stage-btn--open' : ''}`}
-                  onClick={() => toggleStage('ats')}
-                >
-                  <span className="ap-stage-index">01</span>
-                  <span className="ap-stage-title">ATS Screening</span>
-                  <span className={`ap-stage-badge ${getAtsBadgeClass(data.ats_status)}`}>
-                    {getAtsLabel(data.ats_status)}
-                  </span>
-                  <span className="ap-stage-chevron">›</span>
-                </button>
+              {/* Left pane: job card + breadcrumbs */}
+              <div className="ap-left-pane">
 
-                {atsOpen && (
-                  <div className="ap-stage-panel">
-                    {atsError ? (
-                      <p className="ap-stage-detail-reason ap-stage-detail-value--fail">
-                        ATS screening encountered an issue. Please try again later or contact support.
-                      </p>
-                    ) : data.ats_status === 'pending' ? (
-                      <p className="ap-stage-detail-reason ap-stage-detail-value--pending">
-                        ATS screening is in progress. Please check back shortly.
-                      </p>
-                    ) : (
-                      <>
-                        <div className="ap-stage-detail-grid">
-                          <div className="ap-stage-detail-item">
-                            <span className="ap-stage-detail-label">Verdict</span>
-                            <span className={`ap-stage-detail-value ap-stage-detail-value--${data.ats_status}`}>
-                              {data.ats_status === 'pass' ? 'Passed' : 'Failed'}
-                            </span>
-                          </div>
-                        </div>
-                        {data.ats_reason && (
-                          <p className="ap-stage-detail-reason">{data.ats_reason}</p>
-                        )}
-                      </>
+                {/* Job card */}
+                {(data.job_role_title || data.company) && (
+                  <div className="ap-job-card">
+                    {data.job_role_title && (
+                      <span className="ap-job-role">{data.job_role_title}</span>
                     )}
+                    {data.experience_level_name && (
+                      <span className="ap-job-level">{data.experience_level_name}</span>
+                    )}
+                    {data.company && (
+                      <span className="ap-job-company">{data.company}</span>
+                    )}
+                    <span className="ap-job-rounds">
+                      {data.rounds.length} Round{data.rounds.length !== 1 ? 's' : ''}
+                    </span>
                   </div>
                 )}
-              </div>
 
-              {/* Interview round rows */}
-              {data.rounds.map((round, i) => {
-                const isOpen = openStages.has(round.interview_round_id)
-                const isCompleted = isRoundCompleted(round)
-                const verdictKey = scoreVerdict(round.result) ?? 'pending'
-                const questions = roundQuestions[round.interview_round_id] ?? []
-                const questionsLoading = loadingQuestions[round.interview_round_id] ?? false
-
-                return (
-                  <div
-                    key={round.interview_round_id}
-                    className={`ap-stage${isOpen ? ' ap-stage--open' : ''}`}
+                {/* Breadcrumbs */}
+                <div className="ap-breadcrumbs">
+                  <span className="ap-breadcrumbs-label">Interview Rounds</span>
+                  <button
+                    className={`ap-crumb${selectedRoundId === 'ats' ? ' ap-crumb--active' : ''}`}
+                    onClick={() => setSelectedRoundId('ats')}
                   >
+                    ATS Screening
+                  </button>
+                  {data.rounds.map(round => (
                     <button
-                      className={`ap-stage-btn${isOpen ? ' ap-stage-btn--open' : ''}`}
-                      onClick={() => toggleStage(round.interview_round_id)}
+                      key={round.interview_round_id}
+                      className={`ap-crumb${selectedRoundId === round.interview_round_id ? ' ap-crumb--active' : ''}`}
+                      onClick={() => setSelectedRoundId(round.interview_round_id)}
                     >
-                      <span className="ap-stage-index">{String(i + 2).padStart(2, '0')}</span>
-                      <span className="ap-stage-title">{round.title}</span>
-                      <span className={`ap-stage-badge ${getRoundBadgeClass(round)}`}>
-                        {getRoundLabel(round)}
-                      </span>
-                      <span className="ap-stage-chevron">›</span>
+                      {round.title}
                     </button>
-
-                    {isOpen && (
-                      <div className="ap-stage-panel">
-                        {!isCompleted ? (
-                          <div className="ap-stage-detail-grid">
-                            <div className="ap-stage-detail-item">
-                              <span className="ap-stage-detail-label">Status</span>
-                              <span className="ap-stage-detail-value ap-stage-detail-value--pending">
-                                {round.status === 'In Progress' ? 'In Progress' : 'Pending'}
-                              </span>
-                            </div>
-                            <div className="ap-stage-detail-item">
-                              <span className="ap-stage-detail-label">Duration</span>
-                              <span className="ap-stage-detail-value">
-                                {formatDuration(round.scheduled_at)}
-                              </span>
-                            </div>
-                          </div>
-                        ) : (
-                          <>
-                            <div className="ap-stage-detail-grid">
-                              <div className="ap-stage-detail-item">
-                                <span className="ap-stage-detail-label">Verdict</span>
-                                <span className={`ap-stage-detail-value ap-stage-detail-value--${verdictKey}`}>
-                                  {verdictKey === 'pass' ? 'Passed' : verdictKey === 'fail' ? 'Failed' : 'Completed'}
-                                </span>
-                              </div>
-                              {round.avg_score != null && (
-                                <div className="ap-stage-detail-item">
-                                  <span className="ap-stage-detail-label">Avg. Score</span>
-                                  <span className="ap-stage-detail-value">
-                                    {round.avg_score.toFixed(1)} / 10
-                                  </span>
-                                </div>
-                              )}
-                            </div>
-                            {round.feedback && (
-                              <p className="ap-stage-detail-reason">{round.feedback}</p>
-                            )}
-
-                            {/* Q&A section */}
-                            {questionsLoading ? (
-                              <p className="ap-qa-loading">Loading questions…</p>
-                            ) : questions.length > 0 ? (
-                              <div className="ap-qa-section">
-                                <p className="ap-qa-section-label">Interview Q&amp;A</p>
-                                <div className="ap-qa-list">
-                                  {questions.map((q, qi) => (
-                                    <div key={q.question_id} className="ap-qa-item">
-                                      <div className="ap-qa-header">
-                                        <span className="ap-qa-num">Q{qi + 1}</span>
-                                        {q.score != null && (
-                                          <span
-                                            className="ap-qa-score"
-                                            style={{ color: getScoreColor(q.score) }}
-                                          >
-                                            {q.score}/10
-                                          </span>
-                                        )}
-                                      </div>
-                                      <p className="ap-qa-question">{q.question_text}</p>
-                                      {q.candidate_answer ? (
-                                        <p className="ap-qa-answer">{q.candidate_answer}</p>
-                                      ) : (
-                                        <p className="ap-qa-answer ap-qa-answer--empty">No answer recorded</p>
-                                      )}
-                                      {q.notes && (
-                                        <p className="ap-qa-notes">{q.notes}</p>
-                                      )}
-                                    </div>
-                                  ))}
-                                </div>
-                              </div>
-                            ) : null}
-                          </>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                )
-              })}
-            </div>
-
-            {testMode && (
-              <div className="test-mode-jumper">
-                <span className="test-mode-jumper-label">Jump to round</span>
-                <div className="test-mode-jumper-btns">
-                  {data.rounds.map((round) => (
-                    round.interview_id && (
-                      <button
-                        key={round.interview_round_id}
-                        className="test-mode-jump-btn"
-                        onClick={() => navigate(`/interview-room/${round.interview_id}`)}
-                      >
-                        {round.title}
-                      </button>
-                    )
                   ))}
                 </div>
+
               </div>
+
+              {/* Right pane: blurred detail panel */}
+              <div className="ap-right-pane">
+                <div className="ap-detail-panel">
+                  {isQAView && (
+                    <div className="ap-panel-close-row">
+                      <button className="ap-panel-close-btn" onClick={closeQA} title="Close Q&A">×</button>
+                    </div>
+                  )}
+                  <div className="ap-panel-body">
+                    {renderDetailContent()}
+                  </div>
+                </div>
+              </div>
+
+              {/* Rightmost: test-mode jump panel — only when test mode on */}
+              {testMode && (
+                <div className="ap-test-panel">
+                  <span className="ap-test-panel-label">Jump to round</span>
+                  <div className="ap-test-panel-list">
+                    {data.rounds.map(round =>
+                      round.interview_id && (
+                        <button
+                          key={round.interview_round_id}
+                          className="ap-test-panel-btn"
+                          onClick={() => navigate(`/interview-room/${round.interview_id}`)}
+                        >
+                          {round.title}
+                        </button>
+                      )
+                    )}
+                  </div>
+                </div>
+              )}
+
+            </div>
+
+            {/* CTA */}
+            {!isTerminal && !allRoundsCompleted && data.ats_status !== 'fail' && !atsError && (
+              <Button
+                variant="primary"
+                className="app-progress-cta"
+                onClick={() => {
+                  if (currentRound?.interview_id) {
+                    navigate(`/interview-room/${currentRound.interview_id}`)
+                  }
+                }}
+                disabled={!data.current_round_id || data.ats_status === 'pending'}
+              >
+                {data.ats_status === 'pending' ? 'ATS Screening…' : 'Go To Interview Room'}
+              </Button>
             )}
           </>
         )}
 
-        {allRoundsCompleted ? (
-          <p className="stages-completed-text">All interview rounds have been completed.</p>
-        ) : (
-          data && data.ats_status !== 'fail' && !atsError && (
-            <Button
-              variant="primary"
-              className="app-progress-cta"
-              onClick={() => {
-                if (currentRound?.interview_id) {
-                  navigate(`/interview-room/${currentRound.interview_id}`)
-                }
-              }}
-              disabled={!data || !data.current_round_id || data.ats_status === 'pending'}
-            >
-              {data.ats_status === 'pending' ? 'ATS Screening…' : 'Go To Interview Room'}
-            </Button>
-          )
-        )}
       </div>
     </main>
   )

@@ -100,7 +100,9 @@ function Jobs() {
   }, [allJobs, filters, salaryMin, salaryMax, salaryError])
 
   useEffect(() => {
-    fetchJobs()
+    setLoading(true)
+    setError(null)
+    fetchJobs({ candidate_id: candidateId || undefined })
       .then((data) => {
         setAllJobs(data)
         if (pendingJobId) {
@@ -111,7 +113,7 @@ function Jobs() {
       .catch((err: unknown) => setError(err instanceof Error ? err.message : 'Failed to load jobs'))
       .finally(() => setLoading(false))
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
+  }, [candidateId])
 
   function handleLocationChange(value: string) {
     setLocationInput(value)
@@ -155,6 +157,10 @@ function Jobs() {
   return (
     <main className="jobs-page">
       <header className="jobs-header">
+        <div className="jobs-brand">
+          <span className="jobs-brand-primary">Russel</span>
+          <span className="jobs-brand-accent">.AI</span>
+        </div>
         <h1 className="jobs-heading">Open Positions</h1>
       </header>
 

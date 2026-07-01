@@ -201,7 +201,7 @@ CREATE TABLE Resumes (
 | id | uniqueidentifier PK | |
 | interview_round_id | uniqueidentifier FK -> InterviewRounds | |
 | application_id | uniqueidentifier FK -> Applications | |
-| status | varchar | `Scheduled` / `In Progress` / `Pass` / `Failed` |
+| status | varchar | `Scheduled` / `In Progress` / `Pass` / `Failed` / `Not Needed` (auto-set on later rounds when an earlier round Fails) |
 | scheduled_at | datetime2 | |
 | completed_at | datetime2 | |
 | feedback | nvarchar | AI-generated text feedback about the round |

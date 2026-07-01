@@ -8,6 +8,7 @@ import RecruiterDashboard from './pages/RecruiterDashboard'
 import ApplicationProgress from './pages/ApplicationProgress'
 import InterviewRoom from './pages/InterviewRoom'
 import UserProfile from './pages/UserProfile'
+import JobPostStats from './pages/JobPostStats'
 import PageTransition from './components/PageTransition'
 import UserMenu from './components/UserMenu'
 import DebugBreadcrumb from './components/DebugBreadcrumb'
@@ -24,6 +25,12 @@ function isSignedIn() {
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   if (!isSignedIn()) return <Navigate to="/" replace />
+  return <>{children}</>
+}
+
+function CandidateRoute({ children }: { children: React.ReactNode }) {
+  if (!isSignedIn()) return <Navigate to="/" replace />
+  if (sessionStorage.getItem('userType') === 'recruiter') return <Navigate to="/recruiter-dashboard" replace />
   return <>{children}</>
 }
 
@@ -47,7 +54,7 @@ function App() {
           {/* Protected routes — redirect to / if signed out */}
           <Route
             path="/my-applications"
-            element={<ProtectedRoute><PageTransition><MyApplications /></PageTransition></ProtectedRoute>}
+            element={<CandidateRoute><PageTransition><MyApplications /></PageTransition></CandidateRoute>}
           />
           <Route
             path="/recruiter-dashboard"
@@ -55,15 +62,19 @@ function App() {
           />
           <Route
             path="/application-progress/:applicationId"
-            element={<ProtectedRoute><PageTransition><ApplicationProgress /></PageTransition></ProtectedRoute>}
+            element={<CandidateRoute><PageTransition><ApplicationProgress /></PageTransition></CandidateRoute>}
           />
           <Route
             path="/interview-room/:interviewId"
-            element={<ProtectedRoute><PageTransition><InterviewRoom /></PageTransition></ProtectedRoute>}
+            element={<CandidateRoute><PageTransition><InterviewRoom /></PageTransition></CandidateRoute>}
           />
           <Route
             path="/profile"
             element={<ProtectedRoute><PageTransition><UserProfile /></PageTransition></ProtectedRoute>}
+          />
+          <Route
+            path="/job-stats/:jobId"
+            element={<ProtectedRoute><PageTransition><JobPostStats /></PageTransition></ProtectedRoute>}
           />
         </Routes>
       </AnimatePresence>

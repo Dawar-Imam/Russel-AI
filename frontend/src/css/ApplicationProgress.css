@@ -1,3 +1,16 @@
+/* ─────────────────────────────────────────────────────────────
+   Box-sizing reset — ensures padding is absorbed into declared
+   heights instead of being added on top (fixes viewport overflow)
+───────────────────────────────────────────────────────────── */
+.app-progress-page *,
+.app-progress-page *::before,
+.app-progress-page *::after {
+  box-sizing: border-box;
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Page shell
+───────────────────────────────────────────────────────────── */
 .app-progress-page {
   height: 100vh;
   overflow: hidden;
@@ -9,62 +22,26 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: var(--space-8) var(--space-6) 0;
+  /* clear the fixed navbar (top: 14px + height: 48px = 62px, token gives 74px with buffer) */
+  padding: var(--navbar-height) var(--space-8) 0;
 }
 
 .app-progress-body {
   flex: 1;
   width: 100%;
-  max-width: 900px;
+  max-width: 1100px;
   min-height: 0;
-  overflow-y: auto;
+  overflow: hidden;
   display: flex;
   flex-direction: column;
   align-items: center;
+  /* bottom padding shrinks available pane height without changing structure */
   padding-bottom: var(--space-8);
-  scrollbar-width: thin;
-  scrollbar-color: var(--color-border) transparent;
 }
 
-.app-progress-body::-webkit-scrollbar {
-  width: 4px;
-}
-
-.app-progress-body::-webkit-scrollbar-thumb {
-  background: var(--color-border);
-  border-radius: 2px;
-}
-
-/* ── Job info card ── */
-.ap-job-info-card {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: var(--space-1);
-  padding: var(--space-3) var(--space-6);
-  background: rgba(20, 20, 20, 0.4);
-  backdrop-filter: blur(12px);
-  -webkit-backdrop-filter: blur(12px);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-lg);
-  margin-bottom: var(--space-4);
-}
-
-.ap-job-info-title {
-  font-size: 16px;
-  font-weight: 700;
-  letter-spacing: -0.01em;
-  color: var(--color-text-primary);
-}
-
-.ap-job-info-company {
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--color-primary);
-}
-
+/* ─────────────────────────────────────────────────────────────
+   Status text (loading / error)
+───────────────────────────────────────────────────────────── */
 .stages-status-text {
   margin: var(--space-8) 0;
   font-size: 14px;
@@ -72,12 +49,22 @@
   text-align: center;
 }
 
-.stages-error {
-  color: #e05c5c;
+.stages-error { color: #e05c5c; }
+
+/* ─────────────────────────────────────────────────────────────
+   Heading row  (title + test-mode toggle)
+───────────────────────────────────────────────────────────── */
+.app-progress-heading-row {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  margin-top: var(--space-5);   /* 20px below navbar clearance */
+  margin-bottom: var(--space-2);
 }
 
 .app-progress-heading {
-  margin: var(--space-10) 0 var(--space-8);
+  margin: 0;
   font-size: 28px;
   font-weight: 700;
   letter-spacing: -0.02em;
@@ -85,19 +72,9 @@
   text-align: center;
 }
 
-/* ── Heading row with test mode toggle ── */
-.app-progress-heading-row {
-  display: flex;
-  align-items: center;
-  gap: var(--space-4);
-  /* margin: var(--space-30) 0 var(--space-18); */
-  margin-top: 50px;
-}
-
-.app-progress-heading-row .app-progress-heading {
-  margin: 0;
-}
-
+/* ─────────────────────────────────────────────────────────────
+   Test-mode pill toggle
+───────────────────────────────────────────────────────────── */
 .test-mode-toggle {
   display: inline-flex;
   align-items: center;
@@ -105,7 +82,7 @@
   background: transparent;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-pill);
-  padding: 5px 10px 5px 6px;
+  padding: 5px 12px 5px 6px;
   cursor: pointer;
   color: var(--color-text-secondary);
   font-size: 11px;
@@ -131,9 +108,7 @@
   transition: background-color 0.2s ease;
 }
 
-.test-mode-toggle--on .test-mode-toggle-track {
-  background-color: var(--color-primary);
-}
+.test-mode-toggle--on .test-mode-toggle-track { background-color: var(--color-primary); }
 
 .test-mode-toggle-thumb {
   position: absolute;
@@ -151,63 +126,20 @@
   background-color: var(--color-bg);
 }
 
-/* ── Test mode jump bar ── */
-.test-mode-jumper {
-  width: 100%;
-  max-width: 720px;
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  padding: var(--space-3) var(--space-4);
-  background-color: rgba(245, 166, 35, 0.05);
-  border: 1px solid rgba(245, 166, 35, 0.2);
-  border-radius: var(--radius-sm);
-  margin-bottom: var(--space-4);
-  flex-wrap: wrap;
-}
-
-.test-mode-jumper-label {
-  font-size: 10px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
-  color: var(--color-primary);
-  flex-shrink: 0;
-}
-
-.test-mode-jumper-btns {
-  display: flex;
-  gap: var(--space-2);
-  flex-wrap: wrap;
-}
-
-.test-mode-jump-btn {
-  padding: 4px 12px;
-  background: transparent;
-  border: 1px solid rgba(245, 166, 35, 0.4);
-  border-radius: var(--radius-pill);
-  color: var(--color-primary);
-  font-size: 11px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: background-color 0.15s ease;
-  letter-spacing: 0.02em;
-}
-
-.test-mode-jump-btn:hover {
-  background-color: rgba(245, 166, 35, 0.1);
-}
-
+/* ─────────────────────────────────────────────────────────────
+   Horizontal bubble timeline
+───────────────────────────────────────────────────────────── */
 .app-progress-timeline {
+  flex-shrink: 0;
   position: relative;
-  width: 100%;
-  max-width: 840px;
   display: flex;
   align-items: center;
   justify-content: center;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: var(--space-8);
-  margin: var(--space-4) auto var(--space-8);
+  margin: var(--space-3) 0 var(--space-3);  /* tighter: 12px above and below */
+  width: max-content;
+  min-width: 100%;
 }
 
 .app-progress-timeline::before {
@@ -251,19 +183,11 @@
   transition: transform 0.2s ease;
 }
 
-.stage-bubble:hover {
-  transform: scale(1.1);
-}
+.stage-bubble:hover { transform: scale(1.1); }
 
 @keyframes stage-pulse {
-  0%, 100% {
-    transform: translateX(-50%) scale(1);
-    opacity: 1;
-  }
-  50% {
-    transform: translateX(-50%) scale(1.15);
-    opacity: 0.6;
-  }
+  0%, 100% { transform: translateX(-50%) scale(1);    opacity: 1;   }
+  50%       { transform: translateX(-50%) scale(1.15); opacity: 0.6; }
 }
 
 .stage-current-label {
@@ -285,93 +209,463 @@
   transform: translateX(-50%) scale(1);
 }
 
+@keyframes ats-pending-glow {
+  0%, 100% { box-shadow: var(--shadow-glow-amber); }
+  50%       { box-shadow: 0 0 28px rgba(245, 166, 35, 0.45); }
+}
+
+.stage-bubble--ats-pending { animation: ats-pending-glow 1.5s ease-in-out infinite; }
+
+/* ─────────────────────────────────────────────────────────────
+   Three-column content row
+───────────────────────────────────────────────────────────── */
+.ap-content-row {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  gap: 28px;
+  margin-top: var(--space-3);
+  margin-bottom: var(--space-5);
+  /* cap pane height: navbar(74) + heading(~66) + timeline(~154) + margins(~44) ≈ 338px overhead */
+  max-height: calc(100vh - var(--navbar-height) - 300px);
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Left pane  (job card + breadcrumbs)
+───────────────────────────────────────────────────────────── */
+.ap-left-pane {
+  flex: 0 0 300px;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border) transparent;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  background: rgba(12, 12, 12, 0.55);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-6);
+}
+
+.ap-left-pane::-webkit-scrollbar { width: 3px; }
+.ap-left-pane::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 2px; }
+
+/* Job card */
+.ap-job-card {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;                         /* 6px between role / level / company / rounds */
+  padding-bottom: var(--space-6);   /* 24px before the divider */
+  border-bottom: 1px solid var(--color-border);
+}
+
+.ap-job-role {
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--color-text-primary);
+  line-height: 1.2;
+  margin-bottom: 2px;
+}
+
+.ap-job-level {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+}
+
+.ap-job-company {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-primary);
+}
+
+.ap-job-rounds {
+  margin-top: var(--space-2);       /* 8px gap before round count */
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--color-text-muted);
+  letter-spacing: 0.04em;
+}
+
+/* Breadcrumbs */
+.ap-breadcrumbs {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);              /* 8px between crumb items */
+  flex: 1;
+}
+
+.ap-breadcrumbs-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--color-text-muted);
+  margin-bottom: var(--space-2);    /* 8px between label and first crumb */
+}
+
+.ap-crumb {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 10px 14px;               /* 10px vertical, 14px horizontal */
+  background: transparent;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease, background-color 0.15s ease;
+}
+
+.ap-crumb:hover {
+  border-color: rgba(245, 166, 35, 0.4);
+  color: var(--color-text-primary);
+  background-color: rgba(245, 166, 35, 0.04);
+}
+
+.ap-crumb--active {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+  background-color: rgba(245, 166, 35, 0.06);
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Right pane  (blurred detail panel)
+───────────────────────────────────────────────────────────── */
+.ap-right-pane {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.ap-detail-panel {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;                 /* clip — scrolling happens in ap-panel-body */
+  background: rgba(12, 12, 12, 0.65);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  padding: var(--space-5) var(--space-6) 0; /* top/sides only; body has bottom padding */
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+/* Close button row — fixed at top, never scrolls */
+.ap-panel-close-row {
+  flex-shrink: 0;
+  display: flex;
+  justify-content: flex-end;
+  padding-bottom: var(--space-2);
+}
+
+.ap-panel-close-btn {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: transparent;
+  border: 1px solid var(--color-border);
+  color: var(--color-text-muted);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: border-color 0.15s ease, color 0.15s ease;
+}
+
+.ap-panel-close-btn:hover {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
+/* Scrollable content area inside the panel */
+.ap-panel-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: var(--space-4) var(--space-2) var(--space-6); /* top breathing room + bottom */
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-6);
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border) transparent;
+}
+
+.ap-panel-body::-webkit-scrollbar { width: 3px; }
+.ap-panel-body::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 2px; }
+
+/* Status message */
+.ap-detail-msg {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);              /* 12px between title and body text */
+}
+
+.ap-detail-msg-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--color-primary);
+  line-height: 1.4;
+}
+
+.ap-detail-msg-body {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(245, 166, 35, 0.7);
+  line-height: 1.6;
+}
+
+/* Terminal outcome banner */
+.ap-detail-outcome {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);              /* 12px between title / badge / feedback */
+  padding-bottom: var(--space-6);
+  border-bottom: 1px solid rgba(245, 166, 35, 0.15);
+}
+
+.ap-detail-outcome-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--color-primary);
+}
+
+.ap-detail-outcome-feedback {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(245, 166, 35, 0.7);
+  line-height: 1.6;
+}
+
+/* Q&A area */
+.ap-detail-qa {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-5);              /* 20px between meta row and Q&A list */
+}
+
+.ap-detail-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-8);              /* 32px between verdict and score chips */
+}
+
+.ap-detail-meta-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ap-detail-meta-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--color-text-muted);
+}
+
+.ap-detail-meta-value {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--color-primary);
+}
+
+.ap-detail-meta-value--pass { color: #6fcf97; }
+.ap-detail-meta-value--fail { color: #e05c5c; }
+
+.ap-detail-feedback {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(245, 166, 35, 0.7);
+  line-height: 1.6;
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Test-mode jump panel  (rightmost column)
+───────────────────────────────────────────────────────────── */
+.ap-test-panel {
+  flex: 0 0 160px;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border) transparent;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  background: rgba(12, 12, 12, 0.55);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(245, 166, 35, 0.18);
+  border-radius: var(--radius-lg);
+  padding: var(--space-6);
+}
+
+.ap-test-panel::-webkit-scrollbar { width: 3px; }
+.ap-test-panel::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 2px; }
+
+.ap-test-panel-label {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--color-primary);
+}
+
+.ap-test-panel-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);              /* 8px between round buttons */
+}
+
+.ap-test-panel-btn {
+  width: 100%;
+  text-align: left;
+  padding: 8px 12px;                /* 8px vertical, 12px horizontal */
+  background: transparent;
+  border: 1px solid rgba(245, 166, 35, 0.25);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.15s ease, color 0.15s ease;
+}
+
+.ap-test-panel-btn:hover {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
+/* ─────────────────────────────────────────────────────────────
+   Q&A section  (shared between detail panel and old accordion)
+───────────────────────────────────────────────────────────── */
+.ap-qa-loading {
+  margin: var(--space-4) 0 0;
+  font-size: 13px;
+  color: var(--color-text-muted);
+}
+
+.ap-qa-section {
+  margin-top: var(--space-2);
+  border-top: 1px solid var(--color-border);
+  padding-top: var(--space-5);      /* 20px below the divider */
+}
+
+.ap-qa-section-label {
+  margin: 0 0 var(--space-4);       /* 16px below label before questions */
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--color-text-muted);
+}
+
+.ap-qa-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);              /* 16px between Q&A cards */
+}
+
+.ap-qa-item {
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  padding: var(--space-5) var(--space-6); /* 20px top/bottom, 24px left/right */
+}
+
+.ap-qa-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-3);    /* 12px below header before question */
+}
+
+.ap-qa-num {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--color-primary);
+}
+
+.ap-qa-score {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.ap-qa-question {
+  margin: 0 0 var(--space-3);       /* 12px below question before answer */
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  line-height: 1.5;
+}
+
+.ap-qa-answer {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--color-text-secondary);
+  line-height: 1.55;
+  padding-left: var(--space-4);     /* 16px indent */
+  border-left: 2px solid var(--color-border);
+}
+
+.ap-qa-answer--empty {
+  color: var(--color-text-muted);
+  font-style: italic;
+}
+
+.ap-qa-notes {
+  margin: var(--space-3) 0 0;       /* 12px above notes */
+  font-size: 11px;
+  color: var(--color-text-muted);
+  line-height: 1.5;
+  font-style: italic;
+}
+
+/* ─────────────────────────────────────────────────────────────
+   CTA button  (fixed bottom-right)
+───────────────────────────────────────────────────────────── */
 .app-progress-cta {
   position: fixed;
   bottom: var(--space-8);
   right: var(--space-8);
 }
 
-.stages-completed-text {
-  margin: var(--space-6) 0 0;
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--color-primary);
-  text-align: center;
-}
-
-/* ── ATS bubble modifiers ── */
-@keyframes ats-pending-glow {
-  0%, 100% { box-shadow: var(--shadow-glow-amber); }
-  50% { box-shadow: 0 0 28px rgba(245, 166, 35, 0.45); }
-}
-
-.stage-bubble--ats-pending {
-  animation: ats-pending-glow 1.5s ease-in-out infinite;
-}
-
-/* ── Stage accordion list ── */
-.ap-stages-list {
-  width: 100%;
-  max-width: 720px;
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  margin: var(--space-2) 0 var(--space-8);
-}
-
-.ap-stage {
-  border-radius: var(--radius-sm);
-  overflow: hidden;
-  border: 1px solid var(--color-border);
-  background-color: var(--color-surface);
-  transition: border-color 0.2s ease;
-}
-
-.ap-stage--open {
-  border-color: rgba(245, 166, 35, 0.3);
-}
-
-.ap-stage-btn {
-  width: 100%;
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
-  padding: var(--space-3) var(--space-4);
-  background: transparent;
-  border: none;
-  cursor: pointer;
-  text-align: left;
-  color: var(--color-text-primary);
-  transition: background-color 0.15s ease;
-}
-
-.ap-stage-btn:hover {
-  background-color: var(--color-surface-raised);
-}
-
-.ap-stage-index {
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--color-text-muted);
-  flex-shrink: 0;
-  width: 22px;
-}
-
-.ap-stage-title {
-  flex: 1;
-  font-size: 14px;
-  font-weight: 600;
-  letter-spacing: -0.01em;
-  color: var(--color-text-primary);
-}
-
-/* Badges */
+/* ─────────────────────────────────────────────────────────────
+   Badges  (shared across accordion and detail panel)
+───────────────────────────────────────────────────────────── */
 .ap-stage-badge {
   display: inline-flex;
   align-items: center;
-  padding: 3px 10px;
+  padding: 4px 12px;
   border-radius: var(--radius-pill);
   font-size: 11px;
   font-weight: 700;
@@ -406,183 +700,50 @@
   color: var(--color-text-secondary);
 }
 
-/* Chevron */
-.ap-stage-chevron {
-  font-size: 16px;
-  line-height: 1;
-  color: var(--color-text-muted);
-  flex-shrink: 0;
-  display: inline-block;
-  transition: transform 0.2s ease;
-}
-
-.ap-stage-btn--open .ap-stage-chevron {
-  transform: rotate(90deg);
-}
-
-/* Detail panel */
-.ap-stage-panel {
-  border-top: 1px solid var(--color-border);
-  padding: var(--space-4);
-  background-color: var(--color-surface-raised);
-  animation: ap-panel-in 0.18s ease;
-}
-
-@keyframes ap-panel-in {
-  from { opacity: 0; transform: translateY(-4px); }
-  to   { opacity: 1; transform: translateY(0); }
-}
-
-.ap-stage-detail-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-  gap: var(--space-4);
-  margin-bottom: var(--space-3);
-}
-
-.ap-stage-detail-item {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.ap-stage-detail-label {
-  font-size: 10px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
-  color: var(--color-text-muted);
-}
-
-.ap-stage-detail-value {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--color-text-primary);
-}
-
-.ap-stage-detail-value--pass {
-  color: #6fcf97;
-}
-
-.ap-stage-detail-value--fail {
-  color: #e05c5c;
-}
-
-.ap-stage-detail-value--pending {
-  color: var(--color-primary);
-}
-
-.ap-stage-detail-reason {
-  margin: 0;
-  font-size: 13px;
-  line-height: 1.55;
-  color: var(--color-text-secondary);
-}
-
-/* ── Q&A section ── */
-.ap-qa-loading {
-  margin: var(--space-4) 0 0;
-  font-size: 13px;
-  color: var(--color-text-muted);
-}
-
-.ap-qa-section {
-  margin-top: var(--space-4);
-  border-top: 1px solid var(--color-border);
-  padding-top: var(--space-4);
-}
-
-.ap-qa-section-label {
-  margin: 0 0 var(--space-3);
-  font-size: 10px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.1em;
-  color: var(--color-text-muted);
-}
-
-.ap-qa-list {
+/* ─────────────────────────────────────────────────────────────
+   Outcome card  (legacy — kept for safety, not rendered)
+───────────────────────────────────────────────────────────── */
+.ap-outcome-card {
+  margin: var(--space-8) 0 0;
+  padding: var(--space-6) var(--space-8);
+  border-radius: 12px;
+  border: 1px solid rgba(245, 166, 35, 0.35);
+  background: rgba(245, 166, 35, 0.06);
   display: flex;
   flex-direction: column;
   gap: var(--space-3);
 }
 
-.ap-qa-item {
-  background-color: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-  padding: var(--space-3) var(--space-4);
-}
-
-.ap-qa-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: var(--space-2);
-}
-
-.ap-qa-num {
-  font-size: 10px;
+.ap-outcome-title {
+  margin: 0;
+  font-size: 15px;
   font-weight: 700;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
   color: var(--color-primary);
 }
 
-.ap-qa-score {
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-}
-
-.ap-qa-question {
-  margin: 0 0 var(--space-2);
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--color-text-primary);
-  line-height: 1.5;
-}
-
-.ap-qa-answer {
+.ap-outcome-feedback {
   margin: 0;
   font-size: 13px;
-  font-weight: 400;
-  color: var(--color-text-secondary);
-  line-height: 1.55;
-  padding-left: var(--space-3);
-  border-left: 2px solid var(--color-border);
+  color: rgba(245, 166, 35, 0.75);
+  line-height: 1.6;
 }
 
-.ap-qa-answer--empty {
-  color: var(--color-text-muted);
-  font-style: italic;
+.stages-completed-text {
+  margin: var(--space-6) 0 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-primary);
+  text-align: center;
 }
 
-.ap-qa-notes {
-  margin: var(--space-2) 0 0;
-  font-size: 11px;
-  color: var(--color-text-muted);
-  line-height: 1.5;
-  font-style: italic;
-}
-
+/* ─────────────────────────────────────────────────────────────
+   Mobile
+───────────────────────────────────────────────────────────── */
 @media (max-width: 600px) {
-  .stage-bubble-wrapper {
-    width: 100px;
-    height: 100px;
-  }
-
-  .stage-bubble {
-    font-size: 11px;
-  }
-
-  .stage-current-label {
-    font-size: 9px;
-    bottom: -22px;
-  }
-
-  .app-progress-cta {
-    position: static;
-    margin-top: var(--space-8);
-  }
+  .stage-bubble-wrapper { width: 100px; height: 100px; }
+  .stage-bubble { font-size: 11px; }
+  .stage-current-label { font-size: 9px; bottom: -22px; }
+  .app-progress-cta { position: static; margin-top: var(--space-8); }
+  .ap-content-row { flex-direction: column; gap: var(--space-5); }
+  .ap-left-pane { flex: none; width: 100%; }
 }

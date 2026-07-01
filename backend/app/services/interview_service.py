@@ -14,10 +14,20 @@ from app.schemas.interviews import (
 )
 from app.services.interview_validator import ValidationInput, validate_interview
 
-TIMER_SECONDS = 300
+TIMER_SECONDS = settings.INTERVIEW_DURATION_MINUTES * 60
 PASS_THRESHOLD = 6.0
 
 LEAVE_FEEDBACK = "User left the interview, interview automatically closed."
+
+# ---------------------------------------------------------------------------
+# Test-mode question cache
+# ---------------------------------------------------------------------------
+# test_mode interviews must never write Questions/InterviewQuestions rows to
+# the DB. Generated questions (and, for voice interviews, extracted answers)
+# are kept here in-memory, keyed by interview_id, and read back directly by
+# scoring / the voice agent — no DB round-trip, so nothing can drift out of
+# sync between what the candidate saw and what gets scored.
+_test_mode_questions: dict[str, list[QuestionItem]] = {}
 
 
 # ---------------------------------------------------------------------------
@@ -91,6 +101,53 @@ def _fetch_existing_questions(cur, interview_id: str) -> list[QuestionItem]:
     ]
 
 
+def _update_generated_questions(
+    cur,
+    interview_id: str,
+    existing: list[QuestionItem],
+    new_texts: list[str],
+    interview_round_type_id: int,
+    job_role_id: int,
+    experience_level_id: int,
+) -> list[QuestionItem]:
+    """UPDATE Questions.question_text in-place, paired by position with new_texts.
+
+    If the freshly generated count differs from `existing` (e.g. a regenerate
+    that produces more/fewer questions than a prior attempt), surplus old rows
+    are deleted and/or extra rows are inserted — the InterviewQuestions set
+    always exactly matches the new generation, so no stale leftover question
+    from a previous attempt can ever resurface alongside the new ones.
+    """
+    paired = min(len(existing), len(new_texts))
+    updated: list[QuestionItem] = []
+    for item, new_text in zip(existing[:paired], new_texts[:paired]):
+        cur.execute(
+            "UPDATE Questions SET question_text = ? WHERE id = ?",
+            new_text, item.question_id,
+        )
+        updated.append(QuestionItem(
+            iq_id=item.iq_id,
+            question_id=item.question_id,
+            question_text=new_text,
+            candidate_answer=item.candidate_answer,
+            score=item.score,
+            notes=item.notes,
+        ))
+
+    for stale in existing[paired:]:
+        cur.execute("DELETE FROM InterviewQuestions WHERE id = ?", stale.iq_id)
+        cur.execute("DELETE FROM Questions WHERE id = ?", stale.question_id)
+
+    extra_texts = new_texts[paired:]
+    if extra_texts:
+        updated.extend(_store_generated_questions(
+            cur, interview_id, extra_texts,
+            interview_round_type_id, job_role_id, experience_level_id,
+        ))
+
+    return updated
+
+
 def _store_generated_questions(
     cur,
     interview_id: str,
@@ -144,6 +201,56 @@ def _save_candidate_answers(cur, interview_id: str, answers: list[AnswerItem]) -
         )
 
 
+def _mark_subsequent_rounds_not_needed(cur, interview_id: str) -> None:
+    """When a round is Failed, mark later still-Scheduled rounds of the same
+    application as 'Not Needed' so the candidate doesn't appear to progress."""
+    cur.execute(
+        """
+        UPDATE Interviews
+        SET status = 'Not Needed'
+        WHERE application_id = (SELECT application_id FROM Interviews WHERE id = ?)
+          AND status = 'Scheduled'
+          AND interview_round_id IN (
+              SELECT id FROM InterviewRounds
+              WHERE job_posting_id = (
+                  SELECT job_posting_id FROM InterviewRounds
+                  WHERE id = (SELECT interview_round_id FROM Interviews WHERE id = ?)
+              )
+              AND round_order > (
+                  SELECT round_order FROM InterviewRounds
+                  WHERE id = (SELECT interview_round_id FROM Interviews WHERE id = ?)
+              )
+          )
+        """,
+        interview_id, interview_id, interview_id,
+    )
+
+
+def _maybe_mark_hired(cur, interview_id: str) -> None:
+    """When a round is Passed and no later active round exists for this job,
+    the candidate has cleared every round — mark their application HIRED."""
+    cur.execute(
+        """
+        UPDATE Applications
+        SET status = 'HIRED'
+        WHERE id = (SELECT application_id FROM Interviews WHERE id = ?)
+          AND NOT EXISTS (
+              SELECT 1 FROM InterviewRounds ir
+              WHERE ir.job_posting_id = (
+                  SELECT job_posting_id FROM InterviewRounds
+                  WHERE id = (SELECT interview_round_id FROM Interviews WHERE id = ?)
+              )
+              AND ir.is_active = 1
+              AND ir.round_order > (
+                  SELECT round_order FROM InterviewRounds
+                  WHERE id = (SELECT interview_round_id FROM Interviews WHERE id = ?)
+              )
+          )
+        """,
+        interview_id, interview_id, interview_id,
+    )
+
+
 def _save_scores_and_complete(
     cur,
     interview_id: str,
@@ -170,13 +277,21 @@ def _save_scores_and_complete(
         """,
         interview_result, overall_score, ai_feedback, interview_id,
     )
+    if interview_result == "Failed":
+        _mark_subsequent_rounds_not_needed(cur, interview_id)
+    elif interview_result == "Pass":
+        _maybe_mark_hired(cur, interview_id)
 
 
 # ---------------------------------------------------------------------------
 # Public service functions
 # ---------------------------------------------------------------------------
 
-def get_interview_questions(interview_id: str) -> list[QuestionItem]:
+def get_interview_questions(interview_id: str, test_mode: bool = False) -> list[QuestionItem]:
+    if test_mode:
+        cached = _test_mode_questions.get(interview_id)
+        if cached:
+            return cached
     conn = get_connection()
     try:
         cur = conn.cursor()
@@ -185,16 +300,198 @@ def get_interview_questions(interview_id: str) -> list[QuestionItem]:
         conn.close()
 
 
-def save_voice_answers_bulk(interview_id: str, answers: list[tuple[str, str]]) -> None:
-    """Persist voice answers in one transaction. answers = [(iq_id, answer_text), ...]"""
+def merge_test_mode_answers(interview_id: str, extracted: list[dict]) -> None:
+    """
+    Test-mode equivalent of save_voice_answers_bulk for oral interviews — merges
+    extracted candidate answers into the in-memory cache instead of writing to
+    InterviewQuestions, so test voice interviews never touch the DB.
+
+    `extracted` items use the same shape produced by _extract_answers_with_llm:
+        question_id : str | None  — matches QuestionItem.iq_id from the cache
+        question    : str
+        answer      : str
+
+    The extraction LLM sometimes emits the SAME question twice — once correctly
+    tagged with question_id, once with question_id=None (treating it as a new
+    follow-up). Matching falls back to normalized question text so this never
+    creates a duplicate cache entry.
+    """
+    def _norm(text: str) -> str:
+        return " ".join(text.strip().lower().split())
+
+    cached = _test_mode_questions.get(interview_id, [])
+    by_id: dict[str, QuestionItem] = {q.iq_id: q for q in cached}
+    by_text: dict[str, str] = {_norm(q.question_text): q.iq_id for q in cached}
+
+    for item in extracted:
+        qid = item.get("question_id")
+        answer = str(item.get("answer") or "").strip()
+        if not answer:
+            continue
+        question_text = str(item.get("question") or "")
+        norm_text = _norm(question_text)
+
+        target_id = qid if qid and qid in by_id else by_text.get(norm_text)
+
+        if target_id:
+            q = by_id[target_id]
+            by_id[target_id] = QuestionItem(
+                iq_id=q.iq_id,
+                question_id=q.question_id,
+                question_text=q.question_text,
+                candidate_answer=answer,
+                score=None,
+                notes=None,
+            )
+        else:
+            new_id = qid or str(uuid.uuid4())
+            by_id[new_id] = QuestionItem(
+                iq_id=new_id,
+                question_id=new_id,
+                question_text=question_text,
+                candidate_answer=answer,
+                score=None,
+                notes=None,
+            )
+            by_text[norm_text] = new_id  # catch further duplicates within this same batch
+
+    _test_mode_questions[interview_id] = list(by_id.values())
+
+
+def clear_test_mode_cache(interview_id: str) -> None:
+    _test_mode_questions.pop(interview_id, None)
+
+
+def save_voice_answers_bulk(interview_id: str, extracted: list[dict]) -> None:
+    """
+    Persist voice-interview answers from LLM extraction.
+
+    Each item in `extracted` must have:
+        question_id : str | None  — InterviewQuestions.id, or None for new questions
+        question    : str         — question text
+        answer      : str         — candidate answer (non-empty)
+
+    Logic:
+    - Items with a known question_id  → UPDATE that InterviewQuestions row.
+    - Items with question_id = None   → INSERT new Questions + InterviewQuestions rows,
+      UNLESS their question text matches an existing row or another item already
+      queued in this same batch (the extraction LLM sometimes emits the same
+      question twice — once tagged with question_id, once with None) — those
+      merge into the existing/matched row instead of creating a duplicate.
+    - Existing InterviewQuestions rows whose ids are absent from `extracted`
+      → DELETE (candidate did not answer them).
+    """
+    def _normalize_uuid(val) -> str | None:
+        """Return a properly formatted UUID string, or None if val is invalid."""
+        if not val:
+            return None
+        try:
+            return str(uuid.UUID(str(val).strip()))
+        except (ValueError, AttributeError):
+            import logging
+            logging.getLogger("russel.interview_service").warning(
+                "Invalid UUID question_id %r — treating as new question", val
+            )
+            return None
+
+    def _norm_text(text) -> str:
+        return " ".join(str(text or "").strip().lower().split())
+
     conn = get_connection()
     try:
         cur = conn.cursor()
-        for iq_id, answer_text in answers:
+
+        # Existing rows: id + question text — used both to delete unanswered
+        # rows and as the text-based dedup fallback for question_id=None items.
+        cur.execute(
+            """
+            SELECT iq.id, q.question_text
+            FROM InterviewQuestions iq
+            JOIN Questions q ON q.id = iq.question_id
+            WHERE iq.interview_id = ?
+            """,
+            interview_id,
+        )
+        existing_rows = cur.fetchall()
+        existing_id_map = {str(r[0]): _normalize_uuid(r[0]) for r in existing_rows}
+        all_existing_ids = {norm for norm in existing_id_map.values() if norm is not None}
+        by_text: dict[str, str] = {
+            _norm_text(r[1]): existing_id_map[str(r[0])]
+            for r in existing_rows
+            if existing_id_map[str(r[0])] is not None
+        }
+
+        # ── Deduplicate by question_id, falling back to question text ───────
+        seen_qids: set[str] = set()
+        seen_texts: set[str] = set()
+        deduped: list[dict] = []
+        for item in extracted:
+            raw_qid = item.get("question_id") or None
+            qid = _normalize_uuid(raw_qid)
+            question_text = str(item.get("question") or "")
+            norm_text = _norm_text(question_text)
+
+            if qid is None and norm_text in by_text:
+                qid = by_text[norm_text]  # same question as an existing/known row
+
+            if qid is not None:
+                if qid in seen_qids:
+                    continue
+                seen_qids.add(qid)
+                by_text.setdefault(norm_text, qid)
+            else:
+                if norm_text in seen_texts:
+                    continue  # duplicate of a new question already queued this batch
+                seen_texts.add(norm_text)
+
+            deduped.append({
+                "question_id": qid,
+                "question": question_text,
+                "answer": str(item.get("answer") or ""),
+            })
+
+        answered_ids = {item["question_id"] for item in deduped if item["question_id"]}
+
+        # ── Delete unanswered existing rows ──────────────────────────────────
+        for iq_id in all_existing_ids - answered_ids:
             cur.execute(
-                "UPDATE InterviewQuestions SET candidate_answer = ? WHERE id = ? AND interview_id = ?",
-                answer_text, iq_id, interview_id,
+                "DELETE FROM InterviewQuestions WHERE id = ? AND interview_id = ?",
+                iq_id, interview_id,
             )
+
+        # ── Update / Insert ──────────────────────────────────────────────────
+        for item in deduped:
+            qid = item["question_id"]
+            answer = item["answer"]
+            question_text = item["question"]
+
+            if qid is not None:
+                cur.execute(
+                    "UPDATE InterviewQuestions SET candidate_answer = ? WHERE id = ? AND interview_id = ?",
+                    answer, qid, interview_id,
+                )
+            else:
+                new_q_id = str(uuid.uuid4())
+                new_iq_id = str(uuid.uuid4())
+                cur.execute(
+                    """
+                    INSERT INTO Questions
+                        (id, interview_round_type_id, job_role_id, experience_level_id,
+                         question_text, is_active, ai_generated, created_at)
+                    VALUES (?, NULL, NULL, NULL, ?, 1, 1, GETDATE())
+                    """,
+                    new_q_id,
+                    question_text,
+                )
+                cur.execute(
+                    """
+                    INSERT INTO InterviewQuestions
+                        (id, interview_id, question_id, candidate_answer, score, notes)
+                    VALUES (?, ?, ?, ?, NULL, NULL)
+                    """,
+                    new_iq_id, interview_id, new_q_id, answer,
+                )
+
         conn.commit()
     finally:
         conn.close()
@@ -227,6 +524,8 @@ def mark_interview_terminated(interview_id: str, reason: str) -> None:
                WHERE id = ?""",
             vr.final_status, vr.final_score, vr.final_feedback or reason, interview_id,
         )
+        if vr.final_status == "Failed":
+            _mark_subsequent_rounds_not_needed(cur, interview_id)
         conn.commit()
     finally:
         conn.close()
@@ -253,6 +552,8 @@ def mark_interview_failed_on_leave(interview_id: str, interview_type: str = "wri
                WHERE id = ?""",
             vr.final_status, vr.final_score, vr.final_feedback, interview_id,
         )
+        if vr.final_status == "Failed":
+            _mark_subsequent_rounds_not_needed(cur, interview_id)
         conn.commit()
     finally:
         conn.close()
@@ -261,6 +562,7 @@ def mark_interview_failed_on_leave(interview_id: str, interview_type: str = "wri
 async def generate_interview_questions(
     interview_id: str,
     return_questions: bool = True,
+    test_mode: bool = False,
 ) -> GenerateQuestionsResponse:
     # --- 1. Fetch interview context ---
     ctx = get_interview_context(interview_id)
@@ -271,29 +573,35 @@ async def generate_interview_questions(
     interview_round_type_id = ctx["interview_round_type_id"]
     job_role_id = ctx["job_role_id"]
 
-    # --- 2. Return early if questions already exist ---
+    # --- 2. Fetch existing questions + experience level ---
     conn = get_connection()
     try:
         cur = conn.cursor()
         existing = _fetch_existing_questions(cur, interview_id)
-        if existing:
-            return GenerateQuestionsResponse(
-                interview_id=interview_id,
-                questions=existing if return_questions else [],
-                timer_seconds=TIMER_SECONDS,
-                interview_type=interview_type,
-                enable_fail_cases=settings.ENABLE_FAIL_CASES,
-            )
         cur.execute(
             "SELECT experience_level_id FROM CandidateProfiles WHERE id = ?",
             candidate_id,
         )
         cp_row = cur.fetchone()
         experience_level_id = int(cp_row[0]) if cp_row and cp_row[0] else 1
+        cur.execute("SELECT status FROM Interviews WHERE id = ?", interview_id)
+        current_status_row = cur.fetchone()
     finally:
         conn.close()
 
-    # --- 3. Generate questions via AI (no DB connection held during this) ---
+    # In test mode with an already-completed interview: return cached/existing
+    # questions without touching the DB at all.
+    if test_mode and current_status_row and str(current_status_row[0]).lower() in ("pass", "failed"):
+        items = _test_mode_questions.get(interview_id) or existing or []
+        return GenerateQuestionsResponse(
+            interview_id=interview_id,
+            questions=items if return_questions else [],
+            timer_seconds=TIMER_SECONDS,
+            interview_type=interview_type,
+            enable_fail_cases=settings.ENABLE_FAIL_CASES,
+        )
+
+    # --- 3. Always generate fresh questions via AI ---
     state: AgentState = {
         "candidate_id": candidate_id,
         "job_posting_id": job_posting_id,
@@ -307,25 +615,60 @@ async def generate_interview_questions(
     if result["status"] != "success":
         raise RuntimeError("AI question generation failed")
 
-    # --- 4. Persist questions and mark interview as In Progress ---
-    conn = get_connection()
-    try:
-        cur = conn.cursor()
-        items = _store_generated_questions(
-            cur,
-            interview_id,
-            [q.question_text for q in result["questions"]],
-            interview_round_type_id,
-            job_role_id,
-            experience_level_id,
-        )
-        cur.execute(
-            "UPDATE Interviews SET status = 'In Progress' WHERE id = ?",
-            interview_id,
-        )
-        conn.commit()
-    finally:
-        conn.close()
+    new_texts = [q.question_text for q in result["questions"]]
+
+    if test_mode:
+        # Test mode never touches Questions/InterviewQuestions — questions live only
+        # in the in-memory cache, keyed by interview_id, so test runs can't drift out
+        # of sync with (or pollute) real DB rows.
+        items = [
+            QuestionItem(
+                iq_id=str(uuid.uuid4()),
+                question_id=str(uuid.uuid4()),
+                question_text=text,
+                candidate_answer=None,
+                score=None,
+                notes=None,
+            )
+            for text in new_texts
+        ]
+        _test_mode_questions[interview_id] = items
+    else:
+        # Real generation for this interview_id — any leftover test-mode cache
+        # entry is now stale and must never resurface for this ID again.
+        clear_test_mode_cache(interview_id)
+
+        # --- 4. Upsert: update existing rows or insert new ones ---
+        conn = get_connection()
+        try:
+            cur = conn.cursor()
+            if current_status_row and str(current_status_row[0]).lower() in ("pass", "failed", "not needed"):
+                raise ValueError(
+                    f"Interview {interview_id} is already completed ({current_status_row[0]}) "
+                    "and cannot be restarted."
+                )
+
+            if existing:
+                items = _update_generated_questions(
+                    cur, interview_id, existing, new_texts,
+                    interview_round_type_id, job_role_id, experience_level_id,
+                )
+            else:
+                items = _store_generated_questions(
+                    cur,
+                    interview_id,
+                    new_texts,
+                    interview_round_type_id,
+                    job_role_id,
+                    experience_level_id,
+                )
+            cur.execute(
+                "UPDATE Interviews SET status = 'In Progress' WHERE id = ?",
+                interview_id,
+            )
+            conn.commit()
+        finally:
+            conn.close()
 
     return GenerateQuestionsResponse(
         interview_id=interview_id,
@@ -340,35 +683,42 @@ async def score_interview_answers(
     interview_id: str,
     fetch_from_db: bool,
     answers: list[AnswerItem],
-    test_mode: bool = False,
     event_type: str = "submit",
     interview_type: str = "written",
+    test_mode: bool = False,
 ) -> ScoreAnswersResponse:
     if not fetch_from_db and not answers:
         raise ValueError("No answers submitted and fetch_from_db is False")
 
-    # --- 1. Fetch questions from DB and build list to score ---
+    # test_mode interviews never have DB rows for their questions — use the
+    # in-memory cache populated by generate_interview_questions instead.
+    cached = _test_mode_questions.get(interview_id) if test_mode else None
+
+    # --- 1. Fetch questions and build list to score ---
     conn = get_connection()
     try:
         cur = conn.cursor()
 
-        # Guard: prevent re-scoring a completed interview
         cur.execute("SELECT status FROM Interviews WHERE id = ?", interview_id)
         status_row = cur.fetchone()
         if not status_row:
             raise ValueError(f"Interview {interview_id} not found")
-        if not test_mode and str(status_row[0]).lower() in ("pass", "failed"):
-            raise ValueError("This interview has already been completed and scored.")
 
-        stored = _fetch_existing_questions(cur, interview_id)
+        # In normal mode, block re-scoring completed interviews.
+        if not test_mode and str(status_row[0]).lower() in ("pass", "failed", "not needed"):
+            raise ValueError("This interview has already been completed and cannot be rescored.")
+
+        stored = cached if cached else _fetch_existing_questions(cur, interview_id)
         if not stored:
             raise ValueError(f"No questions found for interview {interview_id}")
 
         if fetch_from_db:
             to_score = stored
         else:
-            _save_candidate_answers(cur, interview_id, answers)
-            conn.commit()
+            if not test_mode:
+                # Only persist candidate answers in normal mode.
+                _save_candidate_answers(cur, interview_id, answers)
+                conn.commit()
             iq_map = {q.iq_id.lower(): q for q in stored}
             to_score = [
                 QuestionItem(
@@ -392,35 +742,36 @@ async def score_interview_answers(
         )
         for item in to_score
     ]
-    state: AgentState = {"answers": ai_answers}
+    state: AgentState = {"answers": ai_answers, "interview_type": interview_type}
     result = await score_answers_tool(state)
     if result["status"] != "success":
         raise RuntimeError("AI answer scoring failed")
 
-    # --- 3. Validate result before DB commit ---
+    # --- 3. Validate result ---
     vr = validate_interview(ValidationInput(
         event_type=event_type,
         computed_score=result["overall_score"],
         failing_criteria=PASS_THRESHOLD,
         enable_fail_cases=settings.ENABLE_FAIL_CASES,
-        current_status="In Progress",  # guard already confirmed it's not terminal
+        current_status="In Progress",
         interview_type=interview_type,
     ))
 
-    # --- 4. Persist scores and mark interview completed ---
-    conn = get_connection()
-    try:
-        cur = conn.cursor()
-        _save_scores_and_complete(
-            cur, interview_id,
-            [item.iq_id for item in to_score],
-            result["graded_answers"],
-            vr.final_score, vr.final_status,
-            vr.final_feedback or None,
-        )
-        conn.commit()
-    finally:
-        conn.close()
+    if not test_mode:
+        # --- 4. Persist scores and mark interview completed (normal mode only) ---
+        conn = get_connection()
+        try:
+            cur = conn.cursor()
+            _save_scores_and_complete(
+                cur, interview_id,
+                [item.iq_id for item in to_score],
+                result["graded_answers"],
+                vr.final_score, vr.final_status,
+                vr.final_feedback or None,
+            )
+            conn.commit()
+        finally:
+            conn.close()
 
     return ScoreAnswersResponse(
         overall_score=vr.final_score,

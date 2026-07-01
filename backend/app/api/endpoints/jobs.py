@@ -2,13 +2,43 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
 
-from app.schemas.jobs import VALID_JOB_TYPES, InterviewRoundTypeItem, JobInterviewRoundItem, JobListItem, JobPostRequest, JobPostResponse
-from app.services.job_service import get_job_rounds, list_interview_round_types, list_jobs, list_recruiter_jobs, post_job
+from app.schemas.jobs import (
+    VALID_JOB_TYPES,
+    CandidatePanelResponse,
+    EvaluationQuestionItem,
+    InterviewRoundTypeItem,
+    JobInterviewRoundItem,
+    JobListItem,
+    JobPostRequest,
+    JobPostResponse,
+    JobStatsResponse,
+    RoundCandidateItem,
+)
+from app.services.job_service import (
+    get_candidate_panel,
+    get_interview_qa,
+    get_job_rounds,
+    get_job_stats,
+    get_round_candidates,
+    list_interview_round_types,
+    list_jobs,
+    list_recruiter_jobs,
+    post_job,
+)
 
 router = APIRouter()
 
 
-# Literal routes first so they are never shadowed by /{job_id}/rounds
+# ── Literal routes first — never shadowed by /{job_id}/... ──────────────────
+
+@router.get("/interview-qa/{interview_id}", response_model=list[EvaluationQuestionItem])
+def get_qa_for_interview(interview_id: str) -> list[EvaluationQuestionItem]:
+    try:
+        return get_interview_qa(interview_id)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
 @router.get("/round-types", response_model=list[InterviewRoundTypeItem])
 def get_interview_round_types() -> list[InterviewRoundTypeItem]:
     try:
@@ -32,6 +62,7 @@ def get_jobs(
     location: Optional[str] = Query(None, description="Filter by location (partial match)"),
     job_type: Optional[str] = Query(None, description="Filter by job type"),
     salary_range: Optional[str] = Query(None, description="Filter by salary range keyword"),
+    candidate_id: Optional[str] = Query(None, description="When provided, exclude jobs the candidate has already applied to"),
     offset: int = Query(0, ge=0, description="Pagination offset"),
     limit: int = Query(50, ge=1, le=200, description="Pagination page size"),
 ) -> list[JobListItem]:
@@ -47,6 +78,7 @@ def get_jobs(
             location=location,
             job_type=job_type,
             salary_range=salary_range,
+            candidate_id=candidate_id,
             offset=offset,
             limit=limit,
         )
@@ -64,10 +96,43 @@ def create_job(body: JobPostRequest) -> JobPostResponse:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
-# Parameterised routes last
+# ── Parameterised routes last ────────────────────────────────────────────────
+
 @router.get("/{job_id}/rounds", response_model=list[JobInterviewRoundItem])
 def get_rounds_for_job(job_id: str) -> list[JobInterviewRoundItem]:
     try:
         return get_job_rounds(job_id)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get("/{job_id}/stats", response_model=JobStatsResponse)
+def get_stats_for_job(job_id: str) -> JobStatsResponse:
+    try:
+        return get_job_stats(job_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get("/{job_id}/rounds/{round_order}/candidates", response_model=list[RoundCandidateItem])
+def get_candidates_for_round(job_id: str, round_order: int) -> list[RoundCandidateItem]:
+    try:
+        return get_round_candidates(job_id, round_order)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get("/{job_id}/candidate-panel/{application_id}", response_model=CandidatePanelResponse)
+def get_candidate_panel_endpoint(
+    job_id: str,  # noqa: ARG001 — kept for REST path consistency
+    application_id: str,
+    interview_id: str,
+) -> CandidatePanelResponse:
+    try:
+        return get_candidate_panel(application_id, interview_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc

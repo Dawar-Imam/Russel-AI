@@ -45,6 +45,10 @@ function JobApplyDialog({ job, candidateId, isOpen, onClose }: JobApplyDialogPro
 
   async function handleApplyClick() {
     if (!job) return
+    if (sessionStorage.getItem('userType') === 'recruiter') {
+      setError('Recruiter accounts cannot apply for jobs. Please sign in with a candidate account to submit applications.')
+      return
+    }
     if (!candidateId) {
       navigate('/auth', { state: { pendingJobId: job.id } })
       return

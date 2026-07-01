@@ -118,6 +118,12 @@
   border-color: rgba(122, 171, 255, 0.35);
 }
 
+.app-card-status--scheduled {
+  background: rgba(154, 154, 154, 0.08);
+  color: var(--color-text-secondary);
+  border-color: rgba(154, 154, 154, 0.3);
+}
+
 .app-card-status--hired {
   background: rgba(76, 175, 114, 0.1);
   color: #4caf72;

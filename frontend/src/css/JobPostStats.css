@@ -1,0 +1,834 @@
+/* ── Page shell ──────────────────────────────────────────────────────────── */
+
+.jps-page {
+  height: 100vh;
+  overflow: hidden;
+  background-color: var(--color-bg);
+  background-image: url('../utils/background-image-2.png');
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 80px var(--space-6) var(--space-6);
+}
+
+/* ── Page header ─────────────────────────────────────────────────────────── */
+
+.jps-header {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: var(--space-6);
+  flex-shrink: 0;
+}
+
+.jps-heading {
+  margin: 0;
+  font-size: 28px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--color-text-primary);
+}
+
+/* ── Content area ─────────────────────────────────────────────────────────── */
+
+.jps-content {
+  width: 100%;
+  display: flex;
+  flex: 1;
+  gap: var(--space-6);
+  min-height: 0;
+  overflow: hidden;
+  align-items: stretch;
+}
+
+/* ── Left: job info card (~60%) ──────────────────────────────────────────── */
+
+.jps-left {
+  flex: 0 0 60%;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.jps-job-card {
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  height: 380px;
+  flex-shrink: 0;
+  margin-bottom: var(--space-6);
+}
+
+/* ── Single horizontal attribute bar ────────────────────────────────────── */
+
+.jps-attrs-bar {
+  display: flex;
+  align-items: stretch;
+  flex-shrink: 0;
+}
+
+.jps-attr {
+  flex: 1;
+  padding: var(--space-3) var(--space-4);
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.jps-attr-sep {
+  width: 1px;
+  background-color: var(--color-border);
+  flex-shrink: 0;
+  margin: var(--space-3) 0;
+}
+
+.jps-attr-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+  white-space: nowrap;
+}
+
+.jps-attr-value {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.jps-attr-value--green { color: #4caf72; }
+
+/* Job status (plain text, no oval/pill) */
+.jps-jobstatus {
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: capitalize;
+}
+
+.jps-jobstatus--active  { color: #4caf72; }
+.jps-jobstatus--closed  { color: var(--color-text-muted); }
+.jps-jobstatus--draft   { color: var(--color-info-text); }
+.jps-jobstatus--default { color: var(--color-text-secondary); }
+
+/* ── Card divider ────────────────────────────────────────────────────────── */
+
+.jps-card-divider {
+  height: 1px;
+  background-color: var(--color-border);
+  flex-shrink: 0;
+}
+
+/* ── Card body: description + skills ────────────────────────────────────── */
+
+.jps-card-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+}
+
+.jps-card-desc-col {
+  flex: 1.2;
+  min-width: 0;
+  padding: var(--space-4);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border) transparent;
+}
+
+.jps-card-desc-col::-webkit-scrollbar { width: 3px; }
+.jps-card-desc-col::-webkit-scrollbar-track { background: transparent; }
+.jps-card-desc-col::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 2px; }
+
+.jps-card-col-sep {
+  width: 1px;
+  background-color: var(--color-border);
+  flex-shrink: 0;
+}
+
+.jps-card-skills-col {
+  flex: 0.8;
+  min-width: 0;
+  padding: var(--space-4);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border) transparent;
+}
+
+.jps-card-skills-col::-webkit-scrollbar { width: 3px; }
+.jps-card-skills-col::-webkit-scrollbar-track { background: transparent; }
+.jps-card-skills-col::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 2px; }
+
+.jps-col-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+  flex-shrink: 0;
+}
+
+.jps-desc-text {
+  margin: 0;
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+/* ── Right: interview rounds ─────────────────────────────────────────────── */
+
+.jps-right {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding-top: var(--space-1);
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border) transparent;
+}
+
+.jps-right::-webkit-scrollbar { width: 4px; }
+.jps-right::-webkit-scrollbar-track { background: transparent; }
+.jps-right::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 3px; }
+
+.jps-rounds-heading {
+  margin: 0 0 var(--space-1);
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  color: var(--color-text-primary);
+  flex-shrink: 0;
+}
+
+.jps-rounds-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+/* ── Round block ─────────────────────────────────────────────────────────── */
+
+.jps-round-block {
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  box-shadow: var(--shadow-card);
+  transition: border-color 0.2s ease;
+}
+
+.jps-round-block--active { border-color: rgba(245, 166, 35, 0.4); }
+
+.jps-round-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-4) var(--space-4);
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-family: var(--font-sans);
+  text-align: left;
+  transition: background-color 0.15s ease;
+}
+
+.jps-round-row:hover { background-color: rgba(245, 166, 35, 0.04); }
+
+.jps-round-num {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background-color: var(--color-primary);
+  color: var(--color-bg);
+  font-size: 11px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.jps-round-name {
+  flex: 1;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.jps-round-count {
+  font-size: 12px;
+  color: var(--color-text-muted);
+  flex-shrink: 0;
+}
+
+.jps-round-threshold {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--color-primary);
+  border: 1px solid rgba(245, 166, 35, 0.3);
+  border-radius: var(--radius-sm);
+  padding: 2px 8px;
+  flex-shrink: 0;
+}
+
+.jps-round-chevron {
+  font-size: 9px;
+  color: var(--color-text-muted);
+  flex-shrink: 0;
+}
+
+/* ── Candidates area ─────────────────────────────────────────────────────── */
+
+.jps-candidates-area {
+  border-top: 1px solid var(--color-border);
+  background-color: var(--color-surface-raised);
+  padding: var(--space-2) var(--space-4);
+}
+
+.jps-candidates-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.jps-candidate-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: 9px var(--space-2);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background-color 0.15s ease;
+}
+
+.jps-candidate-row:hover { background-color: rgba(255, 255, 255, 0.05); }
+
+.jps-cand-avatar {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background-color: rgba(26, 58, 107, 0.5);
+  border: 1px solid rgba(26, 58, 107, 0.7);
+  color: var(--color-info-text);
+  font-size: 11px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.jps-cand-name {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-text-primary);
+}
+
+/* ── Interview status badges (rounded rectangles, not pills) ─────────────── */
+
+.jps-iv-badge {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  border-radius: var(--radius-sm);
+  padding: 3px 9px;
+  flex-shrink: 0;
+  white-space: nowrap;
+}
+
+.jps-iv--pass       { background-color: rgba(76,175,114,0.12);  color: #4caf72;                border: 1px solid rgba(76,175,114,0.35); }
+.jps-iv--failed     { background-color: rgba(224,82,82,0.1);    color: #e05252;                border: 1px solid rgba(224,82,82,0.3); }
+.jps-iv--inprogress { background-color: rgba(245,166,35,0.1);   color: var(--color-primary);   border: 1px solid rgba(245,166,35,0.3); }
+.jps-iv--scheduled  { background-color: rgba(122,171,255,0.1);  color: var(--color-info-text); border: 1px solid rgba(122,171,255,0.3); }
+.jps-iv--default    { background-color: rgba(154,154,154,0.08); color: var(--color-text-muted);border: 1px solid var(--color-border); }
+.jps-iv--notneeded  { background-color: rgba(154,154,154,0.06); color: var(--color-text-muted);border: 1px solid var(--color-border); font-style: italic; }
+
+/* ── Skill tag (rounded rectangle, not pill) ─────────────────────────────── */
+
+.jps-skills-wrap {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.jps-skill-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  background-color: rgba(26, 58, 107, 0.3);
+  border: 1px solid rgba(26, 58, 107, 0.55);
+  color: var(--color-info-text);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  font-weight: 500;
+  padding: 4px 10px;
+  max-width: 100%;
+  overflow: hidden;
+}
+
+.jps-skill-level {
+  font-size: 10px;
+  color: var(--color-text-muted);
+  border-left: 1px solid rgba(122, 171, 255, 0.3);
+  padding-left: 5px;
+}
+
+/* ── Candidate dialog backdrop ───────────────────────────────────────────── */
+
+.jps-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(6px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* horizontal padding ~67px (1.5x less than previous 100px), vertical 60px */
+  padding: 60px 67px;
+  z-index: 100;
+  box-sizing: border-box;
+}
+
+.jps-dialog {
+  width: 100%;
+  max-width: 1100px;
+  height: 620px;
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-modal);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ── Dialog header ───────────────────────────────────────────────────────── */
+
+.jps-dialog-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding: var(--space-4) var(--space-6);
+  border-bottom: 1px solid var(--color-border);
+  flex-shrink: 0;
+}
+
+.jps-dialog-eyebrow {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--color-primary);
+  display: block;
+  margin-bottom: 3px;
+}
+
+.jps-dialog-title {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--color-text-primary);
+}
+
+.jps-dialog-header-right {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.jps-close-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  background: none;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  color: var(--color-text-muted);
+  cursor: pointer;
+  transition: color 0.2s ease, border-color 0.2s ease;
+}
+
+.jps-close-btn:hover { color: var(--color-text-primary); border-color: var(--color-text-secondary); }
+
+/* ── Dialog body ─────────────────────────────────────────────────────────── */
+
+.jps-dialog-body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+}
+
+.jps-dialog-body--center {
+  align-items: center;
+  justify-content: center;
+}
+
+/* ── Left 65%: Interview Progress ────────────────────────────────────────── */
+
+.jps-dialog-progress {
+  flex: 0 0 65%;
+  min-width: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-4) var(--space-6);
+}
+
+/* Horizontal row of round cards */
+.jps-progress-cards-row {
+  display: flex;
+  gap: var(--space-3);
+  flex-shrink: 0;
+  overflow-x: auto;
+  padding-bottom: var(--space-1);
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border) transparent;
+}
+
+.jps-progress-cards-row::-webkit-scrollbar { height: 3px; }
+.jps-progress-cards-row::-webkit-scrollbar-track { background: transparent; }
+.jps-progress-cards-row::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 2px; }
+
+.jps-progress-card {
+  flex: 0 0 auto;
+  min-width: 130px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: var(--space-3) var(--space-4);
+  background-color: var(--color-surface-raised);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  font-family: var(--font-sans);
+  text-align: left;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.jps-progress-card--clickable { cursor: pointer; }
+.jps-progress-card--clickable:hover:not(.jps-progress-card--active) {
+  border-color: rgba(245, 166, 35, 0.3);
+  background-color: rgba(245, 166, 35, 0.03);
+}
+
+.jps-progress-card--active {
+  border-color: var(--color-primary);
+  background-color: rgba(245, 166, 35, 0.06);
+}
+
+.jps-progress-card:disabled { opacity: 0.5; cursor: not-allowed; }
+
+.jps-pc-num {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background-color: var(--color-primary);
+  color: var(--color-bg);
+  font-size: 10px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.jps-pc-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  line-height: 1.3;
+}
+
+.jps-pc-score {
+  font-size: 11px;
+  font-weight: 700;
+  color: #6fcf97;
+}
+
+/* Q&A details box */
+.jps-qa-box {
+  flex: 1;
+  min-height: 0;
+  background-color: var(--color-surface-raised);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  overflow-y: auto;
+  padding: var(--space-4);
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border) transparent;
+}
+
+.jps-qa-box::-webkit-scrollbar { width: 4px; }
+.jps-qa-box::-webkit-scrollbar-track { background: transparent; }
+.jps-qa-box::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 3px; }
+
+.jps-qa-placeholder {
+  margin: 0;
+  font-size: 13px;
+  color: var(--color-text-muted);
+  font-style: italic;
+  text-align: center;
+  padding: var(--space-8) var(--space-4);
+  line-height: 1.6;
+}
+
+.jps-qa-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+}
+
+.jps-qa-item {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding-bottom: var(--space-4);
+  border-bottom: 1px solid var(--color-border);
+}
+
+.jps-qa-item:last-child { border-bottom: none; padding-bottom: 0; }
+
+.jps-qa-q-row {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--space-2);
+}
+
+.jps-qa-num {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--color-primary);
+  background-color: rgba(245, 166, 35, 0.1);
+  border: 1px solid rgba(245, 166, 35, 0.25);
+  border-radius: var(--radius-sm);
+  padding: 2px 6px;
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+
+.jps-qa-qtext {
+  flex: 1;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  line-height: 1.45;
+}
+
+.jps-qa-score {
+  font-size: 12px;
+  font-weight: 700;
+  color: #6fcf97;
+  background-color: rgba(111, 207, 151, 0.1);
+  border: 1px solid rgba(111, 207, 151, 0.25);
+  border-radius: var(--radius-sm);
+  padding: 2px 8px;
+  flex-shrink: 0;
+}
+
+.jps-qa-answer {
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  line-height: 1.55;
+  padding-left: var(--space-2);
+  border-left: 2px solid var(--color-border);
+}
+
+.jps-qa-notes {
+  margin: 0;
+  font-size: 11px;
+  color: var(--color-text-muted);
+  font-style: italic;
+}
+
+/* ── Divider ─────────────────────────────────────────────────────────────── */
+
+.jps-dialog-divider {
+  width: 1px;
+  background-color: var(--color-border);
+  flex-shrink: 0;
+}
+
+/* ── Right 35%: Candidate Info ───────────────────────────────────────────── */
+
+.jps-dialog-info {
+  flex: 0 0 35%;
+  min-width: 0;
+  overflow-y: auto;
+  padding: var(--space-4) var(--space-6);
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border) transparent;
+}
+
+.jps-dialog-info::-webkit-scrollbar { width: 4px; }
+.jps-dialog-info::-webkit-scrollbar-track { background: transparent; }
+.jps-dialog-info::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 3px; }
+
+.jps-section-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--color-primary);
+  flex-shrink: 0;
+}
+
+.jps-info-fields {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+}
+
+.jps-info-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.jps-info-field--full { width: 100%; }
+
+.jps-info-label {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+
+.jps-info-value {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--color-text-primary);
+}
+
+.jps-info-value--muted { color: var(--color-text-secondary); font-size: 12px; }
+
+.jps-info-link {
+  font-size: 12px;
+  color: var(--color-info-text);
+  text-decoration: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: block;
+}
+
+.jps-info-link:hover { text-decoration: underline; }
+
+.jps-info-bio {
+  margin: 0;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  line-height: 1.55;
+}
+
+.jps-info-skills {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  margin-left: var(--space-1);
+  margin-bottom: var(--space-4);
+}
+
+.jps-info-skills .jps-skills-wrap {
+  max-height: 150px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border) transparent;
+  padding-right: 2px;
+}
+
+.jps-info-skills .jps-skills-wrap::-webkit-scrollbar { width: 3px; }
+.jps-info-skills .jps-skills-wrap::-webkit-scrollbar-track { background: transparent; }
+.jps-info-skills .jps-skills-wrap::-webkit-scrollbar-thumb { background: var(--color-border); border-radius: 2px; }
+
+/* ── State helpers ───────────────────────────────────────────────────────── */
+
+.jps-state-text {
+  font-size: 14px;
+  color: var(--color-text-secondary);
+  margin: 0;
+  padding: var(--space-6) 0;
+}
+
+.jps-state-sm {
+  font-size: 12px;
+  color: var(--color-text-muted);
+  margin: 0;
+  padding: var(--space-2) 0;
+  font-style: italic;
+}
+
+.jps-state-error {
+  font-size: 14px;
+  color: #e05252;
+  margin: 0;
+  padding: var(--space-6) 0;
+}
+
+/* ── Responsive ──────────────────────────────────────────────────────────── */
+
+@media (max-width: 1200px) {
+  .jps-left { flex: 0 0 55%; }
+  .jps-backdrop { padding: 60px 40px; }
+}
+
+@media (max-width: 900px) {
+  .jps-content { flex-direction: column; overflow-y: auto; }
+  .jps-left { flex: 0 0 auto; min-height: 300px; }
+  .jps-job-card { height: 300px; }
+  .jps-backdrop { padding: 80px 20px 20px; }
+  .jps-dialog { height: auto; max-height: calc(100vh - 110px); }
+  .jps-dialog-body { flex-direction: column; }
+  .jps-dialog-divider { width: 100%; height: 1px; }
+  .jps-dialog-progress { flex: 0 0 auto; height: 340px; }
+  .jps-dialog-info { flex: 0 0 auto; }
+}
+
+@media (max-width: 600px) {
+  .jps-page { padding: 80px var(--space-3) 0; }
+  .jps-attrs-bar { flex-wrap: wrap; }
+  .jps-attr { flex: 0 0 50%; }
+  .jps-attr-sep { display: none; }
+  .jps-backdrop { padding: 80px 12px 12px; }
+}

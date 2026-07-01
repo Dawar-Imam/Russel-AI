@@ -18,10 +18,18 @@ class Settings(BaseSettings):
     LIVEKIT_API_KEY: str = ""
     LIVEKIT_API_SECRET: str = ""
     DEEPGRAM_API_KEY: str = ""
+    OPENROUTER_API_KEY: str = ""
+    WHISPER_MODEL: str = "openai/whisper-large-v3-turbo"
     ELEVENLABS_API_KEY: str = ""
     ELEVENLABS_VOICE_ID: str = "onwK4e9ZLuTAKqWW03F9"
     # Kill-switch: set to False in dev/test to disable all fail-case enforcement
     ENABLE_FAIL_CASES: bool = True
+    # No-response timeout: seconds of silence before the AI checks if candidate is still present
+    NO_RESPONSE_TIMEOUT_SECONDS: int = 30
+    # How many no-response triggers before cancelling the interview (0 = never cancel)
+    CANCEL_INTERVIEW_ON_NO_RESPONSE: int = 0
+    # Global interview duration (minutes)
+    INTERVIEW_DURATION_MINUTES: int = 10
 
     model_config = SettingsConfigDict(env_file=str(_ENV_FILE), env_file_encoding="utf-8")
 

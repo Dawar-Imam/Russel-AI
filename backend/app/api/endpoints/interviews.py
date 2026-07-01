@@ -32,9 +32,13 @@ async def generate_questions(
         return await generate_interview_questions(
             interview_id=interview_id,
             return_questions=body.return_questions,
+            test_mode=body.test_mode,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+        msg = str(exc)
+        if "already completed" in msg:
+            raise HTTPException(status_code=409, detail=msg) from exc
+        raise HTTPException(status_code=404, detail=msg) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -49,9 +53,9 @@ async def score_answers(
             interview_id=interview_id,
             fetch_from_db=body.fetch_from_db,
             answers=body.answers,
-            test_mode=body.test_mode,
             event_type=body.event_type,
             interview_type=body.interview_type,
+            test_mode=body.test_mode,
         )
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
@@ -60,9 +64,9 @@ async def score_answers(
 
 
 @router.post("/{interview_id}/voice-interview", response_model=CreateRoomResponse)
-async def start_voice_interview(interview_id: str) -> CreateRoomResponse:
+async def start_voice_interview(interview_id: str, test_mode: bool = False) -> CreateRoomResponse:
     try:
-        return await conduct_voice_interview(interview_id)
+        return await conduct_voice_interview(interview_id, test_mode=test_mode)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
@@ -89,7 +93,9 @@ async def report_leave(interview_id: str) -> dict:
 @router.get("/{interview_id}/status-stream")
 async def interview_status_stream(interview_id: str) -> StreamingResponse:
     async def generate():
-        done = await wait_for_interview_done(interview_id, timeout=600.0)
+        done = await wait_for_interview_done(
+            interview_id, timeout=(settings.INTERVIEW_DURATION_MINUTES + 1) * 60
+        )
         event_name = "done" if done else "timeout"
         yield f"event: {event_name}\ndata: {{}}\n\n"
 

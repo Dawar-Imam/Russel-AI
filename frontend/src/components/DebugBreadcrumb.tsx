@@ -11,20 +11,27 @@ function DebugBreadcrumb() {
 
   if (!SHOW_DEBUG_BREADCRUMB) return null
 
-  const candidateId   = sessionStorage.getItem('candidateId')   ?? '—'
-  const interviewMatch    = location.pathname.match(/\/interview-room\/([^/]+)/)
-  const applicationMatch  = location.pathname.match(/\/application-progress\/([^/]+)/)
+  const userType = sessionStorage.getItem('userType')
 
-  const interviewId   = interviewMatch?.[1]   ?? '—'
+  const interviewMatch   = location.pathname.match(/\/interview-room\/([^/]+)/)
+  const applicationMatch = location.pathname.match(/\/application-progress\/([^/]+)/)
+  const jobStatsMatch    = location.pathname.match(/\/job-stats\/([^/]+)/)
+
+  const interviewId = interviewMatch?.[1]   ?? '—'
   const applicationId = applicationMatch?.[1] ?? '—'
-  const jobPostId     = sessionStorage.getItem('jobPostId') ?? '—'
+  const jobPostId    = jobStatsMatch?.[1]    ?? '—'
 
-  const rows: [string, string][] = [
-    ['candidate_id',    candidateId],
-    ['application_id',  applicationId],
-    ['interview_id',    interviewId],
-    ['job_post_id',     jobPostId],
-  ]
+  const rows: [string, string][] = userType === 'recruiter'
+    ? [
+        ['recruiter_id', sessionStorage.getItem('recruiterId') ?? '—'],
+        ['job_post_id',  jobPostId],
+      ]
+    : [
+        ['candidate_id',   sessionStorage.getItem('candidateId') ?? '—'],
+        ['application_id', applicationId],
+        ['interview_id',   interviewId],
+        ['job_post_id',    jobPostId],
+      ]
 
   return (
     <div className="dbg-root">

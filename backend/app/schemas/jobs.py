@@ -81,3 +81,74 @@ class JobListItem(BaseModel):
     posted_at: str
     expires_at: str | None
     required_skills: list[str]
+    status: str = 'active'
+
+
+# ── Job analytics schemas ─────────────────────────────────────────────────────
+
+class JobStatsRound(BaseModel):
+    round_order: int
+    round_type_name: str
+    failing_criteria: int | None
+    applicants_count: int
+
+
+class JobStatsResponse(BaseModel):
+    job_title: str
+    description: str
+    status: str
+    required_skills: list[str]
+    rounds: list[JobStatsRound]
+    total_applicants: int
+    passed_all_rounds: int
+    hired_count: int
+
+
+class RoundCandidateItem(BaseModel):
+    candidate_id: str
+    application_id: str
+    interview_id: str
+    name: str
+    status: str
+
+
+class CandidateSkillItem(BaseModel):
+    name: str
+    proficiency_level: str | None
+
+
+class CandidateInfo(BaseModel):
+    first_name: str
+    last_name: str
+    email: str
+    bio: str | None
+    current_location: str | None
+    experience_level: str | None
+    job_role: str | None
+    skills: list[CandidateSkillItem]
+    phone: str | None
+    linkedin_url: str | None
+    experience_years_min: int | None
+    experience_years_max: int | None
+
+
+class InterviewProgressItem(BaseModel):
+    round_order: int
+    round_type_name: str
+    status: str | None
+    result: float | None
+    completed_at: str | None
+    interview_id: str | None
+
+
+class EvaluationQuestionItem(BaseModel):
+    question_text: str
+    candidate_answer: str | None
+    score: int | None
+    notes: str | None
+
+
+class CandidatePanelResponse(BaseModel):
+    candidate: CandidateInfo
+    progress: list[InterviewProgressItem]
+    evaluation: list[EvaluationQuestionItem] | None

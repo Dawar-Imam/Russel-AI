@@ -8,6 +8,7 @@ const STATUS_LABELS: Record<string, string> = {
   ATS_PASS: 'ATS Passed',
   ATS_FAIL: 'ATS Failed',
   IN_PROGRESS: 'In Progress',
+  INTERVIEW_SCHEDULED: 'Interview Scheduled',
   INTERVIEW_PASS: 'Interview Passed',
   INTERVIEW_FAILED: 'Interview Failed',
   HIRED: 'Hired',
@@ -19,6 +20,7 @@ const STATUS_VARIANTS: Record<string, string> = {
   ATS_PASS: 'pass',
   ATS_FAIL: 'fail',
   IN_PROGRESS: 'progress',
+  INTERVIEW_SCHEDULED: 'scheduled',
   INTERVIEW_PASS: 'pass',
   INTERVIEW_FAILED: 'fail',
   HIRED: 'hired',
@@ -26,9 +28,11 @@ const STATUS_VARIANTS: Record<string, string> = {
 }
 
 function buildStatusLabel(status: string, roundTitle: string | null): string {
-  if ((status === 'INTERVIEW_PASS' || status === 'INTERVIEW_FAILED') && roundTitle) {
-    const outcome = status === 'INTERVIEW_PASS' ? 'Passed' : 'Failed'
-    return `${roundTitle} ${outcome}`
+  if (roundTitle) {
+    if (status === 'INTERVIEW_PASS') return `${roundTitle} Passed`
+    if (status === 'INTERVIEW_FAILED') return `${roundTitle} Failed`
+    if (status === 'INTERVIEW_SCHEDULED') return `${roundTitle} Scheduled`
+    if (status === 'IN_PROGRESS') return `${roundTitle} In Progress`
   }
   return STATUS_LABELS[status] ?? status
 }

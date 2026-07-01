@@ -34,6 +34,77 @@ export interface JobListItem {
   posted_at: string
   expires_at: string | null
   required_skills: string[]
+  status: string
+}
+
+// ── Analytics types ───────────────────────────────────────────────────────────
+
+export interface JobStatsRound {
+  round_order: number
+  round_type_name: string
+  failing_criteria: number | null
+  applicants_count: number
+}
+
+export interface JobStatsResponse {
+  job_title: string
+  description: string
+  status: string
+  required_skills: string[]
+  rounds: JobStatsRound[]
+  total_applicants: number
+  passed_all_rounds: number
+  hired_count: number
+}
+
+export interface RoundCandidateItem {
+  candidate_id: string
+  application_id: string
+  interview_id: string
+  name: string
+  status: string
+}
+
+export interface CandidateSkillItem {
+  name: string
+  proficiency_level: string | null
+}
+
+export interface CandidateInfo {
+  first_name: string
+  last_name: string
+  email: string
+  bio: string | null
+  current_location: string | null
+  experience_level: string | null
+  job_role: string | null
+  skills: CandidateSkillItem[]
+  phone: string | null
+  linkedin_url: string | null
+  experience_years_min: number | null
+  experience_years_max: number | null
+}
+
+export interface InterviewProgressItem {
+  round_order: number
+  round_type_name: string
+  status: string | null
+  result: number | null
+  completed_at: string | null
+  interview_id: string | null
+}
+
+export interface EvaluationQuestionItem {
+  question_text: string
+  candidate_answer: string | null
+  score: number | null
+  notes: string | null
+}
+
+export interface CandidatePanelResponse {
+  candidate: CandidateInfo
+  progress: InterviewProgressItem[]
+  evaluation: EvaluationQuestionItem[] | null
 }
 
 export interface JobFilters {
@@ -42,6 +113,7 @@ export interface JobFilters {
   location?: string
   job_type?: string
   salary_range?: string
+  candidate_id?: string
   offset?: number
   limit?: number
 }
@@ -86,6 +158,7 @@ export async function fetchJobs(
   if (filters.location) params.set('location', filters.location)
   if (filters.job_type) params.set('job_type', filters.job_type)
   if (filters.salary_range) params.set('salary_range', filters.salary_range)
+  if (filters.candidate_id) params.set('candidate_id', filters.candidate_id)
   if (filters.offset != null) params.set('offset', String(filters.offset))
   if (filters.limit != null) params.set('limit', String(filters.limit))
   const query = params.toString()
@@ -98,6 +171,36 @@ export async function fetchRecruiterJobs(recruiterId: string): Promise<JobListIt
   const res = await fetch(`${BASE_URL}/api/jobs/mine?recruiter_id=${encodeURIComponent(recruiterId)}`)
   if (!res.ok) throw new Error('Failed to load your job postings')
   return res.json() as Promise<JobListItem[]>
+}
+
+export async function fetchInterviewQA(interviewId: string): Promise<EvaluationQuestionItem[]> {
+  const res = await fetch(`${BASE_URL}/api/jobs/interview-qa/${encodeURIComponent(interviewId)}`)
+  if (!res.ok) throw new Error('Failed to load interview Q&A')
+  return res.json() as Promise<EvaluationQuestionItem[]>
+}
+
+export async function fetchJobStats(jobId: string): Promise<JobStatsResponse> {
+  const res = await fetch(`${BASE_URL}/api/jobs/${encodeURIComponent(jobId)}/stats`)
+  if (!res.ok) throw new Error('Failed to load job stats')
+  return res.json() as Promise<JobStatsResponse>
+}
+
+export async function fetchRoundCandidates(jobId: string, roundOrder: number): Promise<RoundCandidateItem[]> {
+  const res = await fetch(`${BASE_URL}/api/jobs/${encodeURIComponent(jobId)}/rounds/${roundOrder}/candidates`)
+  if (!res.ok) throw new Error('Failed to load round candidates')
+  return res.json() as Promise<RoundCandidateItem[]>
+}
+
+export async function fetchCandidatePanel(
+  jobId: string,
+  applicationId: string,
+  interviewId: string,
+): Promise<CandidatePanelResponse> {
+  const res = await fetch(
+    `${BASE_URL}/api/jobs/${encodeURIComponent(jobId)}/candidate-panel/${encodeURIComponent(applicationId)}?interview_id=${encodeURIComponent(interviewId)}`,
+  )
+  if (!res.ok) throw new Error('Failed to load candidate details')
+  return res.json() as Promise<CandidatePanelResponse>
 }
 
 export async function postJob(data: JobPostRequest): Promise<JobPostResponse> {

@@ -33,6 +33,8 @@ interface ConversationMessage {
   role: 'user' | 'assistant'
   text: string
   streaming?: boolean
+  partial?: boolean  // true while user is still speaking (interim transcript)
+  committedText?: string  // user only: finalized segments accumulated so far this turn
 }
 
 type Phase =
@@ -43,6 +45,7 @@ type Phase =
   | 'submitting'
   | 'results'
   | 'terminated'
+  | 'already-completed'
   | 'error'
 
 function fmtTime(secs: number): string {
@@ -87,7 +90,7 @@ function InterviewRoom() {
   const roomRef = useRef<Room | null>(null)
   const eventSourceRef = useRef<EventSource | null>(null)
 
-  const isOral = interviewType.toLowerCase() === 'oral' || interviewType.toLowerCase().includes('voice')
+  const isOral = interviewType.toLowerCase().includes('oral') || interviewType.toLowerCase().includes('voice')
 
   useEffect(() => { answersRef.current = answers }, [answers])
   useEffect(() => { questionsRef.current = questions }, [questions])
@@ -96,7 +99,7 @@ function InterviewRoom() {
   useEffect(() => { phaseRef.current = phase }, [phase])
   useEffect(() => {
     isOralRef.current =
-      interviewType.toLowerCase() === 'oral' || interviewType.toLowerCase().includes('voice')
+      interviewType.toLowerCase().includes('oral') || interviewType.toLowerCase().includes('voice')
   }, [interviewType])
 
   useEffect(() => {
@@ -232,9 +235,11 @@ function InterviewRoom() {
     setPhase('voice-connecting')
     try {
       // Start voice interview — backend creates room and launches agent
-      const res = await fetch(`${API_BASE}/api/interviews/${interviewId}/voice-interview`, {
-        method: 'POST',
-      })
+      const testMode = localStorage.getItem('russell_test_mode') === '1'
+      const res = await fetch(
+        `${API_BASE}/api/interviews/${interviewId}/voice-interview?test_mode=${testMode}`,
+        { method: 'POST' },
+      )
       if (!res.ok) {
         const d = await res.json().catch(() => ({}))
         throw new Error((d as { detail?: string }).detail ?? `Server error ${res.status}`)
@@ -266,21 +271,66 @@ function InterviewRoom() {
         try {
           const msg = JSON.parse(new TextDecoder().decode(payload)) as { role: string; text?: string; event?: string; reason?: string }
           if (!msg.role) return
-          if (msg.role === 'control' && msg.event === 'terminated') {
-            void handleUserLeft(msg.reason ?? undefined)
+
+          // --- control events ---
+          if (msg.role === 'control') {
+            if (msg.event === 'terminated') {
+              void handleUserLeft(msg.reason ?? undefined)
+            } else if (msg.event === 'user_speaking') {
+              // Create a partial bubble immediately so the user sees activity,
+              // but only if the candidate isn't already mid-turn (same bubble continues).
+              setMessages((prev) => {
+                const last = prev[prev.length - 1]
+                if (last?.role === 'user') return prev  // continuing same turn
+                return [...prev, { role: 'user' as const, text: '', partial: true, committedText: '' }]
+              })
+            } else if (msg.event === 'interrupted') {
+              // TTS stopped mid-speech — freeze the streaming bubble exactly where
+              // it was cut off instead of leaving it marked "streaming" until the
+              // next turn finalizes it out of order.
+              setMessages((prev) => {
+                const streamingIdx = prev.map(m => m.role === 'assistant' && m.streaming).lastIndexOf(true)
+                if (streamingIdx === -1) return prev
+                return prev.map((m, i) => (i === streamingIdx ? { ...m, streaming: false } : m))
+              })
+            }
             return
           }
+
           if (!msg.text) return
-          if (msg.role === 'user') {
-            // Append consecutive user chunks into the same bubble
+
+          if (msg.role === 'user_chunk') {
+            // Interim transcript for the segment currently being spoken. Deepgram may
+            // emit several FINAL segments back-to-back while the candidate keeps talking
+            // (no agent turn in between) — as long as the last bubble is still 'user',
+            // this is the same turn, so we append onto its committed text instead of
+            // replacing the whole bubble.
             setMessages((prev) => {
               const last = prev[prev.length - 1]
               if (last?.role === 'user') {
+                const base = last.committedText ?? ''
+                const merged = base ? `${base} ${msg.text}` : msg.text!
                 return prev.map((m, i) =>
-                  i === prev.length - 1 ? { ...m, text: m.text + ' ' + msg.text } : m
+                  i === prev.length - 1 ? { ...m, text: merged, partial: true } : m
                 )
               }
-              return [...prev, { role: 'user' as const, text: msg.text }]
+              return [...prev, { role: 'user' as const, text: msg.text!, partial: true, committedText: '' }]
+            })
+          } else if (msg.role === 'user') {
+            // Final authoritative segment — append to the same bubble if the candidate
+            // is still mid-turn (last message is also 'user'); otherwise start a new one.
+            setMessages((prev) => {
+              const last = prev[prev.length - 1]
+              if (last?.role === 'user') {
+                const base = last.committedText ?? ''
+                const committed = base ? `${base} ${msg.text}` : msg.text!
+                return prev.map((m, i) =>
+                  i === prev.length - 1
+                    ? { ...m, text: committed, partial: false, committedText: committed }
+                    : m
+                )
+              }
+              return [...prev, { role: 'user' as const, text: msg.text!, partial: false, committedText: msg.text! }]
             })
           } else if (msg.role === 'assistant_chunk') {
             // Append chunk to the current streaming bubble, or open a new one
@@ -288,10 +338,10 @@ function InterviewRoom() {
               const last = prev[prev.length - 1]
               if (last?.role === 'assistant' && last.streaming) {
                 return prev.map((m, i) =>
-                  i === prev.length - 1 ? { ...m, text: m.text + msg.text } : m
+                  i === prev.length - 1 ? { ...m, text: m.text + msg.text! } : m
                 )
               }
-              return [...prev, { role: 'assistant' as const, text: msg.text, streaming: true }]
+              return [...prev, { role: 'assistant' as const, text: msg.text!, streaming: true }]
             })
           } else if (msg.role === 'assistant') {
             // Finalize the streaming bubble — search backwards since a user message
@@ -300,10 +350,10 @@ function InterviewRoom() {
               const streamingIdx = prev.map(m => m.role === 'assistant' && m.streaming).lastIndexOf(true)
               if (streamingIdx !== -1) {
                 return prev.map((m, i) =>
-                  i === streamingIdx ? { ...m, text: msg.text, streaming: false } : m
+                  i === streamingIdx ? { ...m, text: msg.text!, streaming: false } : m
                 )
               }
-              return [...prev, { role: 'assistant' as const, text: msg.text, streaming: false }]
+              return [...prev, { role: 'assistant' as const, text: msg.text!, streaming: false }]
             })
           }
         } catch {
@@ -365,10 +415,14 @@ function InterviewRoom() {
     fetch(`${API_BASE}/api/interviews/${interviewId}/generate-questions`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ return_questions: true }),
+      body: JSON.stringify({ return_questions: true, test_mode: localStorage.getItem('russell_test_mode') === '1' }),
       signal: controller.signal,
     })
       .then((res) => {
+        if (res.status === 409) {
+          setPhase('already-completed')
+          return null
+        }
         if (!res.ok)
           return res.json().then((d) => {
             throw new Error((d as { detail?: string }).detail ?? `Error ${res.status}`)
@@ -376,11 +430,11 @@ function InterviewRoom() {
         return res.json()
       })
       .then((data) => {
-        if (controller.signal.aborted) return
+        if (data === null || controller.signal.aborted) return
         const type = (data.interview_type ?? '') as string
         setInterviewType(type)
         const oral =
-          type.toLowerCase() === 'oral' || type.toLowerCase().includes('voice')
+          type.toLowerCase().includes('oral') || type.toLowerCase().includes('voice')
         isOralRef.current = oral
         const failCases = (data.enable_fail_cases ?? true) as boolean
         setEnableFailCases(failCases)
@@ -656,6 +710,17 @@ function InterviewRoom() {
           <p className="ir-error-text" style={{ color: '#e05c5c' }}>Interview Terminated</p>
           <p className="ir-status-sub" style={{ marginTop: '8px' }}>
             {terminatedReason ?? 'This interview has been closed.'}
+          </p>
+        </div>
+      )}
+
+      {/* ── Already completed (interview was closed before this page load) ── */}
+      {phase === 'already-completed' && (
+        <div className="ir-center">
+          <BackButton />
+          <p className="ir-status-text">Interview Session Ended</p>
+          <p className="ir-status-sub">
+            This interview has already been completed. Return to your applications to view your results.
           </p>
         </div>
       )}

@@ -12,6 +12,7 @@ class QuestionItem(BaseModel):
 
 class GenerateQuestionsRequest(BaseModel):
     return_questions: bool = True
+    test_mode: bool = False
 
 
 class GenerateQuestionsResponse(BaseModel):

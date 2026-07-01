@@ -28,6 +28,7 @@
   flex: 1;
   min-width: 0;
   overflow-y: auto;
+  max-height: calc(100vh - 180px);
 }
 
 .my-apps-scroll-area::-webkit-scrollbar {

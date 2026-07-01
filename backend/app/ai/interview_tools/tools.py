@@ -7,21 +7,29 @@ from app.ai.interview_tools.state import AgentState
 
 
 async def generate_questions_tool(state: AgentState) -> dict:
-    """fetch_questions_from_db + fetch_candidate_cv_relevance -> generate_questions."""
+    """fetch_candidate_cv_relevance -> generate_questions.
+    Optionally fetches DB example questions when use_example_questions=True (default False)."""
 
     try:
         count = state.get("count", 10)
+        use_example_questions = state.get("use_example_questions", False)
 
         context = await fetch_interview_context(
             interview_round_type_id=state["interview_round_type_id"],
             job_role_id=state["job_role_id"],
             experience_level_id=state["experience_level_id"],
         )
-        example_questions = await fetch_questions_from_db(
-            interview_round_type_id=state["interview_round_type_id"],
-            job_role_id=state["job_role_id"],
-            experience_level_id=state["experience_level_id"],
-        )
+
+        if use_example_questions:
+            db_questions = await fetch_questions_from_db(
+                interview_round_type_id=state["interview_round_type_id"],
+                job_role_id=state["job_role_id"],
+                experience_level_id=state["experience_level_id"],
+            )
+            example_qs = db_questions.questions
+        else:
+            example_qs = []
+
         parsed_cv_text = await fetch_candidate_cv_relevance(
             application_id=state["application_id"],
         )
@@ -32,7 +40,7 @@ async def generate_questions_tool(state: AgentState) -> dict:
         )
 
         generated = await generate_questions(
-            example_questions=example_questions.questions,
+            example_questions=example_qs,
             candidate_relevance=candidate_relevance,
             count=count,
             context=context,
@@ -63,7 +71,10 @@ async def score_answers_tool(state: AgentState) -> dict:
     """grade_candidate_answers."""
 
     try:
-        result = await grade_candidate_answers(state["answers"])
+        result = await grade_candidate_answers(
+            state["answers"],
+            interview_type=state.get("interview_type", "written"),
+        )
 
         return {
             "status": "success",

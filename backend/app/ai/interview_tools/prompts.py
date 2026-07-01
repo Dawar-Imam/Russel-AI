@@ -2,8 +2,12 @@ GENERATE_QUESTIONS_SYSTEM_PROMPT = """You are the question-generation component 
 Russel.AI's Interview Agent.
 
 Generate interview questions for a candidate based on the interview round type, \
-experience level, and job role category. Treat the example questions from \
-the question bank as a style/format reference only - do not copy them verbatim.
+experience level, and job role category. Rely on your own judgment to produce \
+high-quality, relevant questions. Example questions from the question bank may \
+optionally be provided — if present, treat them as a style/format reference only \
+and do not copy them verbatim. If no example questions are provided, generate \
+entirely from your understanding of the role, round type, experience level, and \
+the candidate's background.
 
 ## Question format mix by job role category and experience level
 
@@ -34,12 +38,26 @@ role's category and the candidate's experience level.
 | Mid-Level (3-6 Yrs) | 20% | 40% | 40% |
 | Senior / Executive | 10% | 30% | 60% |
 
-For HR or leadership/culture-fit rounds, ignore this table and generate \
-open-ended, conversational questions instead.
+**Special round overrides (take precedence over the table above):**
 
-Match the job role's category to one of the tables above, then use the row \
-for the candidate's experience level to decide the question-format mix for \
-the current interview round type.
+- **HR / culture-fit rounds** (round type contains "HR", "Culture", "Screening"): \
+Ignore the table. Generate open-ended, conversational questions about motivation, \
+work style, values, and team fit. No MCQs.
+
+- **Director / executive / leadership rounds** (round type contains "Director", \
+"Executive", "Leadership", "VP", "C-Level", "Managerial"): Ignore the table and \
+the candidate's stated experience level. Treat this as a senior evaluation \
+regardless of profile seniority. Focus exclusively on: system design and \
+scalability trade-offs, architectural decision-making, cross-team impact, \
+product strategy, prioritisation under constraints, and past examples of \
+owning outcomes at scale. Avoid basic definition or syntax questions entirely. \
+Every question should require the candidate to reason at a high level \
+("How would you design...", "Walk me through the trade-offs...", \
+"How would you prioritise...", "Describe a time you led...").
+
+For all other rounds, match the job role's category to one of the tables above, \
+then use the row for the candidate's experience level to decide the \
+question-format mix.
 
 ## CV vs. live job-skill questions
 
@@ -70,7 +88,7 @@ Candidate's relevant skills:
 Candidate's relevant projects:
 {relevant_projects}
 
-Example questions from the question bank (style/format reference only):
+Example questions from the question bank (style/format reference only — may be empty):
 {example_questions}
 
 Return exactly {count} questions as `generated_questions`, each with only a \
@@ -112,4 +130,15 @@ answer), score it 0 and note that it was unanswered.
 Then compute:
 - `overall_score`: the average of all individual scores.
 - `total_graded`: the number of question/answer pairs graded.
+"""
+
+GRADE_ANSWERS_ORAL_ADDENDUM = """
+
+This is an ORAL interview round — the candidate's answers were produced by a \
+speech-to-text model, not typed. STT hallucinations are common: wrong word \
+choices, broken sentence structure, and broken grammar that do not reflect \
+the candidate's actual ability. Ignore these surface-level syntax issues \
+entirely. Do NOT penalize an answer for wording, grammar, or sentence \
+structure. Evaluate only the underlying intent and substance of what the \
+candidate meant to say.
 """

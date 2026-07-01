@@ -8,12 +8,16 @@ from livekit import rtc
 from livekit.api import AccessToken, CreateRoomRequest, LiveKitAPI, VideoGrants
 from pydantic import BaseModel
 
+from app.ai.ai_services.cv_relevance_service import fetch_candidate_cv_relevance
 from app.ai.voice_agent.agent import run_voice_agent
+from app.ai.voice_agent.prompts import build_extract_answers_prompt
 from app.core.config import get_llm, settings
 from app.services.interview_service import (
+    get_interview_context,
     get_interview_questions,
     mark_interview_failed_on_leave,
     mark_interview_terminated,
+    merge_test_mode_answers,
     save_voice_answers_bulk,
 )
 
@@ -87,37 +91,28 @@ async def create_room() -> CreateRoomResponse:
 # LLM post-processing
 # ---------------------------------------------------------------------------
 
-async def _extract_answers_with_llm(questions: list, conversation_history: list[dict]) -> list[str]:
-    """Map conversation history onto the ordered question list and return one answer per question."""
-    questions_block = "\n".join(f"{i + 1}. {q.question_text}" for i, q in enumerate(questions))
+async def _extract_answers_with_llm(
+    questions: list,
+    conversation_history: list[dict],
+) -> list[dict]:
+    """
+    Map conversation history onto question IDs and return structured answer objects.
+
+    Returns a list of dicts:
+        question_id : str | None  — matching InterviewQuestions.id, or None for new questions
+        question    : str
+        answer      : str         — only non-empty answers are returned
+    """
+    questions_block = json.dumps(
+        [{"question_id": q.iq_id, "question": q.question_text} for q in questions],
+        indent=2,
+    )
     history_block = "\n".join(
         f"{'Interviewer' if t['role'] == 'assistant' else 'Candidate'}: {t['text']}"
         for t in conversation_history
     )
 
-    prompt = (
-        "You are processing a recorded voice interview transcript.\n\n"
-        "These are the intended interview questions (in order):\n"
-        f"{questions_block}\n\n"
-        "This is the full conversation between the interviewer and the candidate:\n"
-        f"{history_block}\n\n"
-        "Your task: extract the candidate's final answer for each question.\n"
-        "Return a JSON array of strings — one entry per question, in the same order.\n\n"
-        "STRICT RULES — read carefully:\n"
-        "1. A question was answered ONLY if the candidate's voice turns in the transcript "
-        "contain a substantive response to that specific question.\n"
-        "2. If the interviewer asked a question but the candidate never responded to it "
-        "(the interview ended, the candidate was silent, or the session was cut short before "
-        "they replied), use an empty string \"\" for that position.\n"
-        "3. Do NOT infer, fabricate, or carry over answers from adjacent questions. "
-        "If there is no clear candidate response mapped to the question, it is unanswered.\n"
-        "4. The interviewer may have asked follow-up or counter-questions — "
-        "consolidate all candidate turns related to a single base question into one answer string.\n"
-        "5. If the candidate gave a partial reply and then the interview ended mid-answer, "
-        "include only what was actually said — do not complete or extend it.\n\n"
-        "Return ONLY the JSON array, no explanation.\n\n"
-        'Example: ["full answer to Q1", "", "partial answer to Q3", ""]'
-    )
+    prompt = build_extract_answers_prompt(questions_block, history_block)
 
     llm = get_llm(temperature=0)
     response = await llm.ainvoke([HumanMessage(content=prompt)])
@@ -129,19 +124,59 @@ async def _extract_answers_with_llm(questions: list, conversation_history: list[
             raw = raw[4:]
         raw = raw.strip()
 
-    return json.loads(raw)
+    data = json.loads(raw)
+
+    if not isinstance(data, list):
+        raise ValueError(f"LLM returned non-list type: {type(data).__name__}")
+
+    result: list[dict] = []
+    seen_ids: set[str] = set()
+
+    for item in data:
+        if not isinstance(item, dict):
+            _logger.warning("Skipping non-dict item in LLM output: %r", item)
+            continue
+        answer = item.get("answer")
+        if not isinstance(answer, str) or not answer.strip():
+            continue  # omit unanswered / malformed entries
+        question_id = item.get("question_id") or None  # normalise empty-string → None
+        if question_id is not None and not isinstance(question_id, str):
+            question_id = str(question_id)
+        if question_id is not None:
+            if question_id in seen_ids:
+                _logger.warning("Duplicate question_id %r in LLM output — skipping", question_id)
+                continue
+            seen_ids.add(question_id)
+        result.append({
+            "question_id": question_id,
+            "question": str(item.get("question") or ""),
+            "answer": answer.strip(),
+        })
+
+    return result
 
 
 # ---------------------------------------------------------------------------
 # Background task
 # ---------------------------------------------------------------------------
 
-async def _run_and_store(agent_room: rtc.Room, interview_id: str, questions: list) -> None:
+async def _run_and_store(
+    agent_room: rtc.Room,
+    interview_id: str,
+    questions: list,
+    test_mode: bool = False,
+    candidate_cv_text: str = "",
+) -> None:
     """Fire-and-forget task: run voice session, post-process, bulk-save."""
     done_event = _get_done_event(interview_id)
     try:
         conversation_history, terminated_reason = await run_voice_agent(
-            agent_room, questions, enable_fail_cases=settings.ENABLE_FAIL_CASES
+            agent_room,
+            questions,
+            enable_fail_cases=settings.ENABLE_FAIL_CASES,
+            no_response_timeout_seconds=settings.NO_RESPONSE_TIMEOUT_SECONDS,
+            cancel_interview_on_no_response=settings.CANCEL_INTERVIEW_ON_NO_RESPONSE,
+            candidate_cv_text=candidate_cv_text,
         )
         await agent_room.disconnect()
 
@@ -150,7 +185,8 @@ async def _run_and_store(agent_room: rtc.Room, interview_id: str, questions: lis
             _logger.warning(
                 "Interview %s terminated early: %s", interview_id, terminated_reason
             )
-            mark_interview_terminated(interview_id, terminated_reason)
+            if not test_mode:
+                mark_interview_terminated(interview_id, terminated_reason)
             done_event.set()
             return
 
@@ -164,20 +200,18 @@ async def _run_and_store(agent_room: rtc.Room, interview_id: str, questions: lis
             interview_id,
         )
 
-        answers = await _extract_answers_with_llm(questions, conversation_history)
+        extracted = await _extract_answers_with_llm(questions, conversation_history)
 
-        pairs = [
-            (questions[i].iq_id, answers[i])
-            for i in range(min(len(questions), len(answers)))
-            if answers[i]
-        ]
-
-        if not pairs:
+        if not extracted:
             _logger.warning("No answers extracted for interview %s — SSE will timeout", interview_id)
             return
 
-        save_voice_answers_bulk(interview_id, pairs)
-        _logger.info("Stored %d answers for interview %s", len(pairs), interview_id)
+        if test_mode:
+            # Merge into the in-memory cache instead of writing to the DB.
+            merge_test_mode_answers(interview_id, extracted)
+        else:
+            save_voice_answers_bulk(interview_id, extracted)
+        _logger.info("Stored %d answers for interview %s", len(extracted), interview_id)
         done_event.set()
 
     except Exception:
@@ -189,10 +223,17 @@ async def _run_and_store(agent_room: rtc.Room, interview_id: str, questions: lis
 # Public entry point
 # ---------------------------------------------------------------------------
 
-async def conduct_voice_interview(interview_id: str) -> CreateRoomResponse:
-    questions = get_interview_questions(interview_id)
+async def conduct_voice_interview(interview_id: str, test_mode: bool = False) -> CreateRoomResponse:
+    questions = get_interview_questions(interview_id, test_mode=test_mode)
     if not questions:
         raise ValueError(f"No questions found for interview {interview_id}")
+
+    candidate_cv_text = ""
+    try:
+        application_id = get_interview_context(interview_id)["application_id"]
+        candidate_cv_text = await fetch_candidate_cv_relevance(application_id)
+    except Exception:
+        _logger.warning("Could not fetch candidate CV for interview %s — continuing without it", interview_id)
 
     room_response = await create_room()
 
@@ -213,6 +254,11 @@ async def conduct_voice_interview(interview_id: str) -> CreateRoomResponse:
     agent_room = rtc.Room()
     await agent_room.connect(settings.LIVEKIT_URL, agent_token.to_jwt())
 
-    asyncio.create_task(_run_and_store(agent_room, interview_id, questions))
+    asyncio.create_task(
+        _run_and_store(
+            agent_room, interview_id, questions,
+            test_mode=test_mode, candidate_cv_text=candidate_cv_text,
+        )
+    )
 
     return room_response

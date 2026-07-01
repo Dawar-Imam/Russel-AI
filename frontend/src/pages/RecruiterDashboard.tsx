@@ -57,7 +57,7 @@ function RecruiterDashboard() {
     ''
 
   useEffect(() => {
-    if (!recruiterId) navigate('/auth')
+    if (!recruiterId) navigate('/')
   }, [recruiterId, navigate])
 
   const [jobs, setJobs] = useState<JobListItem[]>([])
@@ -332,7 +332,10 @@ function RecruiterDashboard() {
                   onKeyDown={(e) => e.key === 'Enter' && handleOpenDetail(job)}
                 >
                   <div className="rd-job-main">
-                    <span className="rd-job-company">{job.company}</span>
+                    <div className="rd-job-card-top">
+                      <span className="rd-job-company">{job.company}</span>
+                      <span className={`rd-status-badge rd-status-badge--${job.status}`}>{job.status}</span>
+                    </div>
                     <h3 className="rd-job-title">{`${job.experience_level_name} ${job.job_role_title}`}</h3>
                     <p className="rd-job-desc">{job.description}</p>
                   </div>
@@ -342,7 +345,7 @@ function RecruiterDashboard() {
                       {job.salary_range && <span className="rd-badge rd-badge--salary">{job.salary_range}</span>}
                     </div>
                     <div className="rd-job-meta-row">
-                      <span className="rd-job-location">📍 {job.location}</span>
+                      <span className="rd-job-location">{job.location}</span>
                       <span className="rd-job-date">Posted {formatDate(job.posted_at)}</span>
                     </div>
                   </div>
@@ -451,7 +454,13 @@ function RecruiterDashboard() {
 
                 <div className="rd-field">
                   <label className="rd-label">Expires On <span className="rd-optional">(optional)</span></label>
-                  <input className="rd-input" type="date" value={expiresAt} onChange={(e) => setExpiresAt(e.target.value)} />
+                  <input
+                    className="rd-input"
+                    type="date"
+                    value={expiresAt}
+                    min={new Date().toISOString().split('T')[0]}
+                    onChange={(e) => setExpiresAt(e.target.value)}
+                  />
                 </div>
 
                 <div className="rd-field">
@@ -593,11 +602,23 @@ function RecruiterDashboard() {
                 <span className="rd-dialog-eyebrow">{detailJob.company}</span>
                 <h2 className="rd-dialog-title">{`${detailJob.experience_level_name} ${detailJob.job_role_title}`}</h2>
               </div>
-              <button type="button" className="rd-close-btn" onClick={handleCloseDetail} aria-label="Close">
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                  <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
-                </svg>
-              </button>
+              <div className="rd-dialog-header-actions">
+                <button
+                  type="button"
+                  className="rd-stats-btn-inline"
+                  onClick={() => {
+                    handleCloseDetail()
+                    navigate(`/job-stats/${detailJob!.id}`)
+                  }}
+                >
+                  Check Job Stats
+                </button>
+                <button type="button" className="rd-close-btn" onClick={handleCloseDetail} aria-label="Close">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                    <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+                  </svg>
+                </button>
+              </div>
             </div>
 
             {/* Two-column body */}
@@ -664,6 +685,7 @@ function RecruiterDashboard() {
                     </ol>
                   )}
                 </div>
+
               </div>
             </div>
           </div>

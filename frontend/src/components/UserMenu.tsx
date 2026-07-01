@@ -26,8 +26,13 @@ const CANDIDATE_NAV = [
   { label: 'Job Market', to: '/jobs', activePrefix: '/jobs' },
 ]
 
-const RECRUITER_NAV = [
+const RECRUITER_NAV_BASE = [
   { label: 'Dashboard', to: '/recruiter-dashboard', activePrefix: '/recruiter-dashboard' },
+]
+
+const RECRUITER_NAV_STATS = [
+  ...RECRUITER_NAV_BASE,
+  { label: 'Job Stats', to: '#', activePrefix: '/job-stats' },
 ]
 
 function UserMenu() {
@@ -88,7 +93,10 @@ function UserMenu() {
       {/* Nav links */}
       {isSignedIn && (userType === 'candidate' || userType === 'recruiter') ? (
         <div className="navbar-links">
-          {(userType === 'recruiter' ? RECRUITER_NAV : CANDIDATE_NAV).map(({ label, to, activePrefix }) => (
+          {(userType === 'recruiter'
+            ? (pathname.startsWith('/job-stats') ? RECRUITER_NAV_STATS : RECRUITER_NAV_BASE)
+            : CANDIDATE_NAV
+          ).map(({ label, to, activePrefix }) => (
             <NavLink
               key={label}
               to={to}

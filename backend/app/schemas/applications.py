@@ -36,6 +36,7 @@ class InterviewStagesResponse(BaseModel):
     current_round_id: str | None  # interview_round_id of the active round
     ats_status: str  # 'pending' | 'pass' | 'fail'
     ats_reason: str | None
+    application_status: str | None = None  # raw DB value: ATS_PENDING/ATS_PASS/ATS_FAIL/IN_PROGRESS/HIRED/REJECTED
     job_role_title: str | None = None
     experience_level_name: str | None = None
     company: str | None = None
