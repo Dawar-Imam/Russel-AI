@@ -42,6 +42,25 @@ export async function fetchSignupMetadata(): Promise<SignupMetadata> {
   return res.json() as Promise<SignupMetadata>
 }
 
+function toTitleCase(name: string): string {
+  return name
+    .trim()
+    .split(/\s+/)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+    .join(' ')
+}
+
+export async function createSkill(name: string, jobRoleId: number | null = null): Promise<Skill> {
+  const res = await fetch(`${BASE_URL}/api/auth/skills`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: toTitleCase(name), job_role_id: jobRoleId }),
+  })
+  const body = (await res.json()) as { detail?: string } & Partial<Skill>
+  if (!res.ok) throw new Error(body.detail ?? 'Failed to add skill')
+  return body as Skill
+}
+
 export async function signupCandidate(data: {
   firstName: string
   lastName: string

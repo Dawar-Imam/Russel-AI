@@ -3,13 +3,17 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import BackButton from '../components/BackButton'
 import Button from '../components/Button'
-import botImage from '../utils/bot1.png'
+import Modal from '../components/Modal'
+import botImageDark from '../utils/dark/bot1.png'
+import botImageLight from '../utils/white/bot1.png'
+import { useTheme } from '../utils/useTheme'
 import '../css/InterviewRoom.css'
 
 const API_BASE = (import.meta.env.VITE_API_URL as string | undefined) ?? 'http://localhost:8000'
 
 const RING_RADIUS = 62
 const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS
+const MAX_SCORE = 10
 
 interface QuestionItem {
   iq_id: string
@@ -56,12 +60,14 @@ function fmtTime(secs: number): string {
 
 function scoreColor(score: number): string {
   if (score >= 8) return 'var(--color-primary)'
-  if (score >= 5) return 'var(--color-navy-text)'
-  return '#e05c5c'
+  if (score >= 5) return 'var(--color-primary-dark)'
+  return 'var(--color-text-primary)'
 }
 
 function InterviewRoom() {
   const { interviewId } = useParams<{ interviewId: string }>()
+  const theme = useTheme()
+  const botImage = theme === 'light' ? botImageLight : botImageDark
   const [phase, setPhase] = useState<Phase>('loading')
   const [questions, setQuestions] = useState<QuestionItem[]>([])
   const [answers, setAnswers] = useState<string[]>([])
@@ -69,7 +75,8 @@ function InterviewRoom() {
   const [totalTimer, setTotalTimer] = useState(1800)
   const [results, setResults] = useState<Results | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [showMandatoryWarn, setShowMandatoryWarn] = useState(false)
+  const [showConfirmModal, setShowConfirmModal] = useState(false)
+  const [showEndInterviewModal, setShowEndInterviewModal] = useState(false)
   const [interviewType, setInterviewType] = useState('')
   const [messages, setMessages] = useState<ConversationMessage[]>([])
   const [audioBlocked, setAudioBlocked] = useState(false)
@@ -84,17 +91,16 @@ function InterviewRoom() {
   const enableFailCasesRef = useRef(true)
   const phaseRef = useRef<Phase>('loading')
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
-  const warnTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const isOralRef = useRef(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const roomRef = useRef<Room | null>(null)
   const eventSourceRef = useRef<EventSource | null>(null)
+  const concludeFailedRef = useRef(false)
 
   const isOral = interviewType.toLowerCase().includes('oral') || interviewType.toLowerCase().includes('voice')
 
   useEffect(() => { answersRef.current = answers }, [answers])
   useEffect(() => { questionsRef.current = questions }, [questions])
-  useEffect(() => { setShowMandatoryWarn(false) }, [answers])
   useEffect(() => { enableFailCasesRef.current = enableFailCases }, [enableFailCases])
   useEffect(() => { phaseRef.current = phase }, [phase])
   useEffect(() => {
@@ -135,6 +141,20 @@ function InterviewRoom() {
       await fetch(`${API_BASE}/api/interviews/${interviewId}/report-leave`, { method: 'POST' })
     } catch { /* fire-and-forget */ }
   }, [interviewId])
+
+  const handleEndInterviewClick = useCallback(() => {
+    // Test mode: end the room normally (no auto-fail warning) so devs can iterate freely.
+    if (!enableFailCasesRef.current) {
+      roomRef.current?.disconnect()
+      return
+    }
+    setShowEndInterviewModal(true)
+  }, [])
+
+  const handleConfirmEndInterview = useCallback(() => {
+    setShowEndInterviewModal(false)
+    void handleUserLeft('You ended the interview early — this round has been marked as failed.')
+  }, [handleUserLeft])
 
   // Tab switch / window blur
   useEffect(() => {
@@ -269,12 +289,20 @@ function InterviewRoom() {
       // Receive live transcript messages from the agent via data channel
       lkRoom.on(RoomEvent.DataReceived, (payload: Uint8Array) => {
         try {
-          const msg = JSON.parse(new TextDecoder().decode(payload)) as { role: string; text?: string; event?: string; reason?: string }
+          const msg = JSON.parse(new TextDecoder().decode(payload)) as { role: string; text?: string; event?: string; reason?: string; passed?: boolean }
           if (!msg.role) return
 
           // --- control events ---
           if (msg.role === 'control') {
-            if (msg.event === 'terminated') {
+            if (msg.event === 'interview_ended') {
+              // Agent concluded the interview — make the candidate leave the room
+              // so RoomEvent.Disconnected fires and triggers the processing/SSE flow.
+              if (msg.passed === false) {
+                concludeFailedRef.current = true
+              }
+              roomRef.current?.disconnect()
+              return
+            } else if (msg.event === 'terminated') {
               void handleUserLeft(msg.reason ?? undefined)
             } else if (msg.event === 'user_speaking') {
               // Create a partial bubble immediately so the user sees activity,
@@ -361,10 +389,19 @@ function InterviewRoom() {
         }
       })
 
-      // When room disconnects, wait for backend processing then score
+      // When room disconnects, either show terminated screen (fail) or wait for backend then score (pass)
       lkRoom.on(RoomEvent.Disconnected, () => {
         if (isTerminatedRef.current) return  // handleUserLeft already took over
         if (timerRef.current) clearInterval(timerRef.current)
+
+        // Agent concluded with passed=false — interview is already marked Failed in DB.
+        if (concludeFailedRef.current) {
+          isTerminatedRef.current = true
+          setTerminatedReason('Your interview has been concluded by the interviewer.')
+          setPhase('terminated')
+          return
+        }
+
         setPhase('submitting')
 
         const es = new EventSource(
@@ -508,16 +545,16 @@ function InterviewRoom() {
 
   const handleSubmitClick = useCallback(() => {
     if (answers.filter((a) => a.trim().length > 0).length < questions.length) {
-      setShowMandatoryWarn(false)
-      requestAnimationFrame(() => {
-        setShowMandatoryWarn(true)
-        if (warnTimerRef.current) clearTimeout(warnTimerRef.current)
-        warnTimerRef.current = setTimeout(() => setShowMandatoryWarn(false), 6000)
-      })
+      setShowConfirmModal(true)
       return
     }
     void doSubmit()
   }, [answers, questions.length, doSubmit])
+
+  const handleConfirmSubmit = useCallback(() => {
+    setShowConfirmModal(false)
+    void doSubmit()
+  }, [doSubmit])
 
   // ---------------------------------------------------------------------------
   // Derived display values
@@ -618,12 +655,31 @@ function InterviewRoom() {
               <Button
                 variant="secondary"
                 className="ir-end-interview-btn"
-                onClick={() => roomRef.current?.disconnect()}
+                onClick={handleEndInterviewClick}
               >
                 End Interview
               </Button>
             </div>
           </div>
+
+          <Modal isOpen={showEndInterviewModal} onClose={() => setShowEndInterviewModal(false)}>
+            <div className="ir-confirm-dialog">
+              <h2 className="ir-confirm-title">End this interview now?</h2>
+              <p className="ir-confirm-body">
+                Leaving this interview round will result in immediate failure. If you proceed, this
+                round will be terminated and recorded as Failed with a score of 0. This can't be
+                undone.
+              </p>
+              <div className="ir-confirm-actions">
+                <Button variant="secondary" onClick={() => setShowEndInterviewModal(false)}>
+                  Go Back
+                </Button>
+                <Button variant="primary" onClick={handleConfirmEndInterview}>
+                  End Interview
+                </Button>
+              </div>
+            </div>
+          </Modal>
         </div>
       )}
 
@@ -677,14 +733,29 @@ function InterviewRoom() {
             {timerCircle}
 
             <div className="ir-bottom-submit">
-              {showMandatoryWarn && (
-                <p className="ir-submit-warn">All questions are mandatory to answer before submission.</p>
-              )}
               <Button variant="primary" onClick={handleSubmitClick}>
                 Submit Answers
               </Button>
             </div>
           </div>
+
+          <Modal isOpen={showConfirmModal} onClose={() => setShowConfirmModal(false)}>
+            <div className="ir-confirm-dialog">
+              <h2 className="ir-confirm-title">Submit with unanswered questions?</h2>
+              <p className="ir-confirm-body">
+                You've answered {answeredCount} of {questions.length} questions. Unanswered
+                questions will be scored as blank. This can't be undone.
+              </p>
+              <div className="ir-confirm-actions">
+                <Button variant="secondary" onClick={() => setShowConfirmModal(false)}>
+                  Go Back
+                </Button>
+                <Button variant="primary" onClick={handleConfirmSubmit}>
+                  Submit Anyway
+                </Button>
+              </div>
+            </div>
+          </Modal>
         </div>
       )}
 
@@ -707,7 +778,7 @@ function InterviewRoom() {
       {phase === 'terminated' && (
         <div className="ir-center">
           <BackButton />
-          <p className="ir-error-text" style={{ color: '#e05c5c' }}>Interview Terminated</p>
+          <p className="ir-error-text" style={{ color: 'var(--color-alert)' }}>Interview Terminated</p>
           <p className="ir-status-sub" style={{ marginTop: '8px' }}>
             {terminatedReason ?? 'This interview has been closed.'}
           </p>
@@ -747,7 +818,7 @@ function InterviewRoom() {
               <div className="ir-overall-card">
                 <div
                   className="ir-overall-accent-bar"
-                  style={{ width: `${results.overall_score * 10}%` }}
+                  style={{ width: `${(results.overall_score / MAX_SCORE) * 100}%` }}
                 />
                 <div className="ir-overall-left">
                   <span className="ir-overall-label">Overall Score</span>
@@ -755,7 +826,7 @@ function InterviewRoom() {
                 </div>
                 <div className="ir-overall-score-row">
                   <span className="ir-overall-score">{results.overall_score.toFixed(1)}</span>
-                  <span className="ir-overall-out">/ 10</span>
+                  <span className="ir-overall-out">/ {MAX_SCORE}</span>
                 </div>
               </div>
 

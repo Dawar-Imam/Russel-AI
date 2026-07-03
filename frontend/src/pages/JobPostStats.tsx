@@ -137,55 +137,51 @@ function JobPostStats() {
             <aside className="jps-left">
               <div className="jps-job-card">
 
-                {/* Single horizontal row of 5 attributes */}
-                <div className="jps-attrs-bar">
-                  <div className="jps-attr">
-                    <span className="jps-attr-label">Job Role</span>
-                    <span className="jps-attr-value">{stats.job_title}</span>
-                  </div>
-                  <div className="jps-attr-sep" />
-                  <div className="jps-attr">
-                    <span className="jps-attr-label">Status</span>
-                    <span className={`jps-jobstatus ${jobStatusClass(stats.status)}`}>{stats.status}</span>
-                  </div>
-                  <div className="jps-attr-sep" />
-                  <div className="jps-attr">
-                    <span className="jps-attr-label">Interview Rounds</span>
-                    <span className="jps-attr-value">{stats.rounds.length}</span>
-                  </div>
-                  <div className="jps-attr-sep" />
-                  <div className="jps-attr">
-                    <span className="jps-attr-label">Total Applicants</span>
-                    <span className="jps-attr-value">{stats.total_applicants}</span>
-                  </div>
-                  <div className="jps-attr-sep" />
-                  <div className="jps-attr">
-                    <span className="jps-attr-label">Total Selected</span>
-                    <span className="jps-attr-value jps-attr-value--green">{stats.hired_count}</span>
-                  </div>
-                </div>
-
-                <div className="jps-card-divider" />
-
-                {/* Description + Skills */}
+                {/* Details + Description */}
                 <div className="jps-card-body">
+                  <div className="jps-card-skills-col">
+                    {/* Job attributes, stacked above Required Skills */}
+                    <div className="jps-card-stats">
+                      <div className="jps-card-stat">
+                        <span className="jps-attr-label">Job Role</span>
+                        <span className="jps-attr-value">{stats.job_title}</span>
+                      </div>
+                      <div className="jps-card-stat">
+                        <span className="jps-attr-label">Status</span>
+                        <span className={`jps-jobstatus ${jobStatusClass(stats.status)}`}>{stats.status}</span>
+                      </div>
+                      <div className="jps-card-stat">
+                        <span className="jps-attr-label">Interview Rounds</span>
+                        <span className="jps-attr-value">{stats.rounds.length}</span>
+                      </div>
+                      <div className="jps-card-stat">
+                        <span className="jps-attr-label">Total Applicants</span>
+                        <span className="jps-attr-value">{stats.total_applicants}</span>
+                      </div>
+                      <div className="jps-card-stat">
+                        <span className="jps-attr-label">Total Selected</span>
+                        <span className="jps-attr-value jps-attr-value--green">{stats.hired_count}</span>
+                      </div>
+                    </div>
+
+                    <div className="jps-card-stats-divider" />
+
+                    <span className="jps-col-label">Required Skills</span>
+                    {stats.required_skills.length > 0 ? (
+                      <div className="jps-skills-wrap">
+                        {stats.required_skills.map((s) => (
+                          <span key={s} className="jps-skill-tag">{s}</span>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className="jps-state-sm">No required skills listed.</p>
+                    )}
+                  </div>
+                  <div className="jps-card-col-sep" />
                   <div className="jps-card-desc-col">
                     <span className="jps-col-label">Description</span>
                     <p className="jps-desc-text">{stats.description}</p>
                   </div>
-                  {stats.required_skills.length > 0 && (
-                    <>
-                      <div className="jps-card-col-sep" />
-                      <div className="jps-card-skills-col">
-                        <span className="jps-col-label">Required Skills</span>
-                        <div className="jps-skills-wrap">
-                          {stats.required_skills.map((s) => (
-                            <span key={s} className="jps-skill-tag">{s}</span>
-                          ))}
-                        </div>
-                      </div>
-                    </>
-                  )}
                 </div>
 
               </div>
@@ -242,196 +238,196 @@ function JobPostStats() {
                   })}
                 </div>
               )}
+
+              {/* ── Candidate dialog: confined to this pane only ── */}
+              {dialogOpen && dialogCandidate && (
+                <div className="jps-backdrop" onClick={handleCloseDialog}>
+                  <div className="jps-dialog" onClick={(e) => e.stopPropagation()}>
+
+                    {/* Header */}
+                    <div className="jps-dialog-header">
+                      <div>
+                        <span className="jps-dialog-eyebrow">Candidate Detail</span>
+                        <h3 className="jps-dialog-title">{dialogCandidate.name}</h3>
+                      </div>
+                      <div className="jps-dialog-header-right">
+                        <span className={`jps-iv-badge ${ivStatusClass(dialogCandidate.status)}`}>{dialogCandidate.status}</span>
+                        <button className="jps-close-btn" onClick={handleCloseDialog} aria-label="Close">
+                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                            <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+                          </svg>
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* Body */}
+                    {panelLoading ? (
+                      <div className="jps-dialog-body jps-dialog-body--center">
+                        <p className="jps-state-text">Loading candidate data…</p>
+                      </div>
+                    ) : panel ? (
+                      <div className="jps-dialog-body">
+
+                        {/* Interview Progress */}
+                        <div className="jps-dialog-progress">
+                          <span className="jps-section-label">Interview Progress</span>
+
+                          {/* Horizontal round cards row */}
+                          <div className="jps-progress-cards-row">
+                            {panel.progress.map((p) => {
+                              const completed = isCompleted(p.status)
+                              const isActive = selectedProgressId === p.interview_id
+                              return (
+                                <button
+                                  key={p.round_order}
+                                  className={`jps-progress-card ${isActive ? 'jps-progress-card--active' : ''} ${completed ? 'jps-progress-card--clickable' : ''}`}
+                                  onClick={() => completed && p.interview_id ? handleSelectProgress(p.interview_id) : undefined}
+                                  disabled={!completed}
+                                >
+                                  <span className="jps-pc-num">{p.round_order}</span>
+                                  <span className="jps-pc-name">{p.round_type_name}</span>
+                                  {p.status ? (
+                                    <span className={`jps-iv-badge ${ivStatusClass(p.status)}`}>{p.status}</span>
+                                  ) : (
+                                    <span className="jps-iv-badge jps-iv--default">Not started</span>
+                                  )}
+                                  {p.result !== null && (
+                                    <span className="jps-pc-score">{p.result.toFixed(1)}</span>
+                                  )}
+                                </button>
+                              )
+                            })}
+                          </div>
+
+                          {/* Details box */}
+                          <div className="jps-qa-box">
+                            {!selectedProgressId ? (
+                              <p className="jps-qa-placeholder">
+                                {panel.progress.some((p) => isCompleted(p.status))
+                                  ? 'Click a completed round above to view questions and scores.'
+                                  : 'No completed rounds yet. Q&A will appear here once an interview is completed.'}
+                              </p>
+                            ) : qaLoading === selectedProgressId ? (
+                              <p className="jps-state-sm">Loading Q&A…</p>
+                            ) : !selectedQA || selectedQA.length === 0 ? (
+                              <p className="jps-state-sm">No questions recorded for this round.</p>
+                            ) : (
+                              <ol className="jps-qa-list">
+                                {selectedQA.map((q, i) => (
+                                  <li key={i} className="jps-qa-item">
+                                    <div className="jps-qa-q-row">
+                                      <span className="jps-qa-num">Q{i + 1}</span>
+                                      <span className="jps-qa-qtext">{q.question_text}</span>
+                                      {q.score !== null && (
+                                        <span className="jps-qa-score">{q.score}/10</span>
+                                      )}
+                                    </div>
+                                    {q.candidate_answer && (
+                                      <p className="jps-qa-answer">{q.candidate_answer}</p>
+                                    )}
+                                    {q.notes && <p className="jps-qa-notes">{q.notes}</p>}
+                                  </li>
+                                ))}
+                              </ol>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="jps-dialog-divider" />
+
+                        {/* Candidate Info */}
+                        <div className="jps-dialog-info">
+                          <span className="jps-section-label">Candidate Information</span>
+
+                          <div className="jps-info-fields">
+                            {panel.candidate.job_role && (
+                              <div className="jps-info-field">
+                                <span className="jps-info-label">Job Role</span>
+                                <span className="jps-info-value">{panel.candidate.job_role}</span>
+                              </div>
+                            )}
+                            {panel.candidate.experience_level && (
+                              <div className="jps-info-field">
+                                <span className="jps-info-label">Experience Level</span>
+                                <span className="jps-info-value">{panel.candidate.experience_level}</span>
+                              </div>
+                            )}
+                            {expYears(panel.candidate.experience_years_min, panel.candidate.experience_years_max) && (
+                              <div className="jps-info-field">
+                                <span className="jps-info-label">Experience</span>
+                                <span className="jps-info-value">
+                                  {expYears(panel.candidate.experience_years_min, panel.candidate.experience_years_max)}
+                                </span>
+                              </div>
+                            )}
+                            <div className="jps-info-field">
+                              <span className="jps-info-label">Email</span>
+                              <span className="jps-info-value jps-info-value--muted">{panel.candidate.email}</span>
+                            </div>
+                            {panel.candidate.phone && (
+                              <div className="jps-info-field">
+                                <span className="jps-info-label">Phone</span>
+                                <span className="jps-info-value">{panel.candidate.phone}</span>
+                              </div>
+                            )}
+                            {panel.candidate.linkedin_url && (
+                              <div className="jps-info-field">
+                                <span className="jps-info-label">LinkedIn</span>
+                                <a
+                                  href={panel.candidate.linkedin_url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="jps-info-link"
+                                >
+                                  {panel.candidate.linkedin_url.replace(/^https?:\/\/(www\.)?/i, '')}
+                                </a>
+                              </div>
+                            )}
+                            {panel.candidate.current_location && (
+                              <div className="jps-info-field">
+                                <span className="jps-info-label">Location</span>
+                                <span className="jps-info-value">{panel.candidate.current_location}</span>
+                              </div>
+                            )}
+                            {panel.candidate.bio && (
+                              <div className="jps-info-field jps-info-field--full">
+                                <span className="jps-info-label">Bio</span>
+                                <p className="jps-info-bio">{panel.candidate.bio}</p>
+                              </div>
+                            )}
+                          </div>
+
+                          {panel.candidate.skills.length > 0 && (
+                            <div className="jps-info-skills">
+                              <span className="jps-info-label">Skills</span>
+                              <div className="jps-skills-wrap">
+                                {panel.candidate.skills.map((sk) => (
+                                  <span key={sk.name} className="jps-skill-tag">
+                                    {sk.name}
+                                    {sk.proficiency_level && (
+                                      <span className="jps-skill-level">{sk.proficiency_level}</span>
+                                    )}
+                                  </span>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                        </div>
+
+                      </div>
+                    ) : (
+                      <div className="jps-dialog-body jps-dialog-body--center">
+                        <p className="jps-state-text">Failed to load candidate data.</p>
+                      </div>
+                    )}
+
+                  </div>
+                </div>
+              )}
             </section>
           </>
         ) : null}
       </div>
-
-      {/* ── Candidate dialog ── */}
-      {dialogOpen && dialogCandidate && (
-        <div className="jps-backdrop" onClick={handleCloseDialog}>
-          <div className="jps-dialog" onClick={(e) => e.stopPropagation()}>
-
-            {/* Header */}
-            <div className="jps-dialog-header">
-              <div>
-                <span className="jps-dialog-eyebrow">Candidate Detail</span>
-                <h3 className="jps-dialog-title">{dialogCandidate.name}</h3>
-              </div>
-              <div className="jps-dialog-header-right">
-                <span className={`jps-iv-badge ${ivStatusClass(dialogCandidate.status)}`}>{dialogCandidate.status}</span>
-                <button className="jps-close-btn" onClick={handleCloseDialog} aria-label="Close">
-                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                    <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
-                  </svg>
-                </button>
-              </div>
-            </div>
-
-            {/* Body */}
-            {panelLoading ? (
-              <div className="jps-dialog-body jps-dialog-body--center">
-                <p className="jps-state-text">Loading candidate data…</p>
-              </div>
-            ) : panel ? (
-              <div className="jps-dialog-body">
-
-                {/* ── Left 65%: Interview Progress ── */}
-                <div className="jps-dialog-progress">
-                  <span className="jps-section-label">Interview Progress</span>
-
-                  {/* Horizontal round cards row */}
-                  <div className="jps-progress-cards-row">
-                    {panel.progress.map((p) => {
-                      const completed = isCompleted(p.status)
-                      const isActive = selectedProgressId === p.interview_id
-                      return (
-                        <button
-                          key={p.round_order}
-                          className={`jps-progress-card ${isActive ? 'jps-progress-card--active' : ''} ${completed ? 'jps-progress-card--clickable' : ''}`}
-                          onClick={() => completed && p.interview_id ? handleSelectProgress(p.interview_id) : undefined}
-                          disabled={!completed}
-                        >
-                          <span className="jps-pc-num">{p.round_order}</span>
-                          <span className="jps-pc-name">{p.round_type_name}</span>
-                          {p.status ? (
-                            <span className={`jps-iv-badge ${ivStatusClass(p.status)}`}>{p.status}</span>
-                          ) : (
-                            <span className="jps-iv-badge jps-iv--default">Not started</span>
-                          )}
-                          {p.result !== null && (
-                            <span className="jps-pc-score">{p.result.toFixed(1)}</span>
-                          )}
-                        </button>
-                      )
-                    })}
-                  </div>
-
-                  {/* Details box */}
-                  <div className="jps-qa-box">
-                    {!selectedProgressId ? (
-                      <p className="jps-qa-placeholder">
-                        {panel.progress.some((p) => isCompleted(p.status))
-                          ? 'Click a completed round above to view questions and scores.'
-                          : 'No completed rounds yet. Q&A will appear here once an interview is completed.'}
-                      </p>
-                    ) : qaLoading === selectedProgressId ? (
-                      <p className="jps-state-sm">Loading Q&A…</p>
-                    ) : !selectedQA || selectedQA.length === 0 ? (
-                      <p className="jps-state-sm">No questions recorded for this round.</p>
-                    ) : (
-                      <ol className="jps-qa-list">
-                        {selectedQA.map((q, i) => (
-                          <li key={i} className="jps-qa-item">
-                            <div className="jps-qa-q-row">
-                              <span className="jps-qa-num">Q{i + 1}</span>
-                              <span className="jps-qa-qtext">{q.question_text}</span>
-                              {q.score !== null && (
-                                <span className="jps-qa-score">{q.score}/10</span>
-                              )}
-                            </div>
-                            {q.candidate_answer && (
-                              <p className="jps-qa-answer">{q.candidate_answer}</p>
-                            )}
-                            {q.notes && <p className="jps-qa-notes">{q.notes}</p>}
-                          </li>
-                        ))}
-                      </ol>
-                    )}
-                  </div>
-                </div>
-
-                <div className="jps-dialog-divider" />
-
-                {/* ── Right 35%: Candidate Info ── */}
-                <div className="jps-dialog-info">
-                  <span className="jps-section-label">Candidate Information</span>
-
-                  <div className="jps-info-fields">
-                    {panel.candidate.job_role && (
-                      <div className="jps-info-field">
-                        <span className="jps-info-label">Job Role</span>
-                        <span className="jps-info-value">{panel.candidate.job_role}</span>
-                      </div>
-                    )}
-                    {panel.candidate.experience_level && (
-                      <div className="jps-info-field">
-                        <span className="jps-info-label">Experience Level</span>
-                        <span className="jps-info-value">{panel.candidate.experience_level}</span>
-                      </div>
-                    )}
-                    {expYears(panel.candidate.experience_years_min, panel.candidate.experience_years_max) && (
-                      <div className="jps-info-field">
-                        <span className="jps-info-label">Experience</span>
-                        <span className="jps-info-value">
-                          {expYears(panel.candidate.experience_years_min, panel.candidate.experience_years_max)}
-                        </span>
-                      </div>
-                    )}
-                    <div className="jps-info-field">
-                      <span className="jps-info-label">Email</span>
-                      <span className="jps-info-value jps-info-value--muted">{panel.candidate.email}</span>
-                    </div>
-                    {panel.candidate.phone && (
-                      <div className="jps-info-field">
-                        <span className="jps-info-label">Phone</span>
-                        <span className="jps-info-value">{panel.candidate.phone}</span>
-                      </div>
-                    )}
-                    {panel.candidate.linkedin_url && (
-                      <div className="jps-info-field">
-                        <span className="jps-info-label">LinkedIn</span>
-                        <a
-                          href={panel.candidate.linkedin_url}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="jps-info-link"
-                        >
-                          {panel.candidate.linkedin_url.replace(/^https?:\/\/(www\.)?/i, '')}
-                        </a>
-                      </div>
-                    )}
-                    {panel.candidate.current_location && (
-                      <div className="jps-info-field">
-                        <span className="jps-info-label">Location</span>
-                        <span className="jps-info-value">{panel.candidate.current_location}</span>
-                      </div>
-                    )}
-                    {panel.candidate.bio && (
-                      <div className="jps-info-field jps-info-field--full">
-                        <span className="jps-info-label">Bio</span>
-                        <p className="jps-info-bio">{panel.candidate.bio}</p>
-                      </div>
-                    )}
-                  </div>
-
-                  {panel.candidate.skills.length > 0 && (
-                    <div className="jps-info-skills">
-                      <span className="jps-info-label">Skills</span>
-                      <div className="jps-skills-wrap">
-                        {panel.candidate.skills.map((sk) => (
-                          <span key={sk.name} className="jps-skill-tag">
-                            {sk.name}
-                            {sk.proficiency_level && (
-                              <span className="jps-skill-level">{sk.proficiency_level}</span>
-                            )}
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </div>
-
-              </div>
-            ) : (
-              <div className="jps-dialog-body jps-dialog-body--center">
-                <p className="jps-state-text">Failed to load candidate data.</p>
-              </div>
-            )}
-
-          </div>
-        </div>
-      )}
     </main>
   )
 }

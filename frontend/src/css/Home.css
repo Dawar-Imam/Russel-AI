@@ -1,7 +1,7 @@
 .home-page {
   height: 100vh;
   overflow: hidden;
-  background-image: url('../utils/home-page.png');
+  background-image: var(--bg-home-page);
   background-size: cover;
   background-position: center;
   background-repeat: no-repeat;
@@ -66,6 +66,19 @@
 
 .home-dashboard-btn {
   width: 100%;
+}
+
+body.light-theme .home-view-jobs-btn,
+body.light-theme .home-dashboard-btn {
+  border: 1.5px solid #000;
+  transition: border-color 0.2s ease, color 0.2s ease;
+}
+
+body.light-theme .home-view-jobs-btn:hover,
+body.light-theme .home-dashboard-btn:hover {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+  font-weight: 700;
 }
 
 @media (max-width: 480px) {

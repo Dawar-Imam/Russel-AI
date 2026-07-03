@@ -1,6 +1,10 @@
-import { useMemo } from 'react'
+import { useMemo, type KeyboardEvent } from 'react'
 import CustomSelect from './CustomSelect'
 import '../css/FilterPanel.css'
+
+function blockNonNumericKey(e: KeyboardEvent<HTMLInputElement>) {
+  if (['e', 'E', '+', '-'].includes(e.key)) e.preventDefault()
+}
 
 const JOB_TYPES = ['Full-time', 'Part-time', 'Remote', 'Contract', 'Hybrid']
 const APP_STATUSES = ['ATS_PENDING', 'ATS_PASS', 'ATS_FAIL', 'IN_PROGRESS', 'HIRED', 'REJECTED']
@@ -169,10 +173,12 @@ function FilterPanel({
                 className="filter-panel-input filter-panel-salary-input"
                 type="number"
                 min="0"
+                max="10000000"
                 step="1000"
                 placeholder="Min"
                 value={salaryMin}
                 onChange={(e) => onSalaryMinChange(e.target.value)}
+                onKeyDown={blockNonNumericKey}
               />
             </div>
             <span className="filter-panel-salary-sep">—</span>
@@ -182,10 +188,12 @@ function FilterPanel({
                 className="filter-panel-input filter-panel-salary-input"
                 type="number"
                 min="0"
+                max="10000000"
                 step="1000"
                 placeholder="Max"
                 value={salaryMax}
                 onChange={(e) => onSalaryMaxChange(e.target.value)}
+                onKeyDown={blockNonNumericKey}
               />
             </div>
           </div>

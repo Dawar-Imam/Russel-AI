@@ -9,6 +9,11 @@ class ApplyRequest(BaseModel):
 class ATSCheckResponse(BaseModel):
     eligible: bool
     reason: str
+    role_assessment: str | None = None
+    experience_assessment: str | None = None
+    skills_matched: list[str] = []
+    skills_missing: list[str] = []
+    projects_assessment: str | None = None
 
 
 class ApplyResponse(BaseModel):
@@ -36,6 +41,11 @@ class InterviewStagesResponse(BaseModel):
     current_round_id: str | None  # interview_round_id of the active round
     ats_status: str  # 'pending' | 'pass' | 'fail'
     ats_reason: str | None
+    ats_role_assessment: str | None = None
+    ats_experience_assessment: str | None = None
+    ats_skills_matched: list[str] = []
+    ats_skills_missing: list[str] = []
+    ats_projects_assessment: str | None = None
     application_status: str | None = None  # raw DB value: ATS_PENDING/ATS_PASS/ATS_FAIL/IN_PROGRESS/HIRED/REJECTED
     job_role_title: str | None = None
     experience_level_name: str | None = None

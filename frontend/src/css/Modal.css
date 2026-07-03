@@ -1,7 +1,7 @@
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  background-color: rgba(0, 0, 0, 0.6);
+  background-color: rgba(var(--shadow-rgb), 0.6);
   backdrop-filter: blur(6px);
   -webkit-backdrop-filter: blur(6px);
   display: flex;
@@ -10,6 +10,12 @@
   /* 88px top clears the navbar (~64px) with a comfortable gap */
   padding: 88px var(--space-6) var(--space-6);
   z-index: 100;
+}
+
+/* When the app sidebar is present, keep the backdrop/blur confined to the
+   right panel so the sidebar stays sharp and untouched. */
+body.has-app-sidebar .modal-backdrop {
+  left: calc(var(--sidebar-width) + var(--sidebar-margin) * 2);
 }
 
 .modal {

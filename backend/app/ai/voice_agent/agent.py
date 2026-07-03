@@ -2,16 +2,16 @@ import asyncio
 import contextlib
 import json
 import logging
-import re
 import time
 from collections.abc import AsyncGenerator
 
 from livekit import rtc
-from livekit.agents import Agent, AgentSession, llm, stt as agents_stt
+from livekit.agents import Agent, AgentSession, function_tool, llm, stt as agents_stt
 from livekit.agents.utils import http_context
 from livekit.agents.voice.room_io import RoomOptions
 from livekit.plugins import deepgram, elevenlabs, openai, silero
 
+from app.ai.voice_agent.interview_state import store_conclude_result
 from app.ai.voice_agent.prompts import (
     PRESENCE_CHECK_INSTRUCTIONS,
     WELCOME_INSTRUCTIONS,
@@ -24,35 +24,6 @@ from app.schemas.interviews import QuestionItem
 
 _logger = logging.getLogger("russel.voice_agent")
 
-_CHEAT_PHRASES = [
-    "using chatgpt",
-    "using gpt",
-    "using claude",
-    "using ai to",
-    "i am cheating",
-    "i'm cheating",
-    "im cheating",
-    "reading answers",
-    "reading from notes",
-    "copy pasting",
-    "copied from",
-    "someone is helping me",
-    "someone helping me",
-    "i am using ai",
-    "i'm using ai",
-    "im using ai",
-]
-
-TERMINATION_REASON_CHEATING = "Candidate admitted to cheating during the voice interview. Interview terminated."
-TERMINATION_REASON_AGENT_CANCELLED = (
-    "Interview cancelled by the AI interviewer due to insufficient correct answers "
-    "or repeated misconduct."
-)
-
-_CANCEL_TOKEN = "/cancel-interview"
-_PASS_TOKEN = "/pass-interview"
-_CONTROL_TOKEN_RE = re.compile(r"/cancel-interview|/pass-interview", re.IGNORECASE)
-
 
 def _compute_remaining(start_time: float, duration_seconds: float) -> int:
     """Return remaining interview seconds (floored at 0)."""
@@ -64,12 +35,16 @@ class InterviewerAgent(Agent):
         self,
         questions: list[QuestionItem],
         room: rtc.Room,
+        interview_id: str,
         duration_minutes: int = settings.INTERVIEW_DURATION_MINUTES,
         candidate_cv_text: str = "",
     ) -> None:
         self._duration_seconds = duration_minutes * 60
         self._start_time: float | None = None
         self._interrupted = asyncio.Event()
+        self._interview_id = interview_id
+        self._room = room
+        self._concluded = False  # set when conclude_interview tool fires
 
         questions_block = "\n".join(f"{i + 1}. {q.question_text}" for i, q in enumerate(questions))
         super().__init__(
@@ -77,11 +52,37 @@ class InterviewerAgent(Agent):
                 questions_block, duration_minutes, len(questions), candidate_cv_text
             )
         )
-        self._room = room
 
     async def on_enter(self) -> None:
         self._start_time = time.time()
         await self.session.generate_reply(instructions=WELCOME_INSTRUCTIONS)
+
+    @function_tool(
+        description=(
+            "End the interview and record its outcome. Call this exactly once — "
+            "AFTER delivering your final spoken message to the candidate. "
+            "passed=True for normal completion or exceptional performance; "
+            "passed=False for misconduct or repeated inability to answer."
+        )
+    )
+    async def conclude_interview(self, passed: bool, reason: str) -> str:
+        """Store the pass/fail outcome, signal the frontend, then disconnect the room."""
+        store_conclude_result(self._interview_id, passed, reason)
+        self._concluded = True  # stop no-response checker immediately
+        _logger.info(
+            "Interview %s concluded via tool — passed=%s reason=%s",
+            self._interview_id, passed, reason,
+        )
+        # Tell the frontend to leave the room so RoomEvent.Disconnected fires there.
+        try:
+            await self._room.local_participant.publish_data(
+                json.dumps({"role": "control", "event": "interview_ended", "passed": passed}).encode(),
+                reliable=True,
+            )
+        except Exception as exc:
+            _logger.debug("Failed to publish interview_ended control event: %s", exc)
+        asyncio.create_task(self._room.disconnect())
+        return "Interview concluded."
 
     def _get_remaining_seconds(self) -> float:
         if self._start_time is None:
@@ -169,6 +170,7 @@ async def _no_response_checker(
     terminated_reason: list[str | None],
     session_start_time: float = 0.0,
     grace_period_seconds: int = 0,
+    get_agent=None,
 ) -> None:
     """
     Polls every second. When the candidate has been silent for `timeout_seconds`
@@ -180,6 +182,9 @@ async def _no_response_checker(
     while not disconnected.is_set():
         await asyncio.sleep(1.0)
         if disconnected.is_set():
+            break
+        # Stop immediately when the agent's conclude_interview tool has fired.
+        if get_agent is not None and getattr(get_agent(), "_concluded", False):
             break
 
         if time.time() - session_start_time < grace_period_seconds:
@@ -242,8 +247,8 @@ def _build_stt_engine(vad):
 async def run_voice_agent(
     room: rtc.Room,
     questions: list[QuestionItem],
+    interview_id: str,
     duration_minutes: int = settings.INTERVIEW_DURATION_MINUTES,
-    enable_fail_cases: bool = True,
     no_response_timeout_seconds: int = 30,
     cancel_interview_on_no_response: int = 0,
     candidate_cv_text: str = "",
@@ -288,39 +293,13 @@ async def run_voice_agent(
             return
         clean_text = text.strip()
 
-        lowered = clean_text.lower()
-        cancel_signal = _CANCEL_TOKEN in lowered
-        pass_signal = _PASS_TOKEN in lowered
-        if cancel_signal or pass_signal:
-            # Strip the control token — it's a backend signal, never shown/spoken.
-            clean_text = _CONTROL_TOKEN_RE.sub("", clean_text).strip()
-            if not clean_text:
-                clean_text = "The interview has ended. Thank you for your time."
-
         remaining = _get_remaining()
-        # conversation_history stores the clean text (used by post-processing LLM)
         msg = {"role": "assistant", "text": clean_text, "remaining_time": remaining}
         conversation_history.append(msg)
-        # frontend sees remaining time appended to the message text
         m, s = divmod(remaining, 60)
         display_text = f"{clean_text} [remaining: {m:02d}:{s:02d}]"
         asyncio.ensure_future(_publish({**msg, "text": display_text}))
         _logger.info("Agent said: %s", clean_text)
-
-        if cancel_signal and enable_fail_cases:
-            _logger.warning("Agent fired /cancel-interview — marking interview failed")
-            terminated_reason[0] = TERMINATION_REASON_AGENT_CANCELLED
-            asyncio.ensure_future(
-                _publish({
-                    "role": "control",
-                    "event": "terminated",
-                    "reason": TERMINATION_REASON_AGENT_CANCELLED,
-                })
-            )
-            disconnected.set()
-        elif pass_signal:
-            _logger.info("Agent fired /pass-interview — ending early for scoring")
-            disconnected.set()
 
     def _on_user_transcript(ev) -> None:
         transcript = ev.transcript.strip() if ev.transcript else ""
@@ -337,20 +316,6 @@ async def run_voice_agent(
         conversation_history.append(msg)
         asyncio.ensure_future(_publish(msg))
         _logger.info("User said: %s", transcript)
-
-        if enable_fail_cases:
-            lowered = transcript.lower()
-            if any(phrase in lowered for phrase in _CHEAT_PHRASES):
-                _logger.warning("Cheating detected — terminating: %r", transcript)
-                terminated_reason[0] = TERMINATION_REASON_CHEATING
-                asyncio.ensure_future(
-                    _publish({
-                        "role": "control",
-                        "event": "terminated",
-                        "reason": TERMINATION_REASON_CHEATING,
-                    })
-                )
-                disconnected.set()
 
     def _on_speech_interrupted(ev) -> None:
         if interviewer_agent_ref[0] is not None:
@@ -386,12 +351,13 @@ async def run_voice_agent(
             stt=_build_stt_engine(vad),
             llm=openai.LLM(model="gpt-4o-mini", api_key=settings.OPENAI_API_KEY),
             tts=elevenlabs.TTS(
-                model="eleven_turbo_v2_5",
+                model="eleven_flash_v2_5",
                 voice_id=settings.ELEVENLABS_VOICE_ID,
                 api_key=settings.ELEVENLABS_API_KEY,
+                # optimize_streaming_latency=3,
             ),
             turn_handling={
-                "endpointing": {"min_delay": 1.8, "max_delay": 4.0},
+                "endpointing": {"min_delay": 1.5, "max_delay": 2.0},
                 "interruption": {
                     "enabled": True,
                     "min_duration": 0.2,
@@ -419,11 +385,12 @@ async def run_voice_agent(
                 terminated_reason=terminated_reason,
                 session_start_time=session_start,
                 grace_period_seconds=NO_RESPONSE_GRACE_SECONDS,
+                get_agent=lambda: interviewer_agent_ref[0],
             )
         )
 
         interviewer_agent_ref[0] = InterviewerAgent(
-            questions, room, duration_minutes, candidate_cv_text=candidate_cv_text
+            questions, room, interview_id, duration_minutes, candidate_cv_text=candidate_cv_text
         )
         await session.start(
             agent=interviewer_agent_ref[0],

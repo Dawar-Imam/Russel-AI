@@ -15,7 +15,7 @@
 }
 
 .app-card:hover {
-  border-color: rgba(245, 166, 35, 0.4);
+  border-color: rgba(var(--color-primary-rgb), 0.4);
   transform: translateY(-2px);
 }
 
@@ -95,45 +95,45 @@
 }
 
 .app-card-status--pending {
-  background: rgba(245, 166, 35, 0.1);
+  background: var(--color-surface-raised);
   color: var(--color-primary);
-  border-color: rgba(245, 166, 35, 0.35);
+  border-color: var(--color-border);
 }
 
 .app-card-status--pass {
-  background: rgba(111, 207, 151, 0.1);
-  color: #6fcf97;
-  border-color: rgba(111, 207, 151, 0.35);
+  background: var(--color-surface-raised);
+  color: var(--color-primary);
+  border-color: var(--color-border);
 }
 
 .app-card-status--fail {
-  background: rgba(224, 82, 82, 0.1);
-  color: #e05252;
-  border-color: rgba(224, 82, 82, 0.35);
+  background: var(--color-surface-raised);
+  color: var(--color-alert);
+  border-color: var(--color-border);
 }
 
 .app-card-status--progress {
-  background: rgba(122, 171, 255, 0.1);
-  color: var(--color-info-text);
-  border-color: rgba(122, 171, 255, 0.35);
+  background: var(--color-surface-raised);
+  color: var(--color-text-primary);
+  border-color: var(--color-border);
 }
 
 .app-card-status--scheduled {
-  background: rgba(154, 154, 154, 0.08);
+  background: var(--color-surface-raised);
   color: var(--color-text-secondary);
-  border-color: rgba(154, 154, 154, 0.3);
+  border-color: var(--color-border);
 }
 
 .app-card-status--hired {
-  background: rgba(76, 175, 114, 0.1);
-  color: #4caf72;
-  border-color: rgba(76, 175, 114, 0.35);
+  background: var(--color-surface-raised);
+  color: var(--color-primary);
+  border-color: var(--color-border);
 }
 
 .app-card-status--rejected {
-  background: rgba(224, 82, 82, 0.1);
-  color: #e05252;
-  border-color: rgba(224, 82, 82, 0.35);
+  background: var(--color-surface-raised);
+  color: var(--color-alert);
+  border-color: var(--color-border);
 }
 
 .app-card-action {

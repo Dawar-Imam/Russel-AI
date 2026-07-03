@@ -1,11 +1,14 @@
-import { useEffect, useState, type ChangeEvent, type FormEvent } from 'react'
+import { useEffect, useRef, useState, type ChangeEvent, type FormEvent, type KeyboardEvent } from 'react'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import Button from '../components/Button'
 import Input from '../components/Input'
 import Select from '../components/Select'
 import Tag from '../components/Tag'
-import logo from '../utils/logo.png'
+import logoDark from '../utils/dark/logo.png'
+import logoLight from '../utils/white/logo.png'
+import { useTheme } from '../utils/useTheme'
 import {
+  createSkill,
   fetchSignupMetadata,
   signupCandidate,
   signinCandidate,
@@ -16,12 +19,22 @@ import {
 } from '../api/auth'
 import '../css/Auth.css'
 
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/
+const NAME_RE = /^[a-zA-Z\s'\-]+$/
+const CV_MAX_BYTES = 5 * 1024 * 1024
+
+function blockNonNumericKey(e: KeyboardEvent<HTMLInputElement>) {
+  if (['e', 'E', '+', '-'].includes(e.key)) e.preventDefault()
+}
+
 type AccountType = 'candidate' | 'recruiter'
 type AuthMode = 'signin' | 'signup'
 
 function Auth() {
   const navigate = useNavigate()
   const location = useLocation()
+  const theme = useTheme()
+  const logo = theme === 'light' ? logoLight : logoDark
   const pendingJobId = (location.state as { pendingJobId?: string } | null)?.pendingJobId
   const [accountType, setAccountType] = useState<AccountType>('candidate')
   const [mode, setMode] = useState<AuthMode>('signin')
@@ -44,8 +57,12 @@ function Auth() {
   const [selectedRoleId, setSelectedRoleId] = useState<number | ''>('')
   const [selectedSkills, setSelectedSkills] = useState<Skill[]>([])
   const [showSuggestions, setShowSuggestions] = useState(false)
+  const [customSkillName, setCustomSkillName] = useState('')
+  const [addingCustomSkill, setAddingCustomSkill] = useState(false)
+  const [customSkillError, setCustomSkillError] = useState<string | null>(null)
   const [experience, setExperience] = useState('')
   const [cvFile, setCvFile] = useState<File | null>(null)
+  const cvInputRef = useRef<HTMLInputElement>(null)
 
   // Recruiter-only signup state
   const [companyName, setCompanyName] = useState('')
@@ -104,8 +121,38 @@ function Auth() {
     setSelectedSkills((prev) => prev.filter((s) => s.id !== skillId))
   }
 
+  function handleAddAllSkills() {
+    if (suggestedSkills.length === 0) return
+    setSelectedSkills((prev) => [...prev, ...suggestedSkills])
+  }
+
+  async function handleAddCustomSkill() {
+    const name = customSkillName.trim()
+    if (!name) return
+    setAddingCustomSkill(true)
+    setCustomSkillError(null)
+    try {
+      const skill = await createSkill(name, selectedRoleId === '' ? null : selectedRoleId)
+      setAllSkills((prev) => (prev.some((s) => s.id === skill.id) ? prev : [...prev, skill]))
+      setSelectedSkills((prev) => (prev.some((s) => s.id === skill.id) ? prev : [...prev, skill]))
+      setCustomSkillName('')
+    } catch (err) {
+      setCustomSkillError(err instanceof Error ? err.message : 'Failed to add skill')
+    } finally {
+      setAddingCustomSkill(false)
+    }
+  }
+
   function handleCvChange(event: ChangeEvent<HTMLInputElement>) {
-    setCvFile(event.target.files?.[0] ?? null)
+    const file = event.target.files?.[0] ?? null
+    if (file && file.size > CV_MAX_BYTES) {
+      setSubmitError('CV file must be under 5 MB.')
+      setCvFile(null)
+      event.target.value = ''
+    } else {
+      setSubmitError(null)
+      setCvFile(file)
+    }
   }
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
@@ -113,7 +160,7 @@ function Auth() {
     setAttemptedSubmit(true)
 
     if (mode === 'signin') {
-      if (!signinEmail || !signinPassword) return
+      if (!signinEmail || !EMAIL_RE.test(signinEmail) || !signinPassword) return
       setSubmitting(true)
       setSubmitError(null)
       try {
@@ -139,10 +186,14 @@ function Auth() {
     }
 
     // Signup validation
+    const nameOk = (v: string) => !!v && NAME_RE.test(v)
+    const emailOk = (v: string) => !!v && EMAIL_RE.test(v)
+    const expVal = parseFloat(experience)
+    const expOk = !!experience && !isNaN(expVal) && expVal >= 0 && expVal <= 60
     if (accountType === 'recruiter') {
-      if (!firstName || !lastName || !signupEmail || !signupPassword || !companyName || !designation) return
+      if (!nameOk(firstName) || !nameOk(lastName) || !emailOk(signupEmail) || !signupPassword || signupPassword.length < 8 || !companyName || !designation) return
     } else {
-      if (!firstName || !lastName || !signupEmail || !signupPassword || selectedRoleId === '' || selectedSkills.length === 0 || !experience || !cvFile) return
+      if (!nameOk(firstName) || !nameOk(lastName) || !emailOk(signupEmail) || !signupPassword || signupPassword.length < 8 || selectedRoleId === '' || selectedSkills.length === 0 || !expOk || !cvFile) return
     }
 
     setSubmitting(true)
@@ -172,7 +223,17 @@ function Auth() {
       }
       setSubmitSuccess(true)
     } catch (err: unknown) {
-      setSubmitError(err instanceof Error ? err.message : 'Signup failed')
+      if (accountType === 'candidate' && cvFile && err instanceof TypeError) {
+        // Browser-level upload abort (e.g. Chrome's net::ERR_UPLOAD_FILE_CHANGED) —
+        // the selected file was modified/replaced on disk after being chosen, so its
+        // File handle is no longer valid. Force a re-select rather than letting the
+        // user retry with the same stale handle.
+        setCvFile(null)
+        if (cvInputRef.current) cvInputRef.current.value = ''
+        setSubmitError('Your CV file could not be uploaded — it may have changed on disk after you selected it. Please choose the file again.')
+      } else {
+        setSubmitError(err instanceof Error ? err.message : 'Signup failed')
+      }
     } finally {
       setSubmitting(false)
     }
@@ -280,9 +341,11 @@ function Auth() {
                   value={signinEmail}
                   onChange={(e) => setSigninEmail(e.target.value)}
                 />
-                {attemptedSubmit && !signinEmail && (
-                  <span className="field-error">Email is required.</span>
-                )}
+                {attemptedSubmit && (!signinEmail
+                  ? <span className="field-error">Email is required.</span>
+                  : !EMAIL_RE.test(signinEmail)
+                    ? <span className="field-error">Enter a valid email address.</span>
+                    : null)}
               </label>
               <label className="field">
                 <span className="field-label">
@@ -336,9 +399,11 @@ function Auth() {
                     value={firstName}
                     onChange={(e) => setFirstName(e.target.value)}
                   />
-                  {attemptedSubmit && !firstName && (
-                    <span className="field-error">First name is required.</span>
-                  )}
+                  {attemptedSubmit && (!firstName
+                    ? <span className="field-error">First name is required.</span>
+                    : !NAME_RE.test(firstName)
+                      ? <span className="field-error">Name may only contain letters, spaces, hyphens, and apostrophes.</span>
+                      : null)}
                 </label>
                 <label className="field">
                   <span className="field-label">
@@ -351,9 +416,11 @@ function Auth() {
                     value={lastName}
                     onChange={(e) => setLastName(e.target.value)}
                   />
-                  {attemptedSubmit && !lastName && (
-                    <span className="field-error">Last name is required.</span>
-                  )}
+                  {attemptedSubmit && (!lastName
+                    ? <span className="field-error">Last name is required.</span>
+                    : !NAME_RE.test(lastName)
+                      ? <span className="field-error">Name may only contain letters, spaces, hyphens, and apostrophes.</span>
+                      : null)}
                 </label>
               </div>
 
@@ -368,9 +435,11 @@ function Auth() {
                   value={signupEmail}
                   onChange={(e) => setSignupEmail(e.target.value)}
                 />
-                {attemptedSubmit && !signupEmail && (
-                  <span className="field-error">Email is required.</span>
-                )}
+                {attemptedSubmit && (!signupEmail
+                  ? <span className="field-error">Email is required.</span>
+                  : !EMAIL_RE.test(signupEmail)
+                    ? <span className="field-error">Enter a valid email address.</span>
+                    : null)}
               </label>
 
               <label className="field">
@@ -381,7 +450,7 @@ function Auth() {
                   <Input
                     type={showSignupPassword ? 'text' : 'password'}
                     name="password"
-                    placeholder="Create a password"
+                    placeholder="min 8 characters"
                     value={signupPassword}
                     onChange={(e) => setSignupPassword(e.target.value)}
                   />
@@ -405,9 +474,11 @@ function Auth() {
                     )}
                   </button>
                 </div>
-                {attemptedSubmit && !signupPassword && (
-                  <span className="field-error">Password is required.</span>
-                )}
+                {attemptedSubmit && (!signupPassword
+                  ? <span className="field-error">Password is required.</span>
+                  : signupPassword.length < 8
+                    ? <span className="field-error">Password must be at least 8 characters.</span>
+                    : null)}
               </label>
 
               <label className="field">
@@ -462,9 +533,11 @@ function Auth() {
                     value={firstName}
                     onChange={(e) => setFirstName(e.target.value)}
                   />
-                  {attemptedSubmit && !firstName && (
-                    <span className="field-error">First name is required.</span>
-                  )}
+                  {attemptedSubmit && (!firstName
+                    ? <span className="field-error">First name is required.</span>
+                    : !NAME_RE.test(firstName)
+                      ? <span className="field-error">Name may only contain letters, spaces, hyphens, and apostrophes.</span>
+                      : null)}
                 </label>
                 <label className="field">
                   <span className="field-label">
@@ -477,9 +550,11 @@ function Auth() {
                     value={lastName}
                     onChange={(e) => setLastName(e.target.value)}
                   />
-                  {attemptedSubmit && !lastName && (
-                    <span className="field-error">Last name is required.</span>
-                  )}
+                  {attemptedSubmit && (!lastName
+                    ? <span className="field-error">Last name is required.</span>
+                    : !NAME_RE.test(lastName)
+                      ? <span className="field-error">Name may only contain letters, spaces, hyphens, and apostrophes.</span>
+                      : null)}
                 </label>
               </div>
 
@@ -494,9 +569,11 @@ function Auth() {
                   value={signupEmail}
                   onChange={(e) => setSignupEmail(e.target.value)}
                 />
-                {attemptedSubmit && !signupEmail && (
-                  <span className="field-error">Email is required.</span>
-                )}
+                {attemptedSubmit && (!signupEmail
+                  ? <span className="field-error">Email is required.</span>
+                  : !EMAIL_RE.test(signupEmail)
+                    ? <span className="field-error">Enter a valid email address.</span>
+                    : null)}
               </label>
 
               <label className="field">
@@ -507,7 +584,7 @@ function Auth() {
                   <Input
                     type={showSignupPassword ? 'text' : 'password'}
                     name="password"
-                    placeholder="Create a password"
+                    placeholder="min 8 characters"
                     value={signupPassword}
                     onChange={(e) => setSignupPassword(e.target.value)}
                   />
@@ -531,9 +608,11 @@ function Auth() {
                     )}
                   </button>
                 </div>
-                {attemptedSubmit && !signupPassword && (
-                  <span className="field-error">Password is required.</span>
-                )}
+                {attemptedSubmit && (!signupPassword
+                  ? <span className="field-error">Password is required.</span>
+                  : signupPassword.length < 8
+                    ? <span className="field-error">Password must be at least 8 characters.</span>
+                    : null)}
               </label>
 
               <div className="field">
@@ -559,6 +638,14 @@ function Auth() {
                   >
                     Add Skills
                   </Button>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    disabled={selectedRoleId === '' || suggestedSkills.length === 0}
+                    onClick={handleAddAllSkills}
+                  >
+                    Add All
+                  </Button>
                 </div>
 
                 {attemptedSubmit && selectedRoleId === '' && (
@@ -581,6 +668,30 @@ function Auth() {
                   </div>
                 )}
 
+                <div className="skillset-row skillset-custom-row">
+                  <Input
+                    type="text"
+                    placeholder="Add a custom skill…"
+                    value={customSkillName}
+                    onChange={(e) => setCustomSkillName(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') {
+                        e.preventDefault()
+                        void handleAddCustomSkill()
+                      }
+                    }}
+                  />
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    disabled={!customSkillName.trim() || addingCustomSkill}
+                    onClick={() => void handleAddCustomSkill()}
+                  >
+                    {addingCustomSkill ? 'Adding…' : 'Add Custom'}
+                  </Button>
+                </div>
+                {customSkillError && <span className="field-error">{customSkillError}</span>}
+
                 {selectedSkills.length > 0 && (
                   <div className="tag-list selected-skills">
                     {selectedSkills.map((skill) => (
@@ -600,14 +711,18 @@ function Auth() {
                   type="number"
                   name="experience"
                   min="0"
+                  max="60"
                   step="0.5"
                   placeholder="e.g. 2.5"
                   value={experience}
                   onChange={(e) => setExperience(e.target.value)}
+                  onKeyDown={blockNonNumericKey}
                 />
-                {attemptedSubmit && !experience && (
-                  <span className="field-error">Experience is required.</span>
-                )}
+                {attemptedSubmit && (!experience
+                  ? <span className="field-error">Experience is required.</span>
+                  : (isNaN(parseFloat(experience)) || parseFloat(experience) < 0 || parseFloat(experience) > 60)
+                    ? <span className="field-error">Enter a value between 0 and 60.</span>
+                    : null)}
               </label>
 
               <div className="field">
@@ -615,11 +730,11 @@ function Auth() {
                   CV / Resume<span className="required-star"> *</span>
                 </span>
                 <label className="file-input">
-                  <input type="file" accept=".pdf,.doc,.docx" onChange={handleCvChange} hidden />
+                  <input ref={cvInputRef} type="file" accept=".pdf,.doc,.docx" onChange={handleCvChange} hidden />
                   <span className="file-input-button">Choose File</span>
                   <span className="file-input-name">{cvFile ? cvFile.name : 'No file selected'}</span>
                 </label>
-                {attemptedSubmit && !cvFile && (
+                {attemptedSubmit && !cvFile && !submitError && (
                   <span className="field-error">CV / Resume is required.</span>
                 )}
               </div>

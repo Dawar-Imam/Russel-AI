@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import Button from '../components/Button'
-import logo from '../utils/logo.png'
+import logoDark from '../utils/dark/logo.png'
+import logoLight from '../utils/white/logo.png'
+import { useTheme } from '../utils/useTheme'
 import '../css/Home.css'
 
 function readDashboardRoute(): string | null {
@@ -13,6 +15,8 @@ function readDashboardRoute(): string | null {
 
 function Home() {
   const navigate = useNavigate()
+  const theme = useTheme()
+  const logo = theme === 'light' ? logoLight : logoDark
   const [dashboardRoute, setDashboardRoute] = useState<string | null>(readDashboardRoute)
 
   useEffect(() => {
@@ -41,7 +45,7 @@ function Home() {
             <Button variant="primary" onClick={() => navigate('/auth')}>
               Sign In / Sign Up
             </Button>
-            <Button variant="secondary" onClick={() => navigate('/jobs')}>
+            <Button variant="secondary" className="home-view-jobs-btn" onClick={() => navigate('/jobs')}>
               View Jobs
             </Button>
           </div>

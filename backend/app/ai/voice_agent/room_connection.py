@@ -10,12 +10,12 @@ from pydantic import BaseModel
 
 from app.ai.ai_services.cv_relevance_service import fetch_candidate_cv_relevance
 from app.ai.voice_agent.agent import run_voice_agent
+from app.ai.voice_agent.interview_state import pop_conclude_result
 from app.ai.voice_agent.prompts import build_extract_answers_prompt
 from app.core.config import get_llm, settings
 from app.services.interview_service import (
     get_interview_context,
     get_interview_questions,
-    mark_interview_failed_on_leave,
     mark_interview_terminated,
     merge_test_mode_answers,
     save_voice_answers_bulk,
@@ -173,14 +173,14 @@ async def _run_and_store(
         conversation_history, terminated_reason = await run_voice_agent(
             agent_room,
             questions,
-            enable_fail_cases=settings.ENABLE_FAIL_CASES,
+            interview_id,
             no_response_timeout_seconds=settings.NO_RESPONSE_TIMEOUT_SECONDS,
             cancel_interview_on_no_response=settings.CANCEL_INTERVIEW_ON_NO_RESPONSE,
             candidate_cv_text=candidate_cv_text,
         )
         await agent_room.disconnect()
 
-        # Cheating or policy termination — mark failed, do not score
+        # Python-side no-response termination (still active)
         if terminated_reason:
             _logger.warning(
                 "Interview %s terminated early: %s", interview_id, terminated_reason
@@ -189,6 +189,23 @@ async def _run_and_store(
                 mark_interview_terminated(interview_id, terminated_reason)
             done_event.set()
             return
+
+        # LLM-decided outcome via conclude_interview tool
+        conclude = pop_conclude_result(interview_id)
+        if conclude is None:
+            _logger.warning("No conclude result for interview %s — assuming pass", interview_id)
+            conclude = {"passed": True, "reason": "natural_completion"}
+
+        if not conclude["passed"]:
+            _logger.warning(
+                "Interview %s concluded as FAIL: %s", interview_id, conclude["reason"]
+            )
+            if not test_mode:
+                mark_interview_terminated(interview_id, conclude["reason"])
+            done_event.set()
+            return
+
+        _logger.info("Interview %s concluded as PASS — extracting answers", interview_id)
 
         if not conversation_history:
             _logger.warning("Empty conversation history for interview %s — SSE will timeout", interview_id)

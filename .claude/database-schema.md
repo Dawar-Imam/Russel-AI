@@ -4,7 +4,7 @@ Source of truth: [README.md](../README.md#database-schema). This file mirrors
 that ERD for quick reference by both `ai/` and `backend/` — keep it in sync
 if the schema changes.
 
-18 tables across 8 domains:
+19 tables across 8 domains:
 
 | Domain | Tables |
 |---|---|
@@ -13,7 +13,7 @@ if the schema changes.
 | Company | `Companies` |
 | Jobs | `JobRoles`, `JobPostings`, `ExperienceLevels` |
 | Applications | `Applications`, `Resumes` |
-| Skills | `SkillSets`, `CandidateSkills`, `JobRequiredSkills` |
+| Skills | `SkillSets`, `CandidateSkills`, `JobRequiredSkills`, `RoleSkills` |
 | Interviews | `InterviewRoundTypes`, `InterviewRounds`, `Interviews`, `InterviewQuestions` |
 | Questions | `Questions` |
 
@@ -142,6 +142,17 @@ if the schema changes.
 | proficiency_level | varchar |
 | is_mandatory | bit |
 
+### RoleSkills
+Typical/suggested skills per job role, used at signup time (skill picker
+suggestions) and by `get_or_create_skill` — distinct from
+`JobRequiredSkills`, which is per specific job posting.
+
+| Column | Type |
+|---|---|
+| id | int PK |
+| job_role_id | int FK -> JobRoles |
+| skill_id | int FK -> SkillSets |
+
 ### Resumes
 | Column | Type |
 |---|---|
@@ -169,17 +180,22 @@ CREATE TABLE Resumes (
 | id | uniqueidentifier PK |
 | job_id | uniqueidentifier FK -> JobPostings |
 | candidate_id | uniqueidentifier FK -> CandidateProfiles |
-| resume_id | uniqueidentifier FK -> Resumes NULL |
-| status | varchar — `ATS_PENDING` → `ATS_PASS` / `ATS_FAIL` → `IN_PROGRESS` → `HIRED` / `REJECTED` |
-| ats_reason | nvarchar(500) NULL — LLM-produced explanation stored after ATS runs |
-| cover_letter | nvarchar |
+| status | varchar(50) — `ATS_PENDING` → `ATS_PASS` / `ATS_FAIL` → `IN_PROGRESS` → `HIRED` / `REJECTED` |
+| cover_letter | nvarchar(MAX) NULL |
 | applied_at | datetime2 |
+| ats_details | nvarchar(MAX) NULL — JSON breakdown from ATS: `reason`, `role_assessment`, `experience_assessment`, `skills_matched`, `skills_missing`, `projects_assessment` |
+| resume_id | uniqueidentifier FK -> Resumes NULL |
 
 > **Migrations required**:
 > ```sql
 > CREATE TABLE Resumes ( ... );   -- see above
 > ALTER TABLE Applications ADD resume_id uniqueidentifier NULL REFERENCES Resumes(id);
 > -- Legacy: ALTER TABLE Applications ADD ats_reason nvarchar(500) NULL;
+> -- Legacy: ALTER TABLE Applications ADD ats_details nvarchar(500) NULL;
+> -- ats_reason was later dropped: the ats_details column was dropped, then
+> -- ats_reason was sp_rename'd to ats_details (inheriting its nvarchar(500)
+> -- size), then widened: ALTER TABLE Applications ALTER COLUMN ats_details NVARCHAR(MAX) NULL;
+> -- ats_details is now the single column, storing the full JSON (including `reason`).
 > ```
 
 ### InterviewRounds
@@ -205,7 +221,7 @@ CREATE TABLE Resumes (
 | scheduled_at | datetime2 | |
 | completed_at | datetime2 | |
 | feedback | nvarchar | AI-generated text feedback about the round |
-| result | float | Final numeric score (0–10); NULL until round is scored |
+| result | varchar(50) | Final numeric score (0–10) stored as text; NULL until round is scored |
 
 ### Questions
 | Column | Type |
@@ -245,6 +261,8 @@ CREATE TABLE Resumes (
 - `ExperienceLevels ||--o{ JobPostings` — level
 - `JobPostings ||--o{ JobRequiredSkills` — requires
 - `SkillSets ||--o{ JobRequiredSkills` — ref
+- `JobRoles ||--o{ RoleSkills` — typical skills for
+- `SkillSets ||--o{ RoleSkills` — ref
 - `CandidateProfiles ||--o{ Resumes` — uploads
 - `JobPostings ||--o{ Applications` — receives
 - `CandidateProfiles ||--o{ Applications` — submits

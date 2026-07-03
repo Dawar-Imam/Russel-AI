@@ -60,6 +60,44 @@ def get_signup_metadata() -> SignupMetadataResponse:
         conn.close()
 
 
+def get_or_create_skill(name: str, job_role_id: int | None = None) -> SkillItem:
+    name = name.strip()
+    conn = get_connection()
+    try:
+        cur = conn.cursor()
+
+        cur.execute(
+            "SELECT id, name, category FROM SkillSets WHERE LOWER(name) = LOWER(?) AND is_active = 1",
+            name,
+        )
+        row = cur.fetchone()
+        if row:
+            skill_id, existing_name, category = int(row[0]), str(row[1]), row[2]
+        else:
+            # SkillSets.id has no IDENTITY property in the database, so the
+            # next id must be computed and supplied explicitly. UPDLOCK+HOLDLOCK
+            # serializes concurrent inserts against the same table to avoid a
+            # duplicate-id race.
+            cur.execute("SELECT ISNULL(MAX(id), 0) + 1 FROM SkillSets WITH (UPDLOCK, HOLDLOCK)")
+            skill_id = int(cur.fetchone()[0])
+            cur.execute(
+                "INSERT INTO SkillSets (id, name, category, is_active) VALUES (?, ?, 'Custom', 1)",
+                skill_id,
+                name,
+            )
+            existing_name, category = name, "Custom"
+            conn.commit()
+
+        cur.execute("SELECT job_role_id FROM RoleSkills WHERE skill_id = ?", skill_id)
+        job_role_ids = [int(r[0]) for r in cur.fetchall()]
+        if job_role_id is not None and job_role_id not in job_role_ids:
+            job_role_ids.append(job_role_id)
+
+        return SkillItem(id=skill_id, name=existing_name, category=category, job_role_ids=job_role_ids)
+    finally:
+        conn.close()
+
+
 def _get_experience_level_id(conn, experience_years: float) -> int:
     cur = conn.cursor()
     cur.execute("SELECT id, min_years, max_years FROM ExperienceLevels ORDER BY min_years")

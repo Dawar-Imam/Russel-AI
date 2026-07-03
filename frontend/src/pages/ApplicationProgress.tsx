@@ -25,6 +25,11 @@ interface StagesData {
   current_round_id: string | null
   ats_status: 'pending' | 'pass' | 'fail'
   ats_reason: string | null
+  ats_role_assessment: string | null
+  ats_experience_assessment: string | null
+  ats_skills_matched: string[]
+  ats_skills_missing: string[]
+  ats_projects_assessment: string | null
   application_status: string | null
   job_role_title: string | null
   experience_level_name: string | null
@@ -85,9 +90,9 @@ function getRoundLabel(round: RoundInfo): string {
 }
 
 function getScoreColor(score: number): string {
-  if (score >= 7) return '#6fcf97'
-  if (score >= 4) return 'var(--color-primary)'
-  return '#e05c5c'
+  if (score >= 7) return 'var(--color-primary)'
+  if (score >= 4) return 'var(--color-primary-dark)'
+  return 'var(--color-text-primary)'
 }
 
 function ApplicationProgress() {
@@ -177,7 +182,18 @@ function ApplicationProgress() {
     runAts(applicationId)
       .then(result => {
         setData(prev =>
-          prev ? { ...prev, ats_status: result.eligible ? 'pass' : 'fail', ats_reason: result.reason } : prev
+          prev
+            ? {
+                ...prev,
+                ats_status: result.eligible ? 'pass' : 'fail',
+                ats_reason: result.reason,
+                ats_role_assessment: result.role_assessment,
+                ats_experience_assessment: result.experience_assessment,
+                ats_skills_matched: result.skills_matched,
+                ats_skills_missing: result.skills_missing,
+                ats_projects_assessment: result.projects_assessment,
+              }
+            : prev
         )
       })
       .catch(() => setAtsError(true))
@@ -252,6 +268,68 @@ function ApplicationProgress() {
     )
   }
 
+  function renderAtsBreakdown() {
+    if (!data) return null
+    const hasBreakdown =
+      data.ats_role_assessment ||
+      data.ats_experience_assessment ||
+      data.ats_projects_assessment ||
+      data.ats_skills_matched.length > 0 ||
+      data.ats_skills_missing.length > 0
+    if (!hasBreakdown) return null
+    return (
+      <div className="ap-ats-breakdown">
+        {data.job_role_title && (
+          <div className="ap-ats-item">
+            <span className="ap-ats-item-label">Job Role</span>
+            <span className="ap-ats-item-value">
+              {data.experience_level_name ? `${data.experience_level_name} ` : ''}
+              {data.job_role_title}
+            </span>
+          </div>
+        )}
+        {data.ats_role_assessment && (
+          <div className="ap-ats-item">
+            <span className="ap-ats-item-label">Role Fit</span>
+            <p className="ap-ats-item-value">{data.ats_role_assessment}</p>
+          </div>
+        )}
+        {data.ats_experience_assessment && (
+          <div className="ap-ats-item">
+            <span className="ap-ats-item-label">Experience Fit</span>
+            <p className="ap-ats-item-value">{data.ats_experience_assessment}</p>
+          </div>
+        )}
+        {data.ats_projects_assessment && (
+          <div className="ap-ats-item">
+            <span className="ap-ats-item-label">Projects &amp; Experience</span>
+            <p className="ap-ats-item-value">{data.ats_projects_assessment}</p>
+          </div>
+        )}
+        {data.ats_skills_matched.length > 0 && (
+          <div className="ap-ats-item">
+            <span className="ap-ats-item-label">Skills Matched</span>
+            <div className="ap-ats-tag-list">
+              {data.ats_skills_matched.map(skill => (
+                <span key={skill} className="ap-ats-tag ap-ats-tag--matched">{skill}</span>
+              ))}
+            </div>
+          </div>
+        )}
+        {data.ats_skills_missing.length > 0 && (
+          <div className="ap-ats-item">
+            <span className="ap-ats-item-label">Skills Missing</span>
+            <div className="ap-ats-tag-list">
+              {data.ats_skills_missing.map(skill => (
+                <span key={skill} className="ap-ats-tag ap-ats-tag--missing">{skill}</span>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    )
+  }
+
   function renderDetailContent() {
     if (!data) return null
 
@@ -261,6 +339,7 @@ function ApplicationProgress() {
         <div className="ap-detail-msg">
           <p className="ap-detail-msg-title">ATS Screening Failed</p>
           {data.ats_reason && <p className="ap-detail-msg-body">{data.ats_reason}</p>}
+          {renderAtsBreakdown()}
         </div>
       )
     }
@@ -273,29 +352,6 @@ function ApplicationProgress() {
           <p className="ap-detail-msg-body">Please check back shortly.</p>
         </div>
       )
-    }
-
-    // Terminal state
-    if (isTerminal) {
-      const outcomeBanner = (
-        <div className="ap-detail-outcome">
-          <p className="ap-detail-outcome-title">{getOutcomeInfo().title}</p>
-          {latestRound?.status && (
-            <span className={`ap-stage-badge ${getRoundBadgeClass(latestRound)}`}>
-              {latestRound.title}: {getRoundLabel(latestRound)}
-            </span>
-          )}
-          {latestRound?.feedback && (
-            <p className="ap-detail-outcome-feedback">{latestRound.feedback}</p>
-          )}
-        </div>
-      )
-      // No breadcrumb / ATS selected — just outcome
-      if (!selectedRoundId || selectedRoundId === 'ats') return outcomeBanner
-      // Completed round selected — outcome + Q&A
-      const pickedRound = data.rounds.find(r => r.interview_round_id === selectedRoundId)
-      if (!pickedRound || !isRoundCompleted(pickedRound)) return outcomeBanner
-      return <>{outcomeBanner}{renderQABlock(pickedRound)}</>
     }
 
     // Nothing selected (after closing Q&A)
@@ -314,6 +370,7 @@ function ApplicationProgress() {
         <div className="ap-detail-msg">
           <p className="ap-detail-msg-title">ATS Screening Passed</p>
           {data.ats_reason && <p className="ap-detail-msg-body">{data.ats_reason}</p>}
+          {renderAtsBreakdown()}
         </div>
       )
     }
@@ -361,16 +418,32 @@ function ApplicationProgress() {
         {/* Heading row */}
         <div className="app-progress-heading-row">
           <h1 className="app-progress-heading">Application Progress</h1>
-          <button
-            className={`test-mode-toggle${testMode ? ' test-mode-toggle--on' : ''}`}
-            onClick={toggleTestMode}
-            title="Toggle test mode to jump to any interview round"
-          >
-            <span className="test-mode-toggle-track">
-              <span className="test-mode-toggle-thumb" />
-            </span>
-            <span className="test-mode-toggle-label">Test Mode</span>
-          </button>
+          <div className="app-progress-heading-actions">
+            <button
+              className={`test-mode-toggle${testMode ? ' test-mode-toggle--on' : ''}`}
+              onClick={toggleTestMode}
+              title="Toggle test mode to jump to any interview round"
+            >
+              <span className="test-mode-toggle-track">
+                <span className="test-mode-toggle-thumb" />
+              </span>
+              <span className="test-mode-toggle-label">Test Mode</span>
+            </button>
+            {data && !isTerminal && !allRoundsCompleted && data.ats_status !== 'fail' && !atsError && (
+              <Button
+                variant="primary"
+                className="app-progress-cta"
+                onClick={() => {
+                  if (currentRound?.interview_id) {
+                    navigate(`/interview-room/${currentRound.interview_id}`)
+                  }
+                }}
+                disabled={!data.current_round_id || data.ats_status === 'pending'}
+              >
+                {data.ats_status === 'pending' ? 'ATS Screening…' : 'Go To Interview Room'}
+              </Button>
+            )}
+          </div>
         </div>
 
         {loading && <p className="stages-status-text">Loading…</p>}
@@ -424,6 +497,21 @@ function ApplicationProgress() {
                     <span className="ap-job-rounds">
                       {data.rounds.length} Round{data.rounds.length !== 1 ? 's' : ''}
                     </span>
+                  </div>
+                )}
+
+                {/* Outcome banner — shown once the interview process is terminal */}
+                {isTerminal && (
+                  <div className="ap-outcome-block">
+                    <p className="ap-outcome-block-title">{getOutcomeInfo().title}</p>
+                    {latestRound?.status && (
+                      <span className={`ap-stage-badge ${getRoundBadgeClass(latestRound)}`}>
+                        {latestRound.title}: {getRoundLabel(latestRound)}
+                      </span>
+                    )}
+                    {latestRound?.feedback && (
+                      <p className="ap-outcome-block-feedback">{latestRound.feedback}</p>
+                    )}
                   </div>
                 )}
 
@@ -485,21 +573,6 @@ function ApplicationProgress() {
 
             </div>
 
-            {/* CTA */}
-            {!isTerminal && !allRoundsCompleted && data.ats_status !== 'fail' && !atsError && (
-              <Button
-                variant="primary"
-                className="app-progress-cta"
-                onClick={() => {
-                  if (currentRound?.interview_id) {
-                    navigate(`/interview-room/${currentRound.interview_id}`)
-                  }
-                }}
-                disabled={!data.current_round_id || data.ats_status === 'pending'}
-              >
-                {data.ats_status === 'pending' ? 'ATS Screening…' : 'Go To Interview Room'}
-              </Button>
-            )}
           </>
         )}
 

@@ -1,5 +1,6 @@
 import type { ReactNode } from 'react'
 import { motion } from 'framer-motion'
+import '../css/PageTransition.css'
 
 interface PageTransitionProps {
   children: ReactNode
@@ -14,6 +15,7 @@ const variants = {
 function PageTransition({ children }: PageTransitionProps) {
   return (
     <motion.div
+      className="page-transition"
       variants={variants}
       initial="initial"
       animate="animate"

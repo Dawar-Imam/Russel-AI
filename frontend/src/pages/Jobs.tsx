@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useLocation } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import JobCard from '../components/JobCard'
 import JobApplyDialog from '../components/JobApplyDialog'
 import FilterPanel, { type FilterState } from '../components/FilterPanel'
@@ -17,6 +17,7 @@ function parseSalaryBounds(salaryRange: string | null): [number, number] | null 
 
 function Jobs() {
   const location = useLocation()
+  const navigate = useNavigate()
 
   const [candidateId, setCandidateId] = useState<string>(() => {
     const fromState = (location.state as { candidateId?: string } | null)?.candidateId
@@ -34,6 +35,8 @@ function Jobs() {
     window.addEventListener('auth-change', syncAuth)
     return () => window.removeEventListener('auth-change', syncAuth)
   }, [])
+
+  const isSignedIn = !!(sessionStorage.getItem('candidateId') || sessionStorage.getItem('recruiterId'))
 
   const pendingJobId = (location.state as { pendingJobId?: string } | null)?.pendingJobId
 
@@ -157,10 +160,12 @@ function Jobs() {
   return (
     <main className="jobs-page">
       <header className="jobs-header">
-        <div className="jobs-brand">
-          <span className="jobs-brand-primary">Russel</span>
-          <span className="jobs-brand-accent">.AI</span>
-        </div>
+        {!isSignedIn && (
+          <div className="jobs-brand" onClick={() => navigate('/')} role="button" tabIndex={0}>
+            <span className="jobs-brand-primary">Russel</span>
+            <span className="jobs-brand-accent">.AI</span>
+          </div>
+        )}
         <h1 className="jobs-heading">Open Positions</h1>
       </header>
 

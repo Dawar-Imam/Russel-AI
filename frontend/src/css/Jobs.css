@@ -1,26 +1,35 @@
 .jobs-page {
-  height: 100vh;
+  position: relative;
+  flex: 1;
+  min-height: 0;
   overflow: hidden;
-  background-color: var(--color-bg);
-  background-image: url('../utils/background-image-4.png');
-  background-size: cover;
-  background-position: center;
-  background-repeat: no-repeat;
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 24px var(--space-6) 0;
+  padding: var(--space-4) var(--space-6) 0;
 }
 
-/* Row container: sidebar + cards */
+.jobs-page::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background-color: var(--color-bg);
+  background-image: var(--bg-image-4);
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+}
+
+/* Column container: filter bar above cards */
 .jobs-content {
   width: 100%;
   display: flex;
+  flex-direction: column;
   flex: 1;
-  gap: var(--space-6);
+  gap: var(--space-4);
   min-height: 0;
   overflow: hidden;
-  align-items: stretch;
   padding-bottom: var(--space-8);
 }
 
@@ -32,6 +41,7 @@
   font-weight: 700;
   letter-spacing: -0.02em;
   user-select: none;
+  cursor: pointer;
 }
 
 .jobs-brand-primary {
@@ -44,11 +54,11 @@
 
 .jobs-scroll-area {
   flex: 1;
+  min-height: 0;
   min-width: 0;
   overflow-y: auto;
   scrollbar-width: none;
   padding-bottom: var(--space-8);
-  max-height: calc(100vh - 180px);
   mask-image: linear-gradient(to bottom, black calc(100% - 64px), transparent 100%);
   -webkit-mask-image: linear-gradient(to bottom, black calc(100% - 64px), transparent 100%);
 }
@@ -66,6 +76,12 @@
   gap: var(--space-4);
   margin-bottom: var(--space-6);
   text-align: center;
+}
+
+body.has-app-sidebar .jobs-header {
+  max-width: none;
+  align-items: flex-start;
+  text-align: left;
 }
 
 .jobs-heading {
@@ -94,7 +110,7 @@
 
 .jobs-state-error {
   font-size: 14px;
-  color: #e05252;
+  color: var(--color-alert);
   text-align: center;
   margin: 0;
   padding-top: var(--space-8);
@@ -120,15 +136,10 @@
   }
 }
 
-/* <600px: sidebar collapses to top */
+/* <600px */
 @media (max-width: 599px) {
   .jobs-page {
-    padding: 24px 12px 0;
-  }
-
-  .jobs-content {
-    flex-direction: column;
-    gap: var(--space-4);
+    padding: var(--space-3) 12px 0;
   }
 
   .jobs-list {

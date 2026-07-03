@@ -3,7 +3,7 @@
   height: 100vh;
   overflow: hidden;
   background-color: var(--color-bg);
-  background-image: url('../utils/background-image-2.png');
+  background-image: var(--bg-image-2);
   background-size: cover;
   background-position: center;
   background-repeat: no-repeat;
@@ -177,6 +177,14 @@
   flex: 1;
 }
 
+.skillset-custom-row {
+  margin-top: var(--space-2);
+}
+
+.skillset-custom-row .input {
+  flex: 1;
+}
+
 .skill-suggestions {
   display: flex;
   flex-direction: column;
@@ -256,12 +264,12 @@
 }
 
 .auth-meta-error {
-  color: #e05252;
+  color: var(--color-alert);
 }
 
 .auth-submit-error {
   font-size: 13px;
-  color: #e05252;
+  color: var(--color-alert);
   margin: 0;
 }
 

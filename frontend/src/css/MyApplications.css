@@ -1,34 +1,43 @@
 .my-apps-page {
-  height: 100vh;
+  position: relative;
+  flex: 1;
+  min-height: 0;
   overflow: hidden;
-  background-color: var(--color-bg);
-  background-image: url('../utils/background-image-3.png');
-  background-size: cover;
-  background-position: center;
-  background-repeat: no-repeat;
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 80px var(--space-6) 0;
+  padding: var(--space-4) var(--space-6) 0;
 }
 
-/* Row container: sidebar + cards */
+.my-apps-page::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background-color: var(--color-bg);
+  background-image: var(--bg-image-3);
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+}
+
+/* Column container: filter bar above cards */
 .my-apps-content {
   width: 100%;
   display: flex;
+  flex-direction: column;
   flex: 1;
-  gap: var(--space-6);
+  gap: var(--space-4);
   min-height: 0;
   overflow: hidden;
-  align-items: stretch;
   padding-bottom: var(--space-8);
 }
 
 .my-apps-scroll-area {
   flex: 1;
+  min-height: 0;
   min-width: 0;
   overflow-y: auto;
-  max-height: calc(100vh - 180px);
 }
 
 .my-apps-scroll-area::-webkit-scrollbar {
@@ -50,13 +59,12 @@
 
 .my-apps-header {
   width: 100%;
-  max-width: 640px;
   display: flex;
   flex-direction: column;
-  align-items: center;
+  align-items: flex-start;
   gap: var(--space-4);
   margin-bottom: var(--space-6);
-  text-align: center;
+  text-align: left;
 }
 
 .my-apps-heading {
@@ -86,7 +94,7 @@
 
 .my-apps-state-error {
   font-size: 14px;
-  color: #e05252;
+  color: var(--color-alert);
   text-align: center;
   margin: 0;
   padding-top: var(--space-8);
@@ -96,7 +104,7 @@
 /* 900–1199px: 2 card columns */
 @media (max-width: 1199px) {
   .my-apps-page {
-    padding: 80px 16px 0;
+    padding: var(--space-4) 16px 0;
   }
 
   .my-apps-list {
@@ -113,15 +121,10 @@
   }
 }
 
-/* <600px: sidebar collapses to top */
+/* <600px */
 @media (max-width: 599px) {
   .my-apps-page {
-    padding: 80px 12px 0;
-  }
-
-  .my-apps-content {
-    flex-direction: column;
-    gap: var(--space-4);
+    padding: var(--space-3) 12px 0;
   }
 
   .my-apps-list {

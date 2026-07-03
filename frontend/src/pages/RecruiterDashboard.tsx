@@ -1,10 +1,10 @@
-import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent, type KeyboardEvent } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import Button from '../components/Button'
 import Select from '../components/Select'
 import Modal from '../components/Modal'
 import FilterPanel, { type FilterState } from '../components/FilterPanel'
-import { fetchSignupMetadata, type ExperienceLevel, type JobRole, type Skill } from '../api/auth'
+import { createSkill, fetchSignupMetadata, type ExperienceLevel, type JobRole, type Skill } from '../api/auth'
 import {
   fetchInterviewRoundTypes,
   fetchJobRounds,
@@ -41,6 +41,14 @@ function formatSalaryRange(min: string, max: string): string | undefined {
   if (hasMin && hasMax) return `$${Number(min).toLocaleString()}–$${Number(max).toLocaleString()}`
   if (hasMin) return `$${Number(min).toLocaleString()}+`
   return `Up to $${Number(max).toLocaleString()}`
+}
+
+function blockNonNumericKey(e: KeyboardEvent<HTMLInputElement>) {
+  if (['e', 'E', '+', '-'].includes(e.key)) e.preventDefault()
+}
+
+function todayIso() {
+  return new Date().toISOString().split('T')[0]
 }
 
 function formatDate(iso: string) {
@@ -84,10 +92,15 @@ function RecruiterDashboard() {
   const [expiresAt, setExpiresAt] = useState('')
   const [selectedSkillIds, setSelectedSkillIds] = useState<number[]>([])
   const [selectedSkillId, setSelectedSkillId] = useState<string>('')
+  const [customSkillName, setCustomSkillName] = useState('')
+  const [addingCustomSkill, setAddingCustomSkill] = useState(false)
+  const [customSkillError, setCustomSkillError] = useState<string | null>(null)
   const [selectedRounds, setSelectedRounds] = useState<SelectedRound[]>([])
   const [selectedRoundTypeId, setSelectedRoundTypeId] = useState<string>('')
   const [posting, setPosting] = useState(false)
   const [postError, setPostError] = useState<string | null>(null)
+  const [attemptedPost, setAttemptedPost] = useState(false)
+  const [expiresAtError, setExpiresAtError] = useState<string | null>(null)
 
   const dragIndexRef = useRef<number | null>(null)
 
@@ -125,7 +138,13 @@ function RecruiterDashboard() {
       if (salaryMin !== '') { const min = Number(salaryMin); result = result.filter((j) => { const b = parseSalaryBounds(j.salary_range); return b !== null && b[1] >= min }) }
       if (salaryMax !== '') { const max = Number(salaryMax); result = result.filter((j) => { const b = parseSalaryBounds(j.salary_range); return b !== null && b[0] <= max }) }
     }
-    return result
+    // Active jobs first (each group already ordered by recency from the API), non-active below.
+    return [...result].sort((a, b) => {
+      const aActive = a.status === 'active' ? 0 : 1
+      const bActive = b.status === 'active' ? 0 : 1
+      if (aActive !== bActive) return aActive - bActive
+      return new Date(b.posted_at).getTime() - new Date(a.posted_at).getTime()
+    })
   }, [jobs, filters, salaryMin, salaryMax, salaryError])
 
   const hasActiveFilters =
@@ -158,6 +177,34 @@ function RecruiterDashboard() {
       .finally(() => setMetaLoading(false))
   }
 
+  const skillsForRole = useMemo(
+    () => allSkills.filter((s) => jobRoleId === '' || s.job_role_ids.includes(Number(jobRoleId))),
+    [allSkills, jobRoleId],
+  )
+
+  function handleAddAllSkills() {
+    const idsToAdd = skillsForRole.map((s) => s.id).filter((id) => !selectedSkillIds.includes(id))
+    if (idsToAdd.length === 0) return
+    setSelectedSkillIds((prev) => [...prev, ...idsToAdd])
+  }
+
+  async function handleAddCustomSkill() {
+    const name = customSkillName.trim()
+    if (!name) return
+    setAddingCustomSkill(true)
+    setCustomSkillError(null)
+    try {
+      const skill = await createSkill(name, jobRoleId === '' ? null : Number(jobRoleId))
+      setAllSkills((prev) => (prev.some((s) => s.id === skill.id) ? prev : [...prev, skill]))
+      setSelectedSkillIds((prev) => (prev.includes(skill.id) ? prev : [...prev, skill.id]))
+      setCustomSkillName('')
+    } catch (err) {
+      setCustomSkillError(err instanceof Error ? err.message : 'Failed to add skill')
+    } finally {
+      setAddingCustomSkill(false)
+    }
+  }
+
   function handleCloseForm() {
     setShowForm(false)
     setPostError(null)
@@ -166,8 +213,17 @@ function RecruiterDashboard() {
   function handleResetForm() {
     setJobRoleId(''); setExperienceLevelId(''); setJobDescription(''); setJobLocation('')
     setJobType(''); setFormSalaryMin(''); setFormSalaryMax(''); setFormSalaryError(null)
-    setExpiresAt(''); setSelectedSkillIds([]); setSelectedSkillId('')
-    setSelectedRounds([]); setSelectedRoundTypeId(''); setPostError(null)
+    setExpiresAt(''); setExpiresAtError(null); setSelectedSkillIds([]); setSelectedSkillId('')
+    setSelectedRounds([]); setSelectedRoundTypeId(''); setPostError(null); setAttemptedPost(false)
+  }
+
+  function handleExpiresAtChange(value: string) {
+    setExpiresAt(value)
+    if (value && value < todayIso()) {
+      setExpiresAtError('Expiry date must be today or in the future.')
+    } else {
+      setExpiresAtError(null)
+    }
   }
 
   function handleFormSalaryMinChange(value: string) {
@@ -193,7 +249,9 @@ function RecruiterDashboard() {
   }
 
   function handleFailingCriteriaChange(uid: string, value: string) {
-    setSelectedRounds((prev) => prev.map((r) => (r.uid === uid ? { ...r, failing_criteria: value } : r)))
+    const num = Number(value)
+    const clamped = value === '' ? '' : String(Math.min(100, Math.max(0, num)))
+    setSelectedRounds((prev) => prev.map((r) => (r.uid === uid ? { ...r, failing_criteria: clamped } : r)))
   }
 
   function handleDragStart(index: number) { dragIndexRef.current = index }
@@ -215,7 +273,19 @@ function RecruiterDashboard() {
 
   async function handlePostJob(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    if (jobRoleId === '' || experienceLevelId === '' || !jobType || formSalaryError) return
+    setAttemptedPost(true)
+    if (
+      jobRoleId === '' ||
+      experienceLevelId === '' ||
+      !jobType ||
+      !jobDescription.trim() ||
+      !jobLocation.trim() ||
+      !formSalaryMin.trim() ||
+      !formSalaryMax.trim() ||
+      formSalaryError ||
+      expiresAtError ||
+      selectedRounds.length === 0
+    ) return
     setPosting(true)
     setPostError(null)
     try {
@@ -259,7 +329,7 @@ function RecruiterDashboard() {
 
   function handleCloseDetail() { setDetailJob(null); setDetailRounds([]) }
 
-  // ── Filter sidebar ────────────────────────────────────────────────────────
+  // ── Filter bar ─────────────────────────────────────────────────────────────
 
   function handleLocationChange(value: string) {
     setLocationInput(value)
@@ -286,6 +356,12 @@ function RecruiterDashboard() {
     <main className="rd-page">
       <header className="rd-header">
         <h1 className="rd-heading">Recruiter Dashboard</h1>
+        <button className="rd-post-job-btn" onClick={handleOpenForm} aria-label="Post a Job">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
+          </svg>
+          Post a Job
+        </button>
       </header>
 
       <div className="rd-content">
@@ -356,14 +432,6 @@ function RecruiterDashboard() {
         </div>
       </div>
 
-      {/* FAB */}
-      <button className="rd-fab" onClick={handleOpenForm} aria-label="Post a Job">
-        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-          <line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" />
-        </svg>
-        Post a Job
-      </button>
-
       {/* ── Post Job Dialog ── */}
       <Modal isOpen={showForm} onClose={handleCloseForm}>
         <div className="rd-post-dialog">
@@ -387,7 +455,7 @@ function RecruiterDashboard() {
               <div className="rd-form-left">
                 <div className="rd-field-group">
                   <div className="rd-field">
-                    <label className="rd-label">Job Category</label>
+                    <label className="rd-label">Job Category<span className="required-star"> *</span></label>
                     {metaLoading ? <p className="rd-state-text">Loading…</p> : (
                       <Select value={jobRoleId} onChange={(e: ChangeEvent<HTMLSelectElement>) => {
                         setJobRoleId(Number(e.target.value))
@@ -398,20 +466,26 @@ function RecruiterDashboard() {
                         {jobRoles.map((r) => <option key={r.id} value={r.id}>{r.title}</option>)}
                       </Select>
                     )}
+                    {attemptedPost && jobRoleId === '' && (
+                      <span className="rd-field-error">Job category is required.</span>
+                    )}
                   </div>
                   <div className="rd-field">
-                    <label className="rd-label">Experience Level</label>
+                    <label className="rd-label">Experience Level<span className="required-star"> *</span></label>
                     {metaLoading ? <p className="rd-state-text">Loading…</p> : (
                       <Select value={experienceLevelId} onChange={(e: ChangeEvent<HTMLSelectElement>) => setExperienceLevelId(Number(e.target.value))}>
                         <option value="" disabled>Select a level</option>
                         {experienceLevels.map((l) => <option key={l.id} value={l.id}>{l.name}</option>)}
                       </Select>
                     )}
+                    {attemptedPost && experienceLevelId === '' && (
+                      <span className="rd-field-error">Experience level is required.</span>
+                    )}
                   </div>
                 </div>
 
                 <div className="rd-field">
-                  <label className="rd-label">Description</label>
+                  <label className="rd-label">Description<span className="required-star"> *</span></label>
                   <textarea
                     className="rd-textarea"
                     placeholder="Describe the role, responsibilities, and requirements…"
@@ -420,36 +494,48 @@ function RecruiterDashboard() {
                     required
                     rows={5}
                   />
+                  {attemptedPost && !jobDescription.trim() && (
+                    <span className="rd-field-error">Description is required.</span>
+                  )}
                 </div>
 
                 <div className="rd-field-group">
                   <div className="rd-field">
-                    <label className="rd-label">Location</label>
+                    <label className="rd-label">Location<span className="required-star"> *</span></label>
                     <input className="rd-input" type="text" placeholder="e.g. New York, NY" value={jobLocation} onChange={(e) => setJobLocation(e.target.value)} required />
+                    {attemptedPost && !jobLocation.trim() && (
+                      <span className="rd-field-error">Location is required.</span>
+                    )}
                   </div>
                   <div className="rd-field">
-                    <label className="rd-label">Job Type</label>
+                    <label className="rd-label">Job Type<span className="required-star"> *</span></label>
                     <Select value={jobType} onChange={(e: ChangeEvent<HTMLSelectElement>) => setJobType(e.target.value)}>
                       <option value="" disabled>Select type</option>
                       {JOB_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
                     </Select>
+                    {attemptedPost && !jobType && (
+                      <span className="rd-field-error">Job type is required.</span>
+                    )}
                   </div>
                 </div>
 
                 <div className="rd-field">
-                  <label className="rd-label">Salary Range <span className="rd-optional">(optional)</span></label>
+                  <label className="rd-label">Salary Range<span className="required-star"> *</span></label>
                   <div className="rd-salary-row">
                     <div className="rd-salary-field">
                       <span className="rd-salary-prefix">$</span>
-                      <input className="rd-input rd-salary-input" type="number" min="0" step="1000" placeholder="Min" value={formSalaryMin} onChange={(e) => handleFormSalaryMinChange(e.target.value)} />
+                      <input className="rd-input rd-salary-input" type="number" min="0" max="10000000" step="1000" placeholder="Min" value={formSalaryMin} onChange={(e) => handleFormSalaryMinChange(e.target.value)} onKeyDown={blockNonNumericKey} />
                     </div>
                     <span className="rd-salary-sep">—</span>
                     <div className="rd-salary-field">
                       <span className="rd-salary-prefix">$</span>
-                      <input className="rd-input rd-salary-input" type="number" min="0" step="1000" placeholder="Max" value={formSalaryMax} onChange={(e) => handleFormSalaryMaxChange(e.target.value)} />
+                      <input className="rd-input rd-salary-input" type="number" min="0" max="10000000" step="1000" placeholder="Max" value={formSalaryMax} onChange={(e) => handleFormSalaryMaxChange(e.target.value)} onKeyDown={blockNonNumericKey} />
                     </div>
                   </div>
                   {formSalaryError && <span className="rd-field-error">{formSalaryError}</span>}
+                  {attemptedPost && !formSalaryError && (!formSalaryMin.trim() || !formSalaryMax.trim()) && (
+                    <span className="rd-field-error">Salary range is required.</span>
+                  )}
                 </div>
 
                 <div className="rd-field">
@@ -458,9 +544,10 @@ function RecruiterDashboard() {
                     className="rd-input"
                     type="date"
                     value={expiresAt}
-                    min={new Date().toISOString().split('T')[0]}
-                    onChange={(e) => setExpiresAt(e.target.value)}
+                    min={todayIso()}
+                    onChange={(e) => handleExpiresAtChange(e.target.value)}
                   />
+                  {expiresAtError && <span className="rd-field-error">{expiresAtError}</span>}
                 </div>
 
                 <div className="rd-field">
@@ -473,11 +560,8 @@ function RecruiterDashboard() {
                       disabled={metaLoading || jobRoleId === ''}
                     >
                       <option value="">{jobRoleId === '' ? 'Select a job category first…' : 'Select a skill…'}</option>
-                      {allSkills
-                        .filter((s) =>
-                          !selectedSkillIds.includes(s.id) &&
-                          (jobRoleId === '' || s.job_role_ids.includes(Number(jobRoleId)))
-                        )
+                      {skillsForRole
+                        .filter((s) => !selectedSkillIds.includes(s.id))
                         .map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
                     </select>
                     <button
@@ -492,7 +576,39 @@ function RecruiterDashboard() {
                     >
                       Add
                     </button>
+                    <button
+                      type="button"
+                      className="rd-add-btn"
+                      disabled={metaLoading || jobRoleId === '' || skillsForRole.every((s) => selectedSkillIds.includes(s.id))}
+                      onClick={handleAddAllSkills}
+                    >
+                      Add All
+                    </button>
                   </div>
+                  <div className="rd-skill-add-row">
+                    <input
+                      className="rd-input"
+                      type="text"
+                      placeholder="Add a custom skill…"
+                      value={customSkillName}
+                      onChange={(e) => setCustomSkillName(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          e.preventDefault()
+                          void handleAddCustomSkill()
+                        }
+                      }}
+                    />
+                    <button
+                      type="button"
+                      className="rd-add-btn"
+                      disabled={!customSkillName.trim() || addingCustomSkill}
+                      onClick={() => void handleAddCustomSkill()}
+                    >
+                      {addingCustomSkill ? 'Adding…' : 'Add Custom'}
+                    </button>
+                  </div>
+                  {customSkillError && <span className="rd-field-error">{customSkillError}</span>}
                   {selectedSkillIds.length > 0 && (
                     <div className="rd-skill-tags">
                       {selectedSkillIds.map((id) => {
@@ -520,9 +636,12 @@ function RecruiterDashboard() {
               {/* Right — interview rounds */}
               <div className="rd-form-right">
                 <div className="rd-rounds-header">
-                  <span className="rd-label">Interview Rounds</span>
+                  <span className="rd-label">Interview Rounds<span className="required-star"> *</span></span>
                   <span className="rd-rounds-count">{selectedRounds.length} added</span>
                 </div>
+                {attemptedPost && selectedRounds.length === 0 && (
+                  <span className="rd-field-error">At least one interview round is required.</span>
+                )}
 
                 <div className="rd-rounds-add-row">
                   <select
@@ -567,6 +686,7 @@ function RecruiterDashboard() {
                             type="number" min="0" max="100"
                             value={round.failing_criteria}
                             onChange={(e) => handleFailingCriteriaChange(round.uid, e.target.value)}
+                            onKeyDown={blockNonNumericKey}
                           />
                           <span className="rd-threshold-suffix">%</span>
                         </div>
@@ -584,7 +704,7 @@ function RecruiterDashboard() {
 
             <div className="rd-form-actions">
               <Button type="button" variant="secondary" onClick={handleCloseForm}>Discard</Button>
-              <Button type="submit" variant="primary" disabled={posting || jobRoleId === '' || experienceLevelId === '' || !jobType || !!formSalaryError}>
+              <Button type="submit" variant="primary" disabled={posting || !!formSalaryError || !!expiresAtError}>
                 {posting ? 'Publishing…' : 'Publish Job'}
               </Button>
             </div>

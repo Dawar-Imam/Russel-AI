@@ -2,7 +2,7 @@
   height: 100vh;
   overflow: hidden;
   background-color: var(--color-bg);
-  background-image: url('../utils/background-image-1.png');
+  background-image: var(--bg-image-1);
   background-size: cover;
   background-position: center;
   background-repeat: no-repeat;
@@ -43,7 +43,7 @@
 }
 
 .stages-error {
-  color: #e05c5c;
+  color: var(--color-alert);
 }
 
 .interview-stages-heading {
@@ -159,7 +159,7 @@
 /* ── ATS bubble modifiers ── */
 @keyframes ats-pending-glow {
   0%, 100% { box-shadow: var(--shadow-glow-amber); }
-  50% { box-shadow: 0 0 28px rgba(245, 166, 35, 0.45); }
+  50% { box-shadow: 0 0 28px rgba(var(--color-primary-rgb), 0.45); }
 }
 
 .stage-bubble--ats-pending {
@@ -180,8 +180,8 @@
 
 .ats-result-card--pass,
 .ats-result-card--fail {
-  background: rgba(245, 166, 35, 0.07);
-  border: 1px solid rgba(245, 166, 35, 0.28);
+  background: rgba(var(--color-primary-rgb), 0.07);
+  border: 1px solid rgba(var(--color-primary-rgb), 0.28);
 }
 
 .ats-result-icon {
@@ -224,7 +224,7 @@
 }
 
 .ap-stage--open {
-  border-color: rgba(245, 166, 35, 0.3);
+  border-color: rgba(var(--color-primary-rgb), 0.3);
 }
 
 .ap-stage-btn {
@@ -278,26 +278,26 @@
 
 .ap-stage-badge--pending,
 .ap-stage-badge--in-progress {
-  background-color: rgba(245, 166, 35, 0.1);
-  border: 1px solid rgba(245, 166, 35, 0.3);
+  background-color: rgba(var(--color-primary-rgb), 0.1);
+  border: 1px solid rgba(var(--color-primary-rgb), 0.3);
   color: var(--color-primary);
 }
 
 .ap-stage-badge--pass {
-  background-color: rgba(111, 207, 151, 0.1);
-  border: 1px solid rgba(111, 207, 151, 0.3);
-  color: #6fcf97;
+  background-color: rgba(var(--color-primary-rgb), 0.1);
+  border: 1px solid rgba(var(--color-primary-rgb), 0.3);
+  color: var(--color-primary);
 }
 
 .ap-stage-badge--fail {
-  background-color: rgba(224, 92, 92, 0.1);
-  border: 1px solid rgba(224, 92, 92, 0.3);
-  color: #e05c5c;
+  background-color: rgba(var(--color-alert-rgb), 0.1);
+  border: 1px solid rgba(var(--color-alert-rgb), 0.3);
+  color: var(--color-alert);
 }
 
 .ap-stage-badge--scheduled,
 .ap-stage-badge--not-started {
-  background-color: rgba(90, 90, 90, 0.15);
+  background-color: rgba(var(--color-muted-rgb), 0.15);
   border: 1px solid var(--color-border);
   color: var(--color-text-secondary);
 }
@@ -357,11 +357,11 @@
 }
 
 .ap-stage-detail-value--pass {
-  color: #6fcf97;
+  color: var(--color-primary);
 }
 
 .ap-stage-detail-value--fail {
-  color: #e05c5c;
+  color: var(--color-alert);
 }
 
 .ap-stage-detail-value--pending {

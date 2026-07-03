@@ -9,8 +9,8 @@
   align-items: center;
   justify-content: space-between;
   gap: var(--space-2);
-  background: rgba(255, 255, 255, 0.06);
-  border: 1px solid rgba(42, 42, 42, 0.7);
+  background: rgba(var(--glass-highlight-rgb), 0.06);
+  border: 1px solid rgba(var(--color-border-rgb), 0.7);
   border-radius: var(--radius-sm);
   color: var(--color-text-primary);
   font-size: 13px;
@@ -54,7 +54,7 @@
   top: 100%;
   left: 0;
   right: 0;
-  background: #141414;
+  background: var(--color-surface);
   border: 1px solid var(--color-primary);
   border-top: none;
   border-bottom-left-radius: var(--radius-sm);
@@ -94,7 +94,7 @@
 
 .cs-option:hover {
   background: var(--color-primary);
-  color: #0d0d0d;
+  color: var(--color-bg);
 }
 
 .cs-option--selected {
@@ -104,5 +104,5 @@
 
 .cs-option--selected:hover {
   background: var(--color-primary);
-  color: #0d0d0d;
+  color: var(--color-bg);
 }

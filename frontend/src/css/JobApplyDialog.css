@@ -59,7 +59,11 @@
   flex: 1;
   min-height: 0;
   overflow-y: auto;
-  padding-right: var(--space-2);
+  padding: var(--space-4);
+  background-color: var(--color-surface-raised);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-lg);
+  box-sizing: border-box;
 }
 
 .job-apply-description-wrap::-webkit-scrollbar {
@@ -80,6 +84,7 @@
   font-size: 14px;
   line-height: 1.6;
   color: var(--color-text-secondary);
+  white-space: pre-wrap;
 }
 
 .job-apply-field {
@@ -144,7 +149,7 @@
 .job-apply-cv-label:hover .job-apply-cv-btn {
   border-color: var(--color-primary);
   color: var(--color-primary);
-  background-color: rgba(245, 166, 35, 0.04);
+  background-color: rgba(var(--color-primary-rgb), 0.04);
 }
 
 .job-apply-cv-icon {
@@ -156,7 +161,7 @@
 .job-apply-error {
   margin: 0;
   font-size: 13px;
-  color: #e05c5c;
+  color: var(--color-alert);
 }
 
 .job-apply-actions {
@@ -175,8 +180,8 @@
   display: flex;
   gap: var(--space-2);
   padding: var(--space-3);
-  background-color: rgba(245, 166, 35, 0.08);
-  border: 1px solid rgba(245, 166, 35, 0.3);
+  background-color: rgba(var(--color-primary-rgb), 0.08);
+  border: 1px solid rgba(var(--color-primary-rgb), 0.3);
   border-radius: var(--radius-sm);
 }
 

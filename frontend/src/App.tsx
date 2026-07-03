@@ -10,14 +10,8 @@ import InterviewRoom from './pages/InterviewRoom'
 import UserProfile from './pages/UserProfile'
 import JobPostStats from './pages/JobPostStats'
 import PageTransition from './components/PageTransition'
-import UserMenu from './components/UserMenu'
+import AppLayout, { shouldShowAppLayout } from './components/AppLayout'
 import DebugBreadcrumb from './components/DebugBreadcrumb'
-
-// Routes that are accessible while signed out — no redirect, no navbar
-const PUBLIC_ONLY_ROUTES = ['/', '/auth']
-
-// Routes where the navbar should be hidden regardless of auth state
-const NO_NAVBAR_PREFIXES = ['/interview-room']
 
 function isSignedIn() {
   return !!(sessionStorage.getItem('candidateId') || sessionStorage.getItem('recruiterId'))
@@ -36,48 +30,49 @@ function CandidateRoute({ children }: { children: React.ReactNode }) {
 
 function App() {
   const location = useLocation()
-  const hideNavbar =
-    PUBLIC_ONLY_ROUTES.includes(location.pathname) ||
-    NO_NAVBAR_PREFIXES.some(prefix => location.pathname.startsWith(prefix))
+  const showLayout = shouldShowAppLayout(location.pathname, isSignedIn())
+
+  const routes = (
+    <AnimatePresence mode="wait">
+      <Routes location={location} key={location.pathname}>
+        {/* Public routes */}
+        <Route path="/" element={<PageTransition><Home /></PageTransition>} />
+        <Route path="/auth" element={<PageTransition><Auth /></PageTransition>} />
+        <Route path="/jobs" element={<PageTransition><Jobs /></PageTransition>} />
+
+        {/* Protected routes — redirect to / if signed out */}
+        <Route
+          path="/my-applications"
+          element={<CandidateRoute><PageTransition><MyApplications /></PageTransition></CandidateRoute>}
+        />
+        <Route
+          path="/recruiter-dashboard"
+          element={<ProtectedRoute><PageTransition><RecruiterDashboard /></PageTransition></ProtectedRoute>}
+        />
+        <Route
+          path="/application-progress/:applicationId"
+          element={<CandidateRoute><PageTransition><ApplicationProgress /></PageTransition></CandidateRoute>}
+        />
+        <Route
+          path="/interview-room/:interviewId"
+          element={<CandidateRoute><PageTransition><InterviewRoom /></PageTransition></CandidateRoute>}
+        />
+        <Route
+          path="/profile"
+          element={<ProtectedRoute><PageTransition><UserProfile /></PageTransition></ProtectedRoute>}
+        />
+        <Route
+          path="/job-stats/:jobId"
+          element={<ProtectedRoute><PageTransition><JobPostStats /></PageTransition></ProtectedRoute>}
+        />
+      </Routes>
+    </AnimatePresence>
+  )
 
   return (
     <>
-      {!hideNavbar && <UserMenu />}
       <DebugBreadcrumb />
-      <AnimatePresence mode="wait">
-        <Routes location={location} key={location.pathname}>
-          {/* Public routes */}
-          <Route path="/" element={<PageTransition><Home /></PageTransition>} />
-          <Route path="/auth" element={<PageTransition><Auth /></PageTransition>} />
-          <Route path="/jobs" element={<PageTransition><Jobs /></PageTransition>} />
-
-          {/* Protected routes — redirect to / if signed out */}
-          <Route
-            path="/my-applications"
-            element={<CandidateRoute><PageTransition><MyApplications /></PageTransition></CandidateRoute>}
-          />
-          <Route
-            path="/recruiter-dashboard"
-            element={<ProtectedRoute><PageTransition><RecruiterDashboard /></PageTransition></ProtectedRoute>}
-          />
-          <Route
-            path="/application-progress/:applicationId"
-            element={<CandidateRoute><PageTransition><ApplicationProgress /></PageTransition></CandidateRoute>}
-          />
-          <Route
-            path="/interview-room/:interviewId"
-            element={<CandidateRoute><PageTransition><InterviewRoom /></PageTransition></CandidateRoute>}
-          />
-          <Route
-            path="/profile"
-            element={<ProtectedRoute><PageTransition><UserProfile /></PageTransition></ProtectedRoute>}
-          />
-          <Route
-            path="/job-stats/:jobId"
-            element={<ProtectedRoute><PageTransition><JobPostStats /></PageTransition></ProtectedRoute>}
-          />
-        </Routes>
-      </AnimatePresence>
+      {showLayout ? <AppLayout>{routes}</AppLayout> : routes}
     </>
   )
 }

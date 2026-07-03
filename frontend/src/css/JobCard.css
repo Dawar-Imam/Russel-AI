@@ -20,7 +20,7 @@
 }
 
 .job-card:hover {
-  border-color: rgba(245, 166, 35, 0.4);
+  border-color: rgba(var(--color-primary-rgb), 0.4);
 }
 
 .job-card-content {

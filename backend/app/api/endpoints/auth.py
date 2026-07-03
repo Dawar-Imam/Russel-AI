@@ -2,8 +2,8 @@ import re
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
-from app.schemas.auth import CandidateProfileResponse, RecruiterProfileResponse, RecruiterSigninResponse, RecruiterSignupRequest, RecruiterSignupResponse, SigninRequest, SigninResponse, SignupMetadataResponse, SignupResponse
-from app.services.auth_service import get_candidate_profile, get_recruiter_profile, get_signup_metadata, signin_candidate, signin_recruiter, signup_candidate, signup_recruiter
+from app.schemas.auth import CandidateProfileResponse, CreateSkillRequest, RecruiterProfileResponse, RecruiterSigninResponse, RecruiterSignupRequest, RecruiterSignupResponse, SigninRequest, SigninResponse, SignupMetadataResponse, SignupResponse, SkillItem
+from app.services.auth_service import get_candidate_profile, get_or_create_skill, get_recruiter_profile, get_signup_metadata, signin_candidate, signin_recruiter, signup_candidate, signup_recruiter
 
 router = APIRouter()
 
@@ -15,6 +15,16 @@ _MAX_CV_BYTES = 5 * 1024 * 1024  # 5 MB
 def signup_metadata() -> SignupMetadataResponse:
     try:
         return get_signup_metadata()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post("/skills", response_model=SkillItem)
+def create_skill(body: CreateSkillRequest) -> SkillItem:
+    try:
+        return get_or_create_skill(name=body.name, job_role_id=body.job_role_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 

@@ -1,3 +1,4 @@
+import json
 import uuid
 
 from app.database import get_connection
@@ -74,42 +75,47 @@ def apply_to_job(
             )
             created = True
 
-        # Fetch all interview rounds for this job (ordered by round_order)
-        cur.execute(
-            """
-            SELECT id FROM InterviewRounds
-            WHERE job_posting_id = ? AND is_active = 1
-            ORDER BY round_order
-            """,
-            job_posting_id,
-        )
-        rounds = [str(r[0]) for r in cur.fetchall()]
-
-        # Create Interview row for each round if one doesn't exist
-        for round_id in rounds:
-            cur.execute(
-                "SELECT id FROM Interviews WHERE interview_round_id = ? AND application_id = ?",
-                round_id,
-                application_id,
-            )
-            if not cur.fetchone():
-                cur.execute(
-                    """
-                    INSERT INTO Interviews
-                        (id, interview_round_id, application_id, status, scheduled_at, completed_at, feedback, result)
-                    VALUES (?, ?, ?, 'Scheduled', GETDATE(), NULL, NULL, NULL)
-                    """,
-                    str(uuid.uuid4()),
-                    round_id,
-                    application_id,
-                )
-
         conn.commit()
 
-        msg = "Application created and interviews scheduled." if created else "Application already exists."
+        msg = "Application created, pending ATS screening." if created else "Application already exists."
         return ApplyResponse(application_id=application_id, created=created, message=msg)
     finally:
         conn.close()
+
+
+def _create_interviews_for_application(cur, application_id: str, job_posting_id: str) -> None:
+    """Create an Interview row for each active round of the job, if one doesn't already exist.
+
+    Only call this once ATS has passed the application — interviews must not exist
+    for applications that are ATS_PENDING or ATS_FAIL.
+    """
+    cur.execute(
+        """
+        SELECT id FROM InterviewRounds
+        WHERE job_posting_id = ? AND is_active = 1
+        ORDER BY round_order
+        """,
+        job_posting_id,
+    )
+    rounds = [str(r[0]) for r in cur.fetchall()]
+
+    for round_id in rounds:
+        cur.execute(
+            "SELECT id FROM Interviews WHERE interview_round_id = ? AND application_id = ?",
+            round_id,
+            application_id,
+        )
+        if not cur.fetchone():
+            cur.execute(
+                """
+                INSERT INTO Interviews
+                    (id, interview_round_id, application_id, status, scheduled_at, completed_at, feedback, result)
+                VALUES (?, ?, ?, 'Scheduled', GETDATE(), NULL, NULL, NULL)
+                """,
+                str(uuid.uuid4()),
+                round_id,
+                application_id,
+            )
 
 
 def get_interview_stages(application_id: str) -> InterviewStagesResponse:
@@ -120,7 +126,7 @@ def get_interview_stages(application_id: str) -> InterviewStagesResponse:
         # Resolve job_posting_id and ATS info from application (join for job meta)
         cur.execute(
             """
-            SELECT a.job_id, a.status, a.ats_reason,
+            SELECT a.job_id, a.status, a.ats_details,
                    jr.title, el.name, c.name
             FROM Applications a
             JOIN JobPostings jp ON jp.id = a.job_id
@@ -136,7 +142,8 @@ def get_interview_stages(application_id: str) -> InterviewStagesResponse:
             raise ValueError(f"Application {application_id} not found")
         job_posting_id = str(row[0])
         app_status = row[1]
-        ats_reason: str | None = row[2]
+        ats_details = json.loads(row[2]) if row[2] else {}
+        ats_reason: str | None = ats_details.get("reason")
         job_role_title: str | None = row[3]
         experience_level_name: str | None = row[4]
         company: str | None = row[5]
@@ -218,6 +225,11 @@ def get_interview_stages(application_id: str) -> InterviewStagesResponse:
             current_round_id=current_round_id,
             ats_status=ats_status,
             ats_reason=ats_reason,
+            ats_role_assessment=ats_details.get("role_assessment"),
+            ats_experience_assessment=ats_details.get("experience_assessment"),
+            ats_skills_matched=ats_details.get("skills_matched", []),
+            ats_skills_missing=ats_details.get("skills_missing", []),
+            ats_projects_assessment=ats_details.get("projects_assessment"),
             application_status=app_status,
             job_role_title=job_role_title,
             experience_level_name=experience_level_name,
@@ -346,13 +358,15 @@ async def run_ats_for_application(application_id: str) -> ATSCheckResponse:
     try:
         cur = conn.cursor()
         cur.execute(
-            "SELECT job_id, candidate_id, status, ats_reason, resume_id FROM Applications WHERE id = ?",
+            "SELECT job_id, candidate_id, status, ats_details, resume_id FROM Applications WHERE id = ?",
             application_id,
         )
         row = cur.fetchone()
         if not row:
             raise ValueError(f"Application {application_id} not found")
-        job_id, candidate_id, status, ats_reason = str(row[0]), str(row[1]), row[2], row[3]
+        job_id, candidate_id, status = str(row[0]), str(row[1]), row[2]
+        ats_details = json.loads(row[3]) if row[3] else {}
+        ats_reason: str | None = ats_details.get("reason")
         resume_id = str(row[4]) if row[4] else None
 
         parsed_text: str | None = None
@@ -366,26 +380,69 @@ async def run_ats_for_application(application_id: str) -> ATSCheckResponse:
 
     # Return cached result if ATS already ran
     if status in _ATS_PASSED_STATUSES:
-        return ATSCheckResponse(eligible=True, reason=ats_reason or "Candidate passed ATS screening.")
+        conn = get_connection()
+        try:
+            cur = conn.cursor()
+            _create_interviews_for_application(cur, application_id, job_id)
+            conn.commit()
+        finally:
+            conn.close()
+        return ATSCheckResponse(
+            eligible=True,
+            reason=ats_reason or "Candidate passed ATS screening.",
+            role_assessment=ats_details.get("role_assessment"),
+            experience_assessment=ats_details.get("experience_assessment"),
+            skills_matched=ats_details.get("skills_matched", []),
+            skills_missing=ats_details.get("skills_missing", []),
+            projects_assessment=ats_details.get("projects_assessment"),
+        )
     if status in _ATS_FAILED_STATUSES:
-        return ATSCheckResponse(eligible=False, reason=ats_reason or "Candidate did not pass ATS screening.")
+        return ATSCheckResponse(
+            eligible=False,
+            reason=ats_reason or "Candidate did not pass ATS screening.",
+            role_assessment=ats_details.get("role_assessment"),
+            experience_assessment=ats_details.get("experience_assessment"),
+            skills_matched=ats_details.get("skills_matched", []),
+            skills_missing=ats_details.get("skills_missing", []),
+            projects_assessment=ats_details.get("projects_assessment"),
+        )
 
     # Run the LLM-powered ATS check
     from app.ai.ai_services.ats_service import check_ats_eligibility
     result = await check_ats_eligibility(candidate_id, job_id, parsed_text=parsed_text)
 
     new_status = "ATS_PASS" if result.eligible else "ATS_FAIL"
+    details_json = json.dumps(
+        {
+            "reason": result.reason,
+            "role_assessment": result.role_assessment,
+            "experience_assessment": result.experience_assessment,
+            "skills_matched": result.skills_matched,
+            "skills_missing": result.skills_missing,
+            "projects_assessment": result.projects_assessment,
+        }
+    )
     conn = get_connection()
     try:
         cur = conn.cursor()
         cur.execute(
-            "UPDATE Applications SET status = ?, ats_reason = ? WHERE id = ?",
+            "UPDATE Applications SET status = ?, ats_details = ? WHERE id = ?",
             new_status,
-            result.reason,
+            details_json,
             application_id,
         )
+        if new_status == "ATS_PASS":
+            _create_interviews_for_application(cur, application_id, job_id)
         conn.commit()
     finally:
         conn.close()
 
-    return ATSCheckResponse(eligible=result.eligible, reason=result.reason)
+    return ATSCheckResponse(
+        eligible=result.eligible,
+        reason=result.reason,
+        role_assessment=result.role_assessment,
+        experience_assessment=result.experience_assessment,
+        skills_matched=result.skills_matched,
+        skills_missing=result.skills_missing,
+        projects_assessment=result.projects_assessment,
+    )

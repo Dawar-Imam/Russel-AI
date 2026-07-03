@@ -3,6 +3,11 @@ const BASE_URL = (import.meta.env.VITE_API_URL as string | undefined) ?? 'http:/
 export interface ATSCheckResponse {
   eligible: boolean
   reason: string
+  role_assessment: string | null
+  experience_assessment: string | null
+  skills_matched: string[]
+  skills_missing: string[]
+  projects_assessment: string | null
 }
 
 export interface MyApplicationItem {

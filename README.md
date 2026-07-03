@@ -52,14 +52,14 @@ The **current round** displayed to the candidate is the interview with the lowes
 | Column | Type | Stores |
 |---|---|---|
 | `status` | varchar | `Scheduled` / `In Progress` / `Pass` / `Failed` |
-| `result` | float | Final numeric score (0–10) after scoring completes |
+| `result` | varchar(50) | Final numeric score (0–10) stored as text after scoring completes |
 | `feedback` | nvarchar | AI-generated text feedback about the interview round |
 
 ---
 
 ## Database Schema
 
-18 tables across the following domains:
+19 tables across the following domains:
 
 | Domain | Tables |
 |---|---|
@@ -68,7 +68,7 @@ The **current round** displayed to the candidate is the interview with the lowes
 | Company | `Companies` |
 | Jobs | `JobRoles`, `JobPostings`, `ExperienceLevels` |
 | Applications | `Applications`, `Resumes` |
-| Skills | `SkillSets`, `CandidateSkills`, `JobRequiredSkills` |
+| Skills | `SkillSets`, `CandidateSkills`, `JobRequiredSkills`, `RoleSkills` |
 | Interviews | `InterviewRoundTypes`, `InterviewRounds`, `Interviews`, `InterviewQuestions` |
 | Questions | `Questions` |
 
@@ -187,6 +187,12 @@ erDiagram
     bit is_mandatory
   }
 
+  RoleSkills {
+    int id PK
+    int job_role_id FK
+    int skill_id FK
+  }
+
   Resumes {
     uniqueidentifier id PK
     uniqueidentifier candidate_id FK
@@ -202,9 +208,9 @@ erDiagram
     uniqueidentifier candidate_id FK
     uniqueidentifier resume_id FK
     varchar status
-    nvarchar ats_reason
     nvarchar cover_letter
     datetime2 applied_at
+    nvarchar ats_details
   }
 
   InterviewRounds {
@@ -224,7 +230,7 @@ erDiagram
     datetime2 scheduled_at
     datetime2 completed_at
     nvarchar feedback
-    float result
+    varchar result
   }
 
   Questions {
@@ -261,6 +267,8 @@ erDiagram
   ExperienceLevels ||--o{ JobPostings : "level"
   JobPostings ||--o{ JobRequiredSkills : "requires"
   SkillSets ||--o{ JobRequiredSkills : "ref"
+  JobRoles ||--o{ RoleSkills : "typical skills for"
+  SkillSets ||--o{ RoleSkills : "ref"
   CandidateProfiles ||--o{ Resumes : "uploads"
   JobPostings ||--o{ Applications : "receives"
   CandidateProfiles ||--o{ Applications : "submits"

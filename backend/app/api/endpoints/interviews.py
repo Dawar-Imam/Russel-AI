@@ -1,6 +1,8 @@
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 
+from app.ai.voice_agent.interview_state import store_conclude_result
 from app.ai.voice_agent.room_connection import (
     CreateRoomResponse,
     conduct_voice_interview,
@@ -19,6 +21,11 @@ from app.services.interview_service import (
     mark_interview_failed_on_leave,
     score_interview_answers,
 )
+
+
+class ConcludeInterviewRequest(BaseModel):
+    passed: bool
+    reason: str
 
 router = APIRouter()
 
@@ -86,6 +93,19 @@ async def report_leave(interview_id: str) -> dict:
         mark_interview_failed_on_leave(interview_id)
         signal_interview_done(interview_id)
         return {"status": "marked_failed"}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post("/{interview_id}/conclude")
+async def conclude_interview(interview_id: str, body: ConcludeInterviewRequest) -> dict:
+    """
+    Called by the voice agent's conclude_interview tool (or directly in tests).
+    Stores the pass/fail result so _run_and_store can act on it after the agent disconnects.
+    """
+    try:
+        store_conclude_result(interview_id, body.passed, body.reason)
+        return {"status": "ok", "interview_id": interview_id, "passed": body.passed}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 

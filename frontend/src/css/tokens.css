@@ -1,18 +1,32 @@
 :root {
-  /* Colors */
+  /* Colors — Dark theme (default) */
   --color-bg: #0d0d0d;
   --color-surface: #141414;
   --color-surface-raised: #1c1c1c;
   --color-border: #2a2a2a;
 
   --color-primary: #f5a623;
+  --color-primary-rgb: 245, 166, 35;
   --color-primary-hover: #e6951a;
+  --color-primary-dark: #b5651d;
   --color-secondary: #1a3a6b;
+  --color-secondary-rgb: 26, 58, 107;
   --color-info-text: #7aabff;
+  --color-alert: #e05252;
+  --color-alert-rgb: 224, 82, 82;
 
   --color-text-primary: #f0f0f0;
   --color-text-secondary: #9a9a9a;
   --color-text-muted: #555555;
+
+  --color-border-rgb: 42, 42, 42;
+  --color-muted-rgb: 90, 90, 90;
+  --color-info-text-rgb: 122, 171, 255;
+
+  --shadow-rgb: 0, 0, 0;
+  /* Translucent glass fill/highlight used on panels layered over background images */
+  --glass-rgb: 13, 13, 13;
+  --glass-highlight-rgb: 255, 255, 255;
 
   /* Spacing (8px base unit) */
   --space-1: 4px;
@@ -30,15 +44,74 @@
   --radius-full: 50%;
 
   /* Shadows / glow */
-  --shadow-card: 0 4px 24px rgba(0, 0, 0, 0.4);
-  --shadow-modal: 0 4px 24px rgba(0, 0, 0, 0.5);
-  --shadow-glow-amber: 0 0 20px rgba(245, 166, 35, 0.2);
-  --shadow-glow-navy: 0 0 20px rgba(26, 58, 107, 0.3);
-  --shadow-focus-ring: 0 0 0 3px rgba(245, 166, 35, 0.15);
+  --shadow-card: 0 4px 24px rgba(var(--shadow-rgb), 0.4);
+  --shadow-modal: 0 4px 24px rgba(var(--shadow-rgb), 0.5);
+  --shadow-glow-amber: 0 0 20px rgba(var(--color-primary-rgb), 0.2);
+  --shadow-glow-navy: 0 0 20px rgba(var(--color-secondary-rgb), 0.3);
+  --shadow-focus-ring: 0 0 0 3px rgba(var(--color-primary-rgb), 0.15);
+
+  /* Background image assets (theme-routed) */
+  --bg-image-1: url('../utils/dark/background-image-1.png');
+  --bg-image-2: url('../utils/dark/background-image-2.png');
+  --bg-image-3: url('../utils/dark/background-image-3.png');
+  --bg-image-4: url('../utils/dark/background-image-4.png');
+  --bg-home-page: url('../utils/dark/home-page.png');
+  --bg-interview-room: url('../utils/dark/interview_room.png');
 
   /* Layout */
   --navbar-height: 74px;
+  --sidebar-width: 363px;
+  --sidebar-margin: 8px;
+  --topbar-height: 64px;
 
   /* Typography */
   --font-sans: 'Inter', system-ui, sans-serif;
+}
+
+body.light-theme {
+  /* Colors — Light theme (White & Blue) */
+  --color-bg: #f4f7fc;
+  --color-surface: #ffffff;
+  --color-surface-raised: #eaf0f9;
+  --color-border: #d0dbe9;
+
+  --color-primary: #1a73e8;
+  --color-primary-rgb: 26, 115, 232;
+  --color-primary-hover: #1557b0;
+  --color-primary-dark: #185abc;
+  --color-secondary: #dbeafe;
+  --color-secondary-rgb: 219, 234, 254;
+  --color-info-text: #1e40af;
+  --color-alert: #d93025;
+  --color-alert-rgb: 217, 48, 37;
+
+  --color-text-primary: #1e293b;
+  --color-text-secondary: #64748b;
+  --color-text-muted: #94a3b8;
+
+  --color-border-rgb: 208, 219, 233;
+  --color-muted-rgb: 148, 163, 184;
+  --color-info-text-rgb: 30, 64, 175;
+
+  --shadow-rgb: 15, 23, 42;
+  --glass-rgb: 255, 255, 255;
+  --glass-highlight-rgb: 15, 23, 42;
+
+  --shadow-card: 0 4px 24px rgba(var(--shadow-rgb), 0.08);
+  --shadow-modal: 0 4px 24px rgba(var(--shadow-rgb), 0.12);
+  --shadow-glow-amber: 0 0 20px rgba(var(--color-primary-rgb), 0.18);
+  --shadow-glow-navy: 0 0 20px rgba(var(--color-secondary-rgb), 0.4);
+  --shadow-focus-ring: 0 0 0 3px rgba(var(--color-primary-rgb), 0.15);
+
+  /* Tint applied over light-mode background photos so the page doesn't read too white. */
+  /* Raise toward 0.35 for a darker photo, lower toward 0 to remove the tint entirely. */
+  --bg-overlay-alpha: 0.05;
+  --bg-overlay: linear-gradient(rgba(0, 0, 0, var(--bg-overlay-alpha)), rgba(0, 0, 0, var(--bg-overlay-alpha)));
+
+  --bg-image-1: var(--bg-overlay), url('../utils/white/background-image-1.png');
+  --bg-image-2: var(--bg-overlay), url('../utils/white/background-image-2.png');
+  --bg-image-3: var(--bg-overlay), url('../utils/white/background-image-3.png');
+  --bg-image-4: var(--bg-overlay), url('../utils/white/background-image-4.png');
+  --bg-home-page: var(--bg-overlay), url('../utils/white/home-page.png');
+  --bg-interview-room: var(--bg-overlay), url('../utils/white/interview_room.png');
 }

@@ -18,6 +18,19 @@ class SkillItem(BaseModel):
     job_role_ids: list[int]
 
 
+class CreateSkillRequest(BaseModel):
+    name: str
+    job_role_id: int | None = None
+
+    @field_validator('name')
+    @classmethod
+    def validate_name(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError('Skill name is required')
+        return v
+
+
 class ExperienceLevelItem(BaseModel):
     id: int
     name: str
