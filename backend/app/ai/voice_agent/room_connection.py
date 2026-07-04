@@ -5,7 +5,7 @@ import uuid
 
 from langchain_core.messages import HumanMessage
 from livekit import rtc
-from livekit.api import AccessToken, CreateRoomRequest, LiveKitAPI, VideoGrants
+from livekit.api import AccessToken, CreateRoomRequest, DeleteRoomRequest, LiveKitAPI, VideoGrants
 from pydantic import BaseModel
 
 from app.ai.ai_services.cv_relevance_service import fetch_candidate_cv_relevance
@@ -51,6 +51,33 @@ async def wait_for_interview_done(interview_id: str, timeout: float = 600.0) -> 
         return False
     finally:
         _interview_done.pop(interview_id, None)
+
+
+# ---------------------------------------------------------------------------
+# Processing-failure store — lets the SSE endpoint tell a post-processing
+# crash (extraction raised / returned nothing) apart from a normal completion,
+# so the frontend can show a specific error instead of waiting out the full
+# SSE timeout.
+# ---------------------------------------------------------------------------
+
+_processing_failures: dict[str, str] = {}
+
+
+def pop_processing_failure(interview_id: str) -> str | None:
+    """Consume and return the recorded post-processing failure reason, or None."""
+    return _processing_failures.pop(interview_id, None)
+
+
+def _fail_processing(interview_id: str, reason: str, test_mode: bool) -> None:
+    """Fast-fail path for post-processing errors — marks the interview terminated
+    and resolves the SSE wait immediately instead of leaving done_event unset,
+    which previously left the frontend waiting out the full interview-duration
+    SSE timeout before showing any error."""
+    _logger.warning("Interview %s processing failed: %s", interview_id, reason)
+    if not test_mode:
+        mark_interview_terminated(interview_id, reason)
+    _processing_failures[interview_id] = reason
+    _get_done_event(interview_id).set()
 
 
 # ---------------------------------------------------------------------------
@@ -157,6 +184,30 @@ async def _extract_answers_with_llm(
 
 
 # ---------------------------------------------------------------------------
+# Guaranteed room teardown fallback
+# ---------------------------------------------------------------------------
+
+async def _force_room_teardown(room_name: str) -> None:
+    """Guarantee the candidate's client gets disconnected once the agent session
+    ends, even if the `interview_ended` data message (agent.py conclude_interview)
+    was dropped or the agent process died right after storing the conclude result.
+
+    Deletes the LiveKit room outright — per LiveKit's RoomService docs this
+    disconnects every remaining participant, so it doesn't require knowing the
+    candidate's participant identity (unlike remove_participant)."""
+    if not room_name:
+        return
+    try:
+        lkapi = LiveKitAPI(settings.LIVEKIT_URL, settings.LIVEKIT_API_KEY, settings.LIVEKIT_API_SECRET)
+        try:
+            await lkapi.room.delete_room(DeleteRoomRequest(room=room_name))
+        finally:
+            await lkapi.aclose()
+    except Exception as exc:
+        _logger.warning("Failed to force-delete room %s: %s", room_name, exc)
+
+
+# ---------------------------------------------------------------------------
 # Background task
 # ---------------------------------------------------------------------------
 
@@ -179,6 +230,9 @@ async def _run_and_store(
             candidate_cv_text=candidate_cv_text,
         )
         await agent_room.disconnect()
+        # Fallback: guarantee the candidate is disconnected even if the
+        # `interview_ended` data message never reached them.
+        await _force_room_teardown(agent_room.name)
 
         # Python-side no-response termination (still active)
         if terminated_reason:
@@ -208,7 +262,11 @@ async def _run_and_store(
         _logger.info("Interview %s concluded as PASS — extracting answers", interview_id)
 
         if not conversation_history:
-            _logger.warning("Empty conversation history for interview %s — SSE will timeout", interview_id)
+            _fail_processing(
+                interview_id,
+                "No conversation was recorded during the interview.",
+                test_mode,
+            )
             return
 
         _logger.info(
@@ -217,10 +275,23 @@ async def _run_and_store(
             interview_id,
         )
 
-        extracted = await _extract_answers_with_llm(questions, conversation_history)
+        try:
+            extracted = await _extract_answers_with_llm(questions, conversation_history)
+        except Exception:
+            _logger.exception("Answer extraction failed for interview %s", interview_id)
+            _fail_processing(
+                interview_id,
+                "Failed to process your interview answers. Please contact support.",
+                test_mode,
+            )
+            return
 
         if not extracted:
-            _logger.warning("No answers extracted for interview %s — SSE will timeout", interview_id)
+            _fail_processing(
+                interview_id,
+                "No answers could be extracted from the interview.",
+                test_mode,
+            )
             return
 
         if test_mode:

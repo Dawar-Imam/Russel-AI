@@ -1,3 +1,5 @@
+import json
+
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -6,6 +8,7 @@ from app.ai.voice_agent.interview_state import store_conclude_result
 from app.ai.voice_agent.room_connection import (
     CreateRoomResponse,
     conduct_voice_interview,
+    pop_processing_failure,
     signal_interview_done,
     wait_for_interview_done,
 )
@@ -116,8 +119,15 @@ async def interview_status_stream(interview_id: str) -> StreamingResponse:
         done = await wait_for_interview_done(
             interview_id, timeout=(settings.INTERVIEW_DURATION_MINUTES + 1) * 60
         )
-        event_name = "done" if done else "timeout"
-        yield f"event: {event_name}\ndata: {{}}\n\n"
+        if not done:
+            yield "event: timeout\ndata: {}\n\n"
+            return
+
+        failure_reason = pop_processing_failure(interview_id)
+        if failure_reason:
+            yield f"event: failed\ndata: {json.dumps({'reason': failure_reason})}\n\n"
+        else:
+            yield "event: done\ndata: {}\n\n"
 
     return StreamingResponse(
         generate(),

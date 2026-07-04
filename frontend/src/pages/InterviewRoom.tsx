@@ -422,6 +422,18 @@ function InterviewRoom() {
           setPhase('error')
         })
 
+        es.addEventListener('failed', (e) => {
+          es.close()
+          eventSourceRef.current = null
+          let reason = 'Interview processing failed.'
+          try {
+            const data = JSON.parse((e as MessageEvent).data) as { reason?: string }
+            if (data.reason) reason = data.reason
+          } catch { /* ignore malformed payload */ }
+          setError(reason)
+          setPhase('error')
+        })
+
         es.onerror = () => {
           es.close()
           eventSourceRef.current = null
