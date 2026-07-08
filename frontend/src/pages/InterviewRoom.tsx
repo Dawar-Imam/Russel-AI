@@ -95,7 +95,6 @@ function InterviewRoom() {
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const roomRef = useRef<Room | null>(null)
   const eventSourceRef = useRef<EventSource | null>(null)
-  const concludeFailedRef = useRef(false)
 
   const isOral = interviewType.toLowerCase().includes('oral') || interviewType.toLowerCase().includes('voice')
 
@@ -121,8 +120,11 @@ function InterviewRoom() {
       roomRef.current?.disconnect()
       eventSourceRef.current?.close()
       if (timerRef.current) clearInterval(timerRef.current)
+      if (localStorage.getItem('russell_test_mode') === '1') {
+        void fetch(`${API_BASE}/api/interviews/${interviewId}/clear-test-cache`, { method: 'POST' })
+      }
     }
-  }, [])
+  }, [interviewId])
 
   // ---------------------------------------------------------------------------
   // Leave / cheat detection
@@ -295,11 +297,9 @@ function InterviewRoom() {
           // --- control events ---
           if (msg.role === 'control') {
             if (msg.event === 'interview_ended') {
-              // Agent concluded the interview — make the candidate leave the room
-              // so RoomEvent.Disconnected fires and triggers the processing/SSE flow.
-              if (msg.passed === false) {
-                concludeFailedRef.current = true
-              }
+              // Agent concluded the interview (passed or failed) — make the candidate
+              // leave the room so RoomEvent.Disconnected fires and triggers the
+              // processing/SSE/scoring flow the same way regardless of outcome.
               roomRef.current?.disconnect()
               return
             } else if (msg.event === 'terminated') {
@@ -389,18 +389,12 @@ function InterviewRoom() {
         }
       })
 
-      // When room disconnects, either show terminated screen (fail) or wait for backend then score (pass)
+      // When room disconnects, wait for backend post-processing then score —
+      // regardless of whether the agent concluded the interview as passed or
+      // failed. Only a candidate-initiated leave (handleUserLeft) skips scoring.
       lkRoom.on(RoomEvent.Disconnected, () => {
         if (isTerminatedRef.current) return  // handleUserLeft already took over
         if (timerRef.current) clearInterval(timerRef.current)
-
-        // Agent concluded with passed=false — interview is already marked Failed in DB.
-        if (concludeFailedRef.current) {
-          isTerminatedRef.current = true
-          setTerminatedReason('Your interview has been concluded by the interviewer.')
-          setPhase('terminated')
-          return
-        }
 
         setPhase('submitting')
 

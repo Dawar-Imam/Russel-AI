@@ -10,7 +10,7 @@ from livekit.agents import Agent, AgentSession, function_tool, llm, stt as agent
 from livekit.agents.utils import http_context
 from livekit.agents.voice.room_io import RoomOptions
 from livekit.plugins import deepgram, elevenlabs, openai, silero
-
+from livekit.plugins.elevenlabs import VoiceSettings
 from app.ai.voice_agent.interview_state import store_conclude_result
 from app.ai.voice_agent.prompts import (
     PRESENCE_CHECK_INSTRUCTIONS,
@@ -20,9 +20,12 @@ from app.ai.voice_agent.prompts import (
 from app.ai.voice_agent.whisper_stt import OpenRouterWhisperSTT
 
 from app.core.config import settings
-from app.schemas.interviews import QuestionItem
 
 _logger = logging.getLogger("russel.voice_agent")
+
+CONCLUDE_DISCONNECT_DELAY_SECONDS = 10
+"""Delay between conclude_interview firing and forcibly disconnecting the room,
+so the agent's closing line has time to finish playing over TTS."""
 
 
 def _compute_remaining(start_time: float, duration_seconds: float) -> int:
@@ -33,7 +36,7 @@ def _compute_remaining(start_time: float, duration_seconds: float) -> int:
 class InterviewerAgent(Agent):
     def __init__(
         self,
-        questions: list[QuestionItem],
+        job_post_data: str,
         room: rtc.Room,
         interview_id: str,
         duration_minutes: int = settings.INTERVIEW_DURATION_MINUTES,
@@ -46,10 +49,9 @@ class InterviewerAgent(Agent):
         self._room = room
         self._concluded = False  # set when conclude_interview tool fires
 
-        questions_block = "\n".join(f"{i + 1}. {q.question_text}" for i, q in enumerate(questions))
         super().__init__(
             instructions=build_system_prompt(
-                questions_block, duration_minutes, len(questions), candidate_cv_text
+                job_post_data, duration_minutes, candidate_cv_text
             )
         )
 
@@ -73,15 +75,25 @@ class InterviewerAgent(Agent):
             "Interview %s concluded via tool — passed=%s reason=%s",
             self._interview_id, passed, reason,
         )
-        # Tell the frontend to leave the room so RoomEvent.Disconnected fires there.
-        try:
-            await self._room.local_participant.publish_data(
-                json.dumps({"role": "control", "event": "interview_ended", "passed": passed}).encode(),
-                reliable=True,
-            )
-        except Exception as exc:
-            _logger.debug("Failed to publish interview_ended control event: %s", exc)
-        asyncio.create_task(self._room.disconnect())
+
+        async def _delayed_disconnect() -> None:
+            # Give the closing line time to finish playing over TTS before
+            # tearing down the room — disconnecting immediately can cut the
+            # candidate's audio off mid-sentence.
+            await asyncio.sleep(CONCLUDE_DISCONNECT_DELAY_SECONDS - 2)
+            # Tell the frontend to leave the room so RoomEvent.Disconnected fires there.
+            try:
+                await self._room.local_participant.publish_data(
+                    json.dumps({"role": "control", "event": "interview_ended", "passed": passed}).encode(),
+                    reliable=True,
+                )
+            except Exception as exc:
+                _logger.debug("Failed to publish interview_ended control event: %s", exc)
+
+            await asyncio.sleep(2)  # give the frontend a few seconds to receive the event before disconnecting
+            await self._room.disconnect()
+
+        asyncio.create_task(_delayed_disconnect())
         return "Interview concluded."
 
     def _get_remaining_seconds(self) -> float:
@@ -246,7 +258,7 @@ def _build_stt_engine(vad):
 
 async def run_voice_agent(
     room: rtc.Room,
-    questions: list[QuestionItem],
+    job_post_data: str,
     interview_id: str,
     duration_minutes: int = settings.INTERVIEW_DURATION_MINUTES,
     no_response_timeout_seconds: int = 30,
@@ -258,7 +270,7 @@ async def run_voice_agent(
     Returns (conversation_history, terminated_reason).
     terminated_reason is None for normal completion, or a string if terminated early.
     """
-    _logger.info("Voice agent starting — %d questions, %d min", len(questions), duration_minutes)
+    _logger.info("Voice agent starting — %d min", duration_minutes)
 
     duration_seconds = duration_minutes * 60
     session_start = time.time()
@@ -354,16 +366,20 @@ async def run_voice_agent(
                 model="eleven_flash_v2_5",
                 voice_id=settings.ELEVENLABS_VOICE_ID,
                 api_key=settings.ELEVENLABS_API_KEY,
-                # optimize_streaming_latency=3,
+                voice_settings=VoiceSettings(
+                    speed=1.05,
+                    stability=0.4,
+                    similarity_boost=0.75,
+                ),
             ),
             turn_handling={
-                "endpointing": {"min_delay": 1.5, "max_delay": 2.0},
+                "endpointing": {"min_delay": 3, "max_delay": 4}, # (AFTER STT basically) how long the agent waits after it detects the user has stopped speaking
                 "interruption": {
                     "enabled": True,
-                    "min_duration": 0.2,
-                    "min_words": 1,
+                    "min_duration": 0, # Minimum time the user must speak before it's considered a valid interruption.
+                    "min_words": 1, # Minimum number of recognized words required to trigger an interruption.
                 },
-                "preemptive_generation": {"enabled": False},
+                "preemptive_generation": {"enabled": False}, # If enabled, the LLM starts generating a response before the user's turn is officially complete to reduce latency.
             },
         )
         session_ref[0] = session
@@ -390,7 +406,7 @@ async def run_voice_agent(
         )
 
         interviewer_agent_ref[0] = InterviewerAgent(
-            questions, room, interview_id, duration_minutes, candidate_cv_text=candidate_cv_text
+            job_post_data, room, interview_id, duration_minutes, candidate_cv_text=candidate_cv_text
         )
         await session.start(
             agent=interviewer_agent_ref[0],

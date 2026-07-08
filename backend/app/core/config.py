@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     CANCEL_INTERVIEW_ON_NO_RESPONSE: int = 0
     # Global interview duration (minutes)
     INTERVIEW_DURATION_MINUTES: int = 10
+    # When True, /status-stream's SSE wait timeout extends to 1 hour so a
+    # manual debugger pause mid-flow doesn't get cut off by the normal timeout.
+    DEBUG_MODE: bool = False
 
     model_config = SettingsConfigDict(env_file=str(_ENV_FILE), env_file_encoding="utf-8")
 

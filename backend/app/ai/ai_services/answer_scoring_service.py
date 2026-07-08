@@ -1,4 +1,4 @@
-from app.ai.interview_tools.prompts import GRADE_ANSWERS_ORAL_ADDENDUM, GRADE_ANSWERS_SYSTEM_PROMPT
+from app.ai.interview_tools.prompts import GRADE_ANSWERS_SYSTEM_PROMPT
 from app.ai.interview_tools.schemas import AnswerItem, GradedAnswers
 from app.core.config import get_llm
 
@@ -16,9 +16,13 @@ async def grade_candidate_answers(
         for answer in answers
     )
 
-    system_prompt = GRADE_ANSWERS_SYSTEM_PROMPT
-    if interview_type.lower() in ("oral", "voice"):
-        system_prompt += GRADE_ANSWERS_ORAL_ADDENDUM
+    is_oral = interview_type.lower() in ("oral", "voice")
+    round_note = (
+        "\nCURRENT ROUND TYPE: ORAL — apply the ORAL INTERVIEWS (STT-BASED) rules above."
+        if is_oral
+        else "\nCURRENT ROUND TYPE: NON-ORAL / TEXT — apply the NON-ORAL / TEXT INTERVIEWS rules above."
+    )
+    system_prompt = GRADE_ANSWERS_SYSTEM_PROMPT + round_note
 
     return await structured_llm.ainvoke(
         [

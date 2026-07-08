@@ -20,6 +20,7 @@ from app.schemas.interviews import (
     ScoreAnswersResponse,
 )
 from app.services.interview_service import (
+    clear_test_mode_cache,
     generate_interview_questions,
     mark_interview_failed_on_leave,
     score_interview_answers,
@@ -100,6 +101,18 @@ async def report_leave(interview_id: str) -> dict:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+@router.post("/{interview_id}/clear-test-cache")
+async def clear_test_cache(interview_id: str) -> dict:
+    """
+    Called by the frontend when leaving the interview room page in test mode.
+    Flushes the in-memory test-mode question/answer cache for this interview_id
+    so it never resurfaces (stale questions/scores) on a later test run.
+    No-op / harmless if there was nothing cached (e.g. real-mode interviews).
+    """
+    clear_test_mode_cache(interview_id)
+    return {"status": "cleared", "interview_id": interview_id}
+
+
 @router.post("/{interview_id}/conclude")
 async def conclude_interview(interview_id: str, body: ConcludeInterviewRequest) -> dict:
     """
@@ -116,9 +129,8 @@ async def conclude_interview(interview_id: str, body: ConcludeInterviewRequest) 
 @router.get("/{interview_id}/status-stream")
 async def interview_status_stream(interview_id: str) -> StreamingResponse:
     async def generate():
-        done = await wait_for_interview_done(
-            interview_id, timeout=(settings.INTERVIEW_DURATION_MINUTES + 1) * 60
-        )
+        timeout = 3600 if settings.DEBUG_MODE else (settings.INTERVIEW_DURATION_MINUTES + 1) * 60
+        done = await wait_for_interview_done(interview_id, timeout=timeout)
         if not done:
             yield "event: timeout\ndata: {}\n\n"
             return
