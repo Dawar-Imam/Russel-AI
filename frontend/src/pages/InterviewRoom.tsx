@@ -80,6 +80,8 @@ function InterviewRoom() {
   const [interviewType, setInterviewType] = useState('')
   const [messages, setMessages] = useState<ConversationMessage[]>([])
   const [audioBlocked, setAudioBlocked] = useState(false)
+  const [userSpeaking, setUserSpeaking] = useState(false)
+  const [assistantSpeaking, setAssistantSpeaking] = useState(false)
 
   const [enableFailCases, setEnableFailCases] = useState(true)
   const [terminatedReason, setTerminatedReason] = useState<string | null>(null)
@@ -95,6 +97,20 @@ function InterviewRoom() {
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const roomRef = useRef<Room | null>(null)
   const eventSourceRef = useRef<EventSource | null>(null)
+
+  // Assistant reply is buffered until the agent's audio actually starts
+  // coming out of the speakers, then revealed 1s after that signal — so the
+  // transcript doesn't visually "get ahead" of the voice.
+  const assistantSpeakingPrevRef = useRef(false)
+  const assistantRevealedRef = useRef(false)
+  const assistantBufferRef = useRef('')
+  const assistantRevealTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // Highest generation number seen so far. The agent's LLM occasionally
+  // self-revises mid-turn — the session cancels the superseded attempt's
+  // audio, but its chunks may have already been published. Each chunk is
+  // tagged with the generation of the attempt it belongs to, so a lower
+  // generation than what we've already seen is a discarded draft, not new text.
+  const assistantGenerationRef = useRef(0)
 
   const isOral = interviewType.toLowerCase().includes('oral') || interviewType.toLowerCase().includes('voice')
 
@@ -120,6 +136,7 @@ function InterviewRoom() {
       roomRef.current?.disconnect()
       eventSourceRef.current?.close()
       if (timerRef.current) clearInterval(timerRef.current)
+      if (assistantRevealTimeoutRef.current) clearTimeout(assistantRevealTimeoutRef.current)
       if (localStorage.getItem('russell_test_mode') === '1') {
         void fetch(`${API_BASE}/api/interviews/${interviewId}/clear-test-cache`, { method: 'POST' })
       }
@@ -288,10 +305,44 @@ function InterviewRoom() {
         setAudioBlocked(!lkRoom.canPlaybackAudio)
       })
 
+      // Live speaking indicator — LiveKit computes audio levels for every
+      // published track (local mic + remote agent audio), so we can tell who's
+      // actively talking right now without any custom VAD/analyser code.
+      lkRoom.on(RoomEvent.ActiveSpeakersChanged, (speakers) => {
+        const localSid = lkRoom.localParticipant.sid
+        setUserSpeaking(speakers.some((p) => p.sid === localSid))
+        const speaking = speakers.some((p) => p.sid !== localSid)
+        setAssistantSpeaking(speaking)
+
+        // Rising edge: speaker audio just started. If we're holding buffered
+        // assistant text for this turn, reveal it 1s from now.
+        if (
+          speaking &&
+          !assistantSpeakingPrevRef.current &&
+          !assistantRevealedRef.current &&
+          assistantRevealTimeoutRef.current === null
+        ) {
+          assistantRevealTimeoutRef.current = setTimeout(() => {
+            assistantRevealTimeoutRef.current = null
+            assistantRevealedRef.current = true
+            const text = assistantBufferRef.current
+            if (!text) return
+            setMessages((prev) => {
+              const last = prev[prev.length - 1]
+              if (last?.role === 'assistant' && last.streaming) {
+                return prev.map((m, i) => (i === prev.length - 1 ? { ...m, text } : m))
+              }
+              return [...prev, { role: 'assistant' as const, text, streaming: true }]
+            })
+          }, 500)
+        }
+        assistantSpeakingPrevRef.current = speaking
+      })
+
       // Receive live transcript messages from the agent via data channel
       lkRoom.on(RoomEvent.DataReceived, (payload: Uint8Array) => {
         try {
-          const msg = JSON.parse(new TextDecoder().decode(payload)) as { role: string; text?: string; event?: string; reason?: string; passed?: boolean }
+          const msg = JSON.parse(new TextDecoder().decode(payload)) as { role: string; text?: string; event?: string; reason?: string; passed?: boolean; generation?: number }
           if (!msg.role) return
 
           // --- control events ---
@@ -316,6 +367,12 @@ function InterviewRoom() {
               // TTS stopped mid-speech — freeze the streaming bubble exactly where
               // it was cut off instead of leaving it marked "streaming" until the
               // next turn finalizes it out of order.
+              assistantRevealedRef.current = false
+              assistantBufferRef.current = ''
+              if (assistantRevealTimeoutRef.current) {
+                clearTimeout(assistantRevealTimeoutRef.current)
+                assistantRevealTimeoutRef.current = null
+              }
               setMessages((prev) => {
                 const streamingIdx = prev.map(m => m.role === 'assistant' && m.streaming).lastIndexOf(true)
                 if (streamingIdx === -1) return prev
@@ -361,22 +418,43 @@ function InterviewRoom() {
               return [...prev, { role: 'user' as const, text: msg.text!, partial: false, committedText: msg.text! }]
             })
           } else if (msg.role === 'assistant_chunk') {
-            // Append chunk to the current streaming bubble, or open a new one
+            const generation = msg.generation ?? 0
+            if (generation < assistantGenerationRef.current) {
+              // Belongs to a self-revision the backend already discarded
+              // (its audio never played) — drop it instead of appending.
+              return
+            }
+            if (generation > assistantGenerationRef.current) {
+              // A newer attempt supersedes whatever we were buffering/showing.
+              assistantGenerationRef.current = generation
+              assistantBufferRef.current = msg.text!
+            } else {
+              assistantBufferRef.current += msg.text!
+            }
+            if (!assistantRevealedRef.current) return
+            const text = assistantBufferRef.current
             setMessages((prev) => {
               const last = prev[prev.length - 1]
               if (last?.role === 'assistant' && last.streaming) {
-                return prev.map((m, i) =>
-                  i === prev.length - 1 ? { ...m, text: m.text + msg.text! } : m
-                )
+                return prev.map((m, i) => (i === prev.length - 1 ? { ...m, text } : m))
               }
-              return [...prev, { role: 'assistant' as const, text: msg.text!, streaming: true }]
+              return [...prev, { role: 'assistant' as const, text, streaming: true }]
             })
           } else if (msg.role === 'assistant') {
+            // Turn is over — reset the reveal state for the next assistant turn.
+            const wasRevealed = assistantRevealedRef.current
+            assistantRevealedRef.current = false
+            assistantBufferRef.current = ''
+            assistantGenerationRef.current = Math.max(assistantGenerationRef.current, msg.generation ?? 0)
+            if (assistantRevealTimeoutRef.current) {
+              clearTimeout(assistantRevealTimeoutRef.current)
+              assistantRevealTimeoutRef.current = null
+            }
             // Finalize the streaming bubble — search backwards since a user message
             // may have arrived between the last chunk and this completion event
             setMessages((prev) => {
               const streamingIdx = prev.map(m => m.role === 'assistant' && m.streaming).lastIndexOf(true)
-              if (streamingIdx !== -1) {
+              if (wasRevealed && streamingIdx !== -1) {
                 return prev.map((m, i) =>
                   i === streamingIdx ? { ...m, text: msg.text!, streaming: false } : m
                 )
@@ -437,7 +515,11 @@ function InterviewRoom() {
       })
 
       await lkRoom.connect(url, token)
-      await lkRoom.localParticipant.setMicrophoneEnabled(true)
+      await lkRoom.localParticipant.setMicrophoneEnabled(true, {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      })
       // Check audio playback status immediately after connect
       setAudioBlocked(!lkRoom.canPlaybackAudio)
       setPhase('voice-active')
@@ -630,17 +712,40 @@ function InterviewRoom() {
                 {messages.length === 0 ? (
                   <p className="ir-conversation-empty">Listening…</p>
                 ) : (
-                  messages.map((msg, i) => (
-                    <div key={i} className={`ir-message ir-message--${msg.role}`}>
-                      <span className="ir-message-label">
-                        {msg.role === 'assistant' ? 'Russel' : 'You'}
-                      </span>
-                      <div className="ir-message-bubble">
-                        {msg.text}
-                        {msg.streaming && <span className="ir-cursor">▋</span>}
+                  messages.map((msg, i) => {
+                    const isLast = i === messages.length - 1
+                    const showMic = isLast && msg.role === 'user' && userSpeaking
+                    const showSpeaker = isLast && msg.role === 'assistant' && assistantSpeaking
+                    return (
+                      <div key={i} className={`ir-message ir-message--${msg.role}`}>
+                        <span className="ir-message-label">
+                          {msg.role === 'assistant' ? 'Russel' : 'You'}
+                        </span>
+                        <div className="ir-message-bubble">
+                          {msg.text}
+                          {msg.streaming && <span className="ir-cursor">▋</span>}
+                          {showMic && (
+                            <span className="ir-live-icon ir-mic-icon" title="Speaking" aria-hidden="true">
+                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+                                <rect x="9" y="2" width="6" height="12" rx="3" fill="currentColor" />
+                                <path d="M5 11a7 7 0 0 0 14 0" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                                <line x1="12" y1="18" x2="12" y2="22" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                              </svg>
+                            </span>
+                          )}
+                          {showSpeaker && (
+                            <span className="ir-live-icon ir-speaker-icon" title="Speaking" aria-hidden="true">
+                              <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
+                                <path d="M4 9v6h4l5 5V4L8 9H4Z" fill="currentColor" />
+                                <path d="M16.5 8.5a5 5 0 0 1 0 7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                                <path d="M19 6a9 9 0 0 1 0 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
+                              </svg>
+                            </span>
+                          )}
+                        </div>
                       </div>
-                    </div>
-                  ))
+                    )
+                  })
                 )}
                 <div ref={messagesEndRef} />
               </div>

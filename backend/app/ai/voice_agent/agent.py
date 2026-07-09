@@ -8,8 +8,8 @@ from collections.abc import AsyncGenerator
 from livekit import rtc
 from livekit.agents import Agent, AgentSession, function_tool, llm, stt as agents_stt
 from livekit.agents.utils import http_context
-from livekit.agents.voice.room_io import RoomOptions
-from livekit.plugins import deepgram, elevenlabs, openai, silero
+from livekit.agents.voice.room_io import AudioInputOptions, RoomOptions
+from livekit.plugins import deepgram, elevenlabs, noise_cancellation, openai, silero
 from livekit.plugins.elevenlabs import VoiceSettings
 from app.ai.voice_agent.interview_state import store_conclude_result
 from app.ai.voice_agent.prompts import (
@@ -48,6 +48,11 @@ class InterviewerAgent(Agent):
         self._interview_id = interview_id
         self._room = room
         self._concluded = False  # set when conclude_interview tool fires
+        self._generation = 0
+        """Bumped every time the LLM starts a new response attempt. Tags each
+        assistant_chunk so the frontend can tell a superseded self-revision
+        (whose audio never plays — the session cancels it) from the attempt
+        that actually gets spoken, instead of concatenating both forever."""
 
         super().__init__(
             instructions=build_system_prompt(
@@ -111,6 +116,7 @@ class InterviewerAgent(Agent):
         from tts_node (in sync with speech), not here — the LLM generates far
         faster than the candidate hears it, so publishing at this stage desyncs
         the chat bubble from the voice."""
+        self._generation += 1
         remaining_secs = round(self._get_remaining_seconds())
         if remaining_secs < 60:
             time_note = (
@@ -135,12 +141,13 @@ class InterviewerAgent(Agent):
         already generated, so the chat bubble fills in step with the voice.
         Stops forwarding immediately once the candidate interrupts."""
         self._interrupted.clear()
+        generation = self._generation  # snapshot: this tts_node call belongs to this attempt
 
         async def _gated_text():
             async for segment in text:
                 if self._interrupted.is_set():
                     break
-                asyncio.ensure_future(self._publish_chunk(segment))
+                asyncio.ensure_future(self._publish_chunk(segment, generation))
                 yield segment
 
         async for frame in Agent.default.tts_node(self, _gated_text(), model_settings):
@@ -149,10 +156,10 @@ class InterviewerAgent(Agent):
     def mark_interrupted(self) -> None:
         self._interrupted.set()
 
-    async def _publish_chunk(self, text: str) -> None:
+    async def _publish_chunk(self, text: str, generation: int) -> None:
         try:
             await self._room.local_participant.publish_data(
-                json.dumps({"role": "assistant_chunk", "text": text}).encode(),
+                json.dumps({"role": "assistant_chunk", "text": text, "generation": generation}).encode(),
                 reliable=True,
             )
         except Exception as exc:
@@ -306,7 +313,9 @@ async def run_voice_agent(
         clean_text = text.strip()
 
         remaining = _get_remaining()
-        msg = {"role": "assistant", "text": clean_text, "remaining_time": remaining}
+        agent = interviewer_agent_ref[0]
+        generation = agent._generation if agent is not None else 0
+        msg = {"role": "assistant", "text": clean_text, "remaining_time": remaining, "generation": generation}
         conversation_history.append(msg)
         m, s = divmod(remaining, 60)
         display_text = f"{clean_text} [remaining: {m:02d}:{s:02d}]"
@@ -357,7 +366,9 @@ async def run_voice_agent(
     room.on("connection_quality_changed")(_on_connection_quality_changed)
 
     async with http_context.open():
-        vad = silero.VAD.load()
+        vad = silero.VAD.load(
+            activation_threshold=0.5,
+        )
         session = AgentSession(
             vad=vad,
             stt=_build_stt_engine(vad),
@@ -367,13 +378,13 @@ async def run_voice_agent(
                 voice_id=settings.ELEVENLABS_VOICE_ID,
                 api_key=settings.ELEVENLABS_API_KEY,
                 voice_settings=VoiceSettings(
-                    speed=1.05,
+                    speed=1.1,
                     stability=0.4,
                     similarity_boost=0.75,
                 ),
             ),
             turn_handling={
-                "endpointing": {"min_delay": 3, "max_delay": 4}, # (AFTER STT basically) how long the agent waits after it detects the user has stopped speaking
+                "endpointing": {"min_delay": 0, "max_delay": 1}, # (AFTER STT basically) how long the agent waits after it detects the user has stopped speaking
                 "interruption": {
                     "enabled": True,
                     "min_duration": 0, # Minimum time the user must speak before it's considered a valid interruption.
@@ -411,7 +422,9 @@ async def run_voice_agent(
         await session.start(
             agent=interviewer_agent_ref[0],
             room=room,
-            room_options=RoomOptions(),
+            room_options=RoomOptions(
+                audio_input=AudioInputOptions(noise_cancellation=noise_cancellation.BVC()),
+            ),
         )
 
         try:

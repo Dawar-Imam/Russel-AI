@@ -670,6 +670,7 @@
 }
 
 .ir-message-bubble {
+  position: relative;
   padding: 10px 14px;
   font-size: 13px;
   line-height: 1.65;
@@ -688,6 +689,28 @@
   border-radius: 12px 4px 4px 12px;
   color: var(--color-bg);
   font-weight: 500;
+}
+
+.ir-live-icon {
+  position: absolute;
+  top: -9px;
+  width: 22px;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--color-bg);
+  border: 1px solid var(--color-primary);
+  color: var(--color-primary);
+}
+
+.ir-message--user .ir-mic-icon {
+  right: -9px;
+}
+
+.ir-message--assistant .ir-speaker-icon {
+  left: -9px;
 }
 
 .ir-cursor {
