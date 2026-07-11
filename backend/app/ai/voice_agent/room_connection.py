@@ -120,6 +120,8 @@ async def create_room() -> CreateRoomResponse:
 
 async def _extract_answers_with_llm(
     conversation_history: list[dict],
+    job_post_data: str = "",
+    candidate_cv_text: str = "",
 ) -> list[dict]:
     """
     Extract question-answer pairs from the interview transcript.
@@ -133,7 +135,7 @@ async def _extract_answers_with_llm(
         for t in conversation_history
     )
 
-    prompt = build_extract_answers_prompt(history_block)
+    prompt = build_extract_answers_prompt(history_block, job_post_data, candidate_cv_text)
 
     llm = get_llm(temperature=0)
     response = await llm.ainvoke([HumanMessage(content=prompt)])
@@ -244,7 +246,7 @@ async def _run_and_store(
         )
 
         try:
-            extracted = await _extract_answers_with_llm(conversation_history)
+            extracted = await _extract_answers_with_llm(conversation_history, job_post_text, candidate_cv_text)
         except Exception:
             _logger.exception("Answer extraction failed for interview %s", interview_id)
             _fail_processing(

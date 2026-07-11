@@ -183,7 +183,7 @@ CREATE TABLE Resumes (
 | status | varchar(50) — `ATS_PENDING` → `ATS_PASS` / `ATS_FAIL` → `IN_PROGRESS` → `HIRED` / `REJECTED` |
 | cover_letter | nvarchar(MAX) NULL |
 | applied_at | datetime2 |
-| ats_details | nvarchar(MAX) NULL — JSON breakdown from ATS: `reason`, `role_assessment`, `experience_assessment`, `skills_matched`, `skills_missing`, `projects_assessment` |
+| ats_details | nvarchar(MAX) NULL — full weighted ATS JSON result (`ATSCheckResponse`): `verdict`, `verdict_summary`, `weightage`, `skill_matching`, `experience_matching`, `projects_matching`, `certifications_matching`, `education_matching`, `achievements_matching`, `additional_skills` |
 | resume_id | uniqueidentifier FK -> Resumes NULL |
 
 > **Migrations required**:
@@ -195,7 +195,10 @@ CREATE TABLE Resumes (
 > -- ats_reason was later dropped: the ats_details column was dropped, then
 > -- ats_reason was sp_rename'd to ats_details (inheriting its nvarchar(500)
 > -- size), then widened: ALTER TABLE Applications ALTER COLUMN ats_details NVARCHAR(MAX) NULL;
-> -- ats_details is now the single column, storing the full JSON (including `reason`).
+> -- ats_details is now the single column, storing the full ATSCheckResponse JSON (see above).
+> -- Rows written before the weighted-scoring rewrite still hold the old shape (`reason`,
+> -- `role_assessment`, etc.) — the read path treats those as ats_result=None rather than
+> -- migrating them in place.
 > ```
 
 ### InterviewRounds

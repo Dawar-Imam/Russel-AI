@@ -52,15 +52,7 @@ async def ats_check(
 
     try:
         result = await check_ats_eligibility(candidate_id, job_posting_id)
-        return ATSCheckResponse(
-            eligible=result.eligible,
-            reason=result.reason,
-            role_assessment=result.role_assessment,
-            experience_assessment=result.experience_assessment,
-            skills_matched=result.skills_matched,
-            skills_missing=result.skills_missing,
-            projects_assessment=result.projects_assessment,
-        )
+        return ATSCheckResponse(**result.model_dump())
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:

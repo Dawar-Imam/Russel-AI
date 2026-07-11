@@ -119,7 +119,7 @@ function InterviewStages() {
       .then((result) => {
         setData((prev) =>
           prev
-            ? { ...prev, ats_status: result.eligible ? 'pass' : 'fail', ats_reason: result.reason }
+            ? { ...prev, ats_status: result.verdict === 'PASS' ? 'pass' : 'fail', ats_reason: result.verdict_summary }
             : prev,
         )
       })

@@ -1,14 +1,35 @@
 import json
+import logging
 import uuid
+
+from pydantic import ValidationError
 
 from app.database import get_connection
 from app.schemas.applications import ATSCheckResponse, ApplyResponse, InterviewQuestionItem, InterviewRoundInfo, InterviewStagesResponse, MyApplicationItem
+
+logger = logging.getLogger(__name__)
 
 ACTIVE_STATUSES = ("Scheduled", "In Progress")
 
 # Application statuses that indicate ATS has already passed
 _ATS_PASSED_STATUSES = ("ATS_PASS", "IN_PROGRESS", "HIRED")
 _ATS_FAILED_STATUSES = ("ATS_FAIL", "REJECTED")
+
+
+def _parse_ats_details(raw: str | None) -> ATSCheckResponse | None:
+    """Parse the stored `ats_details` JSON into an ATSCheckResponse.
+
+    Returns None (rather than raising) on legacy/malformed JSON — e.g. rows persisted under a
+    previous ATS response shape — so a schema change doesn't break stages/history for old
+    applications; the endpoint falls back to a minimal status-derived response.
+    """
+    if not raw:
+        return None
+    try:
+        return ATSCheckResponse(**json.loads(raw))
+    except (json.JSONDecodeError, ValidationError, TypeError) as exc:
+        logger.warning("Failed to parse stored ats_details: %s", exc)
+        return None
 
 
 def apply_to_job(
@@ -142,8 +163,7 @@ def get_interview_stages(application_id: str) -> InterviewStagesResponse:
             raise ValueError(f"Application {application_id} not found")
         job_posting_id = str(row[0])
         app_status = row[1]
-        ats_details = json.loads(row[2]) if row[2] else {}
-        ats_reason: str | None = ats_details.get("reason")
+        ats_result = _parse_ats_details(row[2])
         job_role_title: str | None = row[3]
         experience_level_name: str | None = row[4]
         company: str | None = row[5]
@@ -224,12 +244,7 @@ def get_interview_stages(application_id: str) -> InterviewStagesResponse:
             rounds=rounds,
             current_round_id=current_round_id,
             ats_status=ats_status,
-            ats_reason=ats_reason,
-            ats_role_assessment=ats_details.get("role_assessment"),
-            ats_experience_assessment=ats_details.get("experience_assessment"),
-            ats_skills_matched=ats_details.get("skills_matched", []),
-            ats_skills_missing=ats_details.get("skills_missing", []),
-            ats_projects_assessment=ats_details.get("projects_assessment"),
+            ats_result=ats_result,
             application_status=app_status,
             job_role_title=job_role_title,
             experience_level_name=experience_level_name,
@@ -365,8 +380,7 @@ async def run_ats_for_application(application_id: str) -> ATSCheckResponse:
         if not row:
             raise ValueError(f"Application {application_id} not found")
         job_id, candidate_id, status = str(row[0]), str(row[1]), row[2]
-        ats_details = json.loads(row[3]) if row[3] else {}
-        ats_reason: str | None = ats_details.get("reason")
+        cached_ats_result = _parse_ats_details(row[3])
         resume_id = str(row[4]) if row[4] else None
 
         parsed_text: str | None = None
@@ -387,41 +401,21 @@ async def run_ats_for_application(application_id: str) -> ATSCheckResponse:
             conn.commit()
         finally:
             conn.close()
-        return ATSCheckResponse(
-            eligible=True,
-            reason=ats_reason or "Candidate passed ATS screening.",
-            role_assessment=ats_details.get("role_assessment"),
-            experience_assessment=ats_details.get("experience_assessment"),
-            skills_matched=ats_details.get("skills_matched", []),
-            skills_missing=ats_details.get("skills_missing", []),
-            projects_assessment=ats_details.get("projects_assessment"),
-        )
+        if cached_ats_result:
+            return cached_ats_result
+        return ATSCheckResponse(verdict="PASS", verdict_summary="Candidate passed ATS screening.")
     if status in _ATS_FAILED_STATUSES:
-        return ATSCheckResponse(
-            eligible=False,
-            reason=ats_reason or "Candidate did not pass ATS screening.",
-            role_assessment=ats_details.get("role_assessment"),
-            experience_assessment=ats_details.get("experience_assessment"),
-            skills_matched=ats_details.get("skills_matched", []),
-            skills_missing=ats_details.get("skills_missing", []),
-            projects_assessment=ats_details.get("projects_assessment"),
-        )
+        if cached_ats_result:
+            return cached_ats_result
+        return ATSCheckResponse(verdict="FAIL", verdict_summary="Candidate did not pass ATS screening.")
 
     # Run the LLM-powered ATS check
     from app.ai.ai_services.ats_service import check_ats_eligibility
     result = await check_ats_eligibility(candidate_id, job_id, parsed_text=parsed_text)
 
-    new_status = "ATS_PASS" if result.eligible else "ATS_FAIL"
-    details_json = json.dumps(
-        {
-            "reason": result.reason,
-            "role_assessment": result.role_assessment,
-            "experience_assessment": result.experience_assessment,
-            "skills_matched": result.skills_matched,
-            "skills_missing": result.skills_missing,
-            "projects_assessment": result.projects_assessment,
-        }
-    )
+    new_status = "ATS_PASS" if result.verdict == "PASS" else "ATS_FAIL"
+    details_json = result.model_dump_json()
+
     conn = get_connection()
     try:
         cur = conn.cursor()
@@ -437,12 +431,4 @@ async def run_ats_for_application(application_id: str) -> ATSCheckResponse:
     finally:
         conn.close()
 
-    return ATSCheckResponse(
-        eligible=result.eligible,
-        reason=result.reason,
-        role_assessment=result.role_assessment,
-        experience_assessment=result.experience_assessment,
-        skills_matched=result.skills_matched,
-        skills_missing=result.skills_missing,
-        projects_assessment=result.projects_assessment,
-    )
+    return ATSCheckResponse(**result.model_dump())

@@ -9,6 +9,7 @@ from livekit import rtc
 from livekit.agents import Agent, AgentSession, function_tool, llm, stt as agents_stt
 from livekit.agents.utils import http_context
 from livekit.agents.voice.room_io import AudioInputOptions, RoomOptions
+from livekit.agents import AgentSession, TurnHandlingOptions, inference
 from livekit.plugins import deepgram, elevenlabs, noise_cancellation, openai, silero
 from livekit.plugins.elevenlabs import VoiceSettings
 from app.ai.voice_agent.interview_state import store_conclude_result
@@ -383,6 +384,9 @@ async def run_voice_agent(
                     similarity_boost=0.75,
                 ),
             ),
+            # turn_handling=TurnHandlingOptions(
+            #     turn_detection=inference.TurnDetector(),
+            # ),
             turn_handling={
                 "endpointing": {"min_delay": 0, "max_delay": 1}, # (AFTER STT basically) how long the agent waits after it detects the user has stopped speaking
                 "interruption": {

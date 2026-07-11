@@ -1,7 +1,18 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import Button from '../components/Button'
-import { runAts } from '../api/applications'
+import {
+  runAts,
+  type ATSAchievementMatchItem,
+  type ATSCertificationMatchItem,
+  type ATSCheckResponse,
+  type ATSEducationMatching,
+  type ATSExperienceMatching,
+  type ATSProjectMatchItem,
+  type ATSSkillMatchItem,
+  type ATSTier,
+  type ATSWeightage,
+} from '../api/applications'
 import '../css/ApplicationProgress.css'
 
 const API_BASE = (import.meta.env.VITE_API_URL as string | undefined) ?? 'http://localhost:8000'
@@ -24,16 +35,105 @@ interface StagesData {
   rounds: RoundInfo[]
   current_round_id: string | null
   ats_status: 'pending' | 'pass' | 'fail'
-  ats_reason: string | null
-  ats_role_assessment: string | null
-  ats_experience_assessment: string | null
-  ats_skills_matched: string[]
-  ats_skills_missing: string[]
-  ats_projects_assessment: string | null
+  ats_result: ATSCheckResponse | null
   application_status: string | null
   job_role_title: string | null
   experience_level_name: string | null
   company: string | null
+}
+
+const ATS_CATEGORY_LABELS: Record<
+  Exclude<keyof ATSWeightage, 'weighted_average' | 'pass_threshold'>,
+  string
+> = {
+  experience: 'Professional Experience',
+  skills: 'Technical & Soft Skills',
+  projects: 'Projects',
+  certifications: 'Certifications',
+  education: 'Education',
+  achievements: 'Achievements & Results',
+}
+
+function tierLabel(tier: ATSTier): string {
+  return tier.charAt(0).toUpperCase() + tier.slice(1)
+}
+
+function getPctColor(pct: number): string {
+  if (pct >= 70) return 'var(--color-primary)'
+  if (pct >= 40) return 'var(--color-primary-dark)'
+  return 'var(--color-alert)'
+}
+
+function weightageSummary(w: ATSWeightage): string {
+  const keys = Object.keys(ATS_CATEGORY_LABELS) as (keyof typeof ATS_CATEGORY_LABELS)[]
+  const strongest = keys.reduce((a, b) => (w[b].score_pct > w[a].score_pct ? b : a))
+  const weakest = keys.reduce((a, b) => (w[b].score_pct < w[a].score_pct ? b : a))
+  return `Weighted average is ${w.weighted_average.toFixed(1)}% against a pass threshold of ${w.pass_threshold}%. `
+    + `Strongest category: ${ATS_CATEGORY_LABELS[strongest]} at ${w[strongest].score_pct.toFixed(0)}%. `
+    + `Weakest category: ${ATS_CATEGORY_LABELS[weakest]} at ${w[weakest].score_pct.toFixed(0)}%.`
+}
+
+function skillMatchingSummary(items: ATSSkillMatchItem[]): string {
+  if (items.length === 0) return 'No skill requirements were extracted from this job posting.'
+  const found = items.filter(s => s.match_type !== 'not_found').length
+  const primary = items.filter(s => s.tier === 'primary')
+  const primaryFound = primary.filter(s => s.match_type !== 'not_found').length
+  return `${found} of ${items.length} required skills were found in the candidate's Skills section. `
+    + `${primaryFound} of ${primary.length} primary (must-have) skills matched. `
+    + `Skills contribute 35% of the overall weighted score.`
+}
+
+function experienceSummary(exp: ATSExperienceMatching): string {
+  const statusText = exp.seniority.status === 'match'
+    ? 'meets'
+    : exp.seniority.status === 'underqualified'
+    ? 'falls short of'
+    : 'exceeds'
+  const respFound = exp.responsibilities.filter(r => r.match_type !== 'not_found').length
+  const respLine = exp.responsibilities.length > 0
+    ? `${respFound} of ${exp.responsibilities.length} responsibilities have matching evidence in the CV. `
+    : 'No specific responsibilities were extracted for comparison. '
+  return `Candidate seniority ${statusText} the required level (required: ${exp.seniority.required}, candidate: ${exp.seniority.candidate}). `
+    + respLine
+    + `Professional Experience contributes 30% of the overall weighted score.`
+}
+
+function projectsSummary(items: ATSProjectMatchItem[]): string {
+  if (items.length === 0) {
+    return "No relevant projects were found on the candidate's CV. Projects contribute 20% of the overall weighted score."
+  }
+  const avg = items.reduce((sum, p) => sum + p.total, 0) / items.length
+  return `${items.length} project${items.length === 1 ? '' : 's'} evaluated against this job's responsibilities. `
+    + `Average project score: ${avg.toFixed(1)} / 4. `
+    + `Projects contribute 20% of the overall weighted score.`
+}
+
+function certificationsSummary(items: ATSCertificationMatchItem[]): string {
+  if (items.length === 0) {
+    return "No certifications were found on the candidate's CV. This dimension scores 0% (its 5% weight is not redistributed)."
+  }
+  const required = items.filter(c => c.matches_requirement).length
+  const recognized = items.filter(c => c.recognition === 'industry_recognized').length
+  return `${items.length} certification${items.length === 1 ? '' : 's'} found on the candidate's CV. `
+    + `${required} explicitly required by this job; ${recognized} are industry-recognized credentials. `
+    + `Certifications contribute 5% of the overall weighted score.`
+}
+
+function educationSummary(edu: ATSEducationMatching): string {
+  const relevance = edu.relevant
+    ? "Candidate's education is relevant to this role/domain. "
+    : "Candidate's education was not judged relevant to this role/domain. "
+  return relevance + (edu.note ? `${edu.note} ` : '') + 'Education contributes 5% of the overall weighted score.'
+}
+
+function achievementsSummary(items: ATSAchievementMatchItem[]): string {
+  if (items.length === 0) {
+    return "No achievements were found on the candidate's CV. This dimension scores 0% (its 5% weight is not redistributed)."
+  }
+  const full = items.filter(a => a.relevant && a.required).length
+  return `${items.length} achievement${items.length === 1 ? '' : 's'} evaluated. `
+    + `${full} are both relevant to the role and tied to a specific JD requirement. `
+    + `Achievements contribute 5% of the overall weighted score.`
 }
 
 interface QuestionItem {
@@ -107,8 +207,36 @@ function ApplicationProgress() {
   const [selectedRoundId, setSelectedRoundId] = useState<string | null>(null)
   const [roundQuestions, setRoundQuestions] = useState<Record<string, QuestionItem[]>>({})
   const [loadingQuestions, setLoadingQuestions] = useState<Record<string, boolean>>({})
+  const [openAtsSections, setOpenAtsSections] = useState<Record<string, boolean>>({})
   const atsTriggered = useRef(false)
   const fetchedRounds = useRef<Set<string>>(new Set())
+
+  function toggleAtsSection(id: string) {
+    setOpenAtsSections(prev => ({ ...prev, [id]: !prev[id] }))
+  }
+
+  function renderAtsSection(id: string, title: string, summary: string, detail: ReactNode, headerExtra?: ReactNode) {
+    const open = !!openAtsSections[id]
+    return (
+      <div className="ap-ats-item ap-ats-section">
+        <div className="ap-ats-section-header">
+          <span className="ap-ats-item-label">{title}</span>
+          <button
+            type="button"
+            className={`ap-ats-info-btn${open ? ' ap-ats-info-btn--active' : ''}`}
+            onClick={() => toggleAtsSection(id)}
+            aria-expanded={open}
+            title={open ? `Hide ${title} details` : `Show ${title} details`}
+          >
+            i
+          </button>
+        </div>
+        {headerExtra}
+        <p className="ap-ats-section-summary">{summary}</p>
+        {open && <div className="ap-ats-section-detail">{detail}</div>}
+      </div>
+    )
+  }
 
   function toggleTestMode() {
     setTestMode(prev => {
@@ -185,13 +313,8 @@ function ApplicationProgress() {
           prev
             ? {
                 ...prev,
-                ats_status: result.eligible ? 'pass' : 'fail',
-                ats_reason: result.reason,
-                ats_role_assessment: result.role_assessment,
-                ats_experience_assessment: result.experience_assessment,
-                ats_skills_matched: result.skills_matched,
-                ats_skills_missing: result.skills_missing,
-                ats_projects_assessment: result.projects_assessment,
+                ats_status: result.verdict === 'PASS' ? 'pass' : 'fail',
+                ats_result: result,
               }
             : prev
         )
@@ -268,17 +391,35 @@ function ApplicationProgress() {
     )
   }
 
-  function renderAtsBreakdown() {
-    if (!data) return null
-    const hasBreakdown =
-      data.ats_role_assessment ||
-      data.ats_experience_assessment ||
-      data.ats_projects_assessment ||
-      data.ats_skills_matched.length > 0 ||
-      data.ats_skills_missing.length > 0
-    if (!hasBreakdown) return null
+  function renderAtsResult() {
+    const result = data?.ats_result
+    if (!result) return null
+
+    function sectionScoreChip(pct: number | undefined): ReactNode {
+      if (pct == null) return undefined
+      return (
+        <div className="ap-ats-section-score">
+          <span className="ap-ats-section-score-value" style={{ color: getPctColor(pct) }}>{pct.toFixed(0)}%</span>
+        </div>
+      )
+    }
+
     return (
       <div className="ap-ats-breakdown">
+
+        {/* 1. Pass/Fail badge */}
+        <span className={`ap-ats-verdict-badge ap-ats-verdict-badge--${result.verdict.toLowerCase()}`}>
+          ATS {result.verdict === 'PASS' ? 'Passed' : 'Failed'}
+        </span>
+
+        {/* 2. Verdict summary */}
+        {result.verdict_summary && (
+          <div className="ap-ats-item">
+            <span className="ap-ats-item-label">Summary</span>
+            <p className="ap-ats-item-value">{result.verdict_summary}</p>
+          </div>
+        )}
+
         {data.job_role_title && (
           <div className="ap-ats-item">
             <span className="ap-ats-item-label">Job Role</span>
@@ -288,44 +429,230 @@ function ApplicationProgress() {
             </span>
           </div>
         )}
-        {data.ats_role_assessment && (
-          <div className="ap-ats-item">
-            <span className="ap-ats-item-label">Role Fit</span>
-            <p className="ap-ats-item-value">{data.ats_role_assessment}</p>
+
+        {/* 3. Weightage calculated */}
+        {result.weightage && renderAtsSection(
+          'weightage',
+          'Weightage Calculated',
+          weightageSummary(result.weightage),
+          <div className="ap-ats-score-list">
+            {(Object.keys(ATS_CATEGORY_LABELS) as (keyof typeof ATS_CATEGORY_LABELS)[]).map(key => {
+              const cat = result.weightage![key]
+              return (
+                <div key={key} className="ap-ats-score-row">
+                  <div className="ap-ats-score-row-header">
+                    <span className="ap-ats-score-row-name">{ATS_CATEGORY_LABELS[key]}</span>
+                    <span className="ap-ats-score-row-weight">{cat.weight_pct.toFixed(0)}% weight</span>
+                    <span className="ap-ats-score-row-value" style={{ color: getPctColor(cat.score_pct) }}>
+                      {cat.score_pct.toFixed(0)}%
+                    </span>
+                  </div>
+                  <div className="ap-ats-score-bar">
+                    <div
+                      className="ap-ats-score-bar-fill"
+                      style={{ width: `${cat.score_pct}%`, backgroundColor: getPctColor(cat.score_pct) }}
+                    />
+                  </div>
+                  <p className="ap-ats-score-row-reasoning">
+                    Weighted contribution: {cat.weighted_score.toFixed(1)} pts
+                  </p>
+                </div>
+              )
+            })}
+          </div>,
+          <div className="ap-ats-score-overall">
+            <span className="ap-ats-score-overall-value" style={{ color: getPctColor(result.weightage.weighted_average) }}>
+              {result.weightage.weighted_average.toFixed(1)}
+            </span>
+            <span className="ap-ats-score-overall-max">/ 100 · pass threshold {result.weightage.pass_threshold}</span>
           </div>
         )}
-        {data.ats_experience_assessment && (
-          <div className="ap-ats-item">
-            <span className="ap-ats-item-label">Experience Fit</span>
-            <p className="ap-ats-item-value">{data.ats_experience_assessment}</p>
-          </div>
-        )}
-        {data.ats_projects_assessment && (
-          <div className="ap-ats-item">
-            <span className="ap-ats-item-label">Projects &amp; Experience</span>
-            <p className="ap-ats-item-value">{data.ats_projects_assessment}</p>
-          </div>
-        )}
-        {data.ats_skills_matched.length > 0 && (
-          <div className="ap-ats-item">
-            <span className="ap-ats-item-label">Skills Matched</span>
-            <div className="ap-ats-tag-list">
-              {data.ats_skills_matched.map(skill => (
-                <span key={skill} className="ap-ats-tag ap-ats-tag--matched">{skill}</span>
+
+        {/* 4. Skill matching */}
+        {result.skill_matching.length > 0 && renderAtsSection(
+          'skills',
+          'Skill Matching',
+          skillMatchingSummary(result.skill_matching),
+          <>
+            <div className="ap-ats-skill-grid">
+              <div className="ap-ats-skill-grid-row ap-ats-skill-grid-row--header">
+                <span>Importance</span>
+                <span>Skill</span>
+                <span>Status</span>
+                <span>Description</span>
+                <span>Score</span>
+              </div>
+              {result.skill_matching.map((s, i) => (
+                <div key={i} className="ap-ats-skill-grid-row">
+                  <span className={`ap-ats-tier-badge ap-ats-tier-badge--${s.tier}`}>{tierLabel(s.tier)}</span>
+                  <span className="ap-ats-skill-req">{s.requirement}</span>
+                  <span className={`ap-ats-match-badge ap-ats-match-badge--${s.match_type === 'not_found' ? 'not_found' : 'exact'}`}>
+                    {s.match_type === 'not_found' ? 'Not Found' : 'Found'}
+                  </span>
+                  <span className="ap-ats-skill-note">{s.note}</span>
+                  <span className="ap-ats-skill-score">{s.score}/{s.max_score}</span>
+                </div>
               ))}
             </div>
-          </div>
+            {result.additional_skills.length > 0 && (
+              <div className="ap-ats-additional-skills">
+                <span className="ap-ats-item-label">Other Skills Candidate Has</span>
+                <div className="ap-ats-tag-list">
+                  {result.additional_skills.map(skill => (
+                    <span key={skill} className="ap-ats-tag">{skill}</span>
+                  ))}
+                </div>
+              </div>
+            )}
+          </>,
+          sectionScoreChip(result.weightage?.skills.score_pct)
         )}
-        {data.ats_skills_missing.length > 0 && (
-          <div className="ap-ats-item">
-            <span className="ap-ats-item-label">Skills Missing</span>
-            <div className="ap-ats-tag-list">
-              {data.ats_skills_missing.map(skill => (
-                <span key={skill} className="ap-ats-tag ap-ats-tag--missing">{skill}</span>
+
+        {/* 5. Experience matching */}
+        {result.experience_matching && renderAtsSection(
+          'experience',
+          'Experience Matching',
+          experienceSummary(result.experience_matching),
+          <>
+            <div className="ap-ats-seniority-row">
+              <div className="ap-ats-meta-pair">
+                <span className="ap-ats-meta-pair-label">Required</span>
+                <span className="ap-ats-meta-pair-value">{result.experience_matching.seniority.required}</span>
+              </div>
+              <div className="ap-ats-meta-pair">
+                <span className="ap-ats-meta-pair-label">Candidate</span>
+                <span className="ap-ats-meta-pair-value">{result.experience_matching.seniority.candidate}</span>
+              </div>
+              <span
+                className={`ap-ats-seniority-badge ap-ats-seniority-badge--${result.experience_matching.seniority.status}`}
+              >
+                {result.experience_matching.seniority.status === 'match'
+                  ? 'Match'
+                  : result.experience_matching.seniority.status === 'underqualified'
+                  ? 'Underqualified'
+                  : 'Overqualified'}
+              </span>
+            </div>
+            {(result.experience_matching.years.required_years != null || result.experience_matching.years.candidate_years != null) && (
+              <p className="ap-ats-item-value">
+                Years — required: {result.experience_matching.years.required_years ?? 'n/a'}, candidate:{' '}
+                {result.experience_matching.years.candidate_years ?? 'n/a'}
+              </p>
+            )}
+            {result.experience_matching.seniority.note && (
+              <p className="ap-ats-item-value">{result.experience_matching.seniority.note}</p>
+            )}
+            {result.experience_matching.responsibilities.length > 0 && (
+              <div className="ap-ats-skill-table">
+                {result.experience_matching.responsibilities.map((r, i) => (
+                  <div key={i} className="ap-ats-skill-row">
+                    <div className="ap-ats-skill-row-top">
+                      <span className="ap-ats-skill-req">{r.requirement}</span>
+                      <span className="ap-ats-skill-score">{r.score}/1</span>
+                    </div>
+                    <p className="ap-ats-skill-note">{r.evidence ?? 'No matching evidence found in the CV.'}</p>
+                  </div>
+                ))}
+              </div>
+            )}
+          </>,
+          sectionScoreChip(result.weightage?.experience.score_pct)
+        )}
+
+        {/* 6. Projects matching */}
+        {result.projects_matching.length > 0 && renderAtsSection(
+          'projects',
+          'Projects Matching',
+          projectsSummary(result.projects_matching),
+          <div className="ap-ats-project-list">
+            {result.projects_matching.map((p, i) => (
+              <div key={i} className="ap-ats-project-card">
+                <div className="ap-ats-skill-row-top">
+                  <span className="ap-ats-skill-req">{p.project_name}</span>
+                  <span className="ap-ats-skill-score">{p.total.toFixed(1)}/{p.max}</span>
+                </div>
+                <div className="ap-ats-project-subscores">
+                  <span>Complexity {p.complexity}</span>
+                  <span>Technologies {p.technologies}</span>
+                  <span>Impact {p.impact}</span>
+                  <span>Relevance {p.relevance}</span>
+                </div>
+                {p.note && <p className="ap-ats-skill-note">{p.note}</p>}
+              </div>
+            ))}
+          </div>,
+          sectionScoreChip(result.weightage?.projects.score_pct)
+        )}
+
+        {/* 7. Certifications */}
+        {renderAtsSection(
+          'certifications',
+          'Certifications',
+          certificationsSummary(result.certifications_matching),
+          result.certifications_matching.length > 0 ? (
+            <div className="ap-ats-skill-table">
+              {result.certifications_matching.map((c, i) => (
+                <div key={i} className="ap-ats-skill-row">
+                  <div className="ap-ats-skill-row-top">
+                    <span className="ap-ats-skill-req">{c.certification}</span>
+                    <span className="ap-ats-skill-score">{c.score}/1</span>
+                  </div>
+                  <div className="ap-ats-skill-row-bottom">
+                    <span className={`ap-ats-match-badge ap-ats-match-badge--${c.matches_requirement ? 'exact' : 'not_found'}`}>
+                      {c.matches_requirement ? 'Job Requirement' : 'Not Job Requirement'}
+                    </span>
+                    <span className={`ap-ats-match-badge ap-ats-match-badge--${c.recognition === 'industry_recognized' ? 'exact' : 'not_found'}`}>
+                      {c.recognition === 'industry_recognized' ? 'Industry Recognized' : 'Not Recognized'}
+                    </span>
+                  </div>
+                </div>
               ))}
             </div>
-          </div>
+          ) : (
+            <p className="ap-ats-item-value">No certifications found on the candidate's CV.</p>
+          ),
+          sectionScoreChip(result.weightage?.certifications.score_pct)
         )}
+
+        {/* 8. Education */}
+        {result.education_matching && renderAtsSection(
+          'education',
+          'Education',
+          educationSummary(result.education_matching),
+          <>
+            <div className="ap-ats-skill-row-top">
+              <span className={`ap-ats-match-badge ap-ats-match-badge--${result.education_matching.relevant ? 'exact' : 'not_found'}`}>
+                {result.education_matching.relevant ? 'Relevant' : 'Not Relevant'}
+              </span>
+              <span className="ap-ats-skill-score">{result.education_matching.score}/1</span>
+            </div>
+            {result.education_matching.note && <p className="ap-ats-item-value">{result.education_matching.note}</p>}
+          </>,
+          sectionScoreChip(result.weightage?.education.score_pct)
+        )}
+
+        {/* 9. Achievements */}
+        {result.achievements_matching.length > 0 && renderAtsSection(
+          'achievements',
+          'Achievements',
+          achievementsSummary(result.achievements_matching),
+          <div className="ap-ats-skill-table">
+            {result.achievements_matching.map((a, i) => (
+              <div key={i} className="ap-ats-skill-row">
+                <div className="ap-ats-skill-row-top">
+                  <span className="ap-ats-skill-req">{a.achievement}</span>
+                  <span className="ap-ats-skill-score">{a.score}/1</span>
+                </div>
+                <div className="ap-ats-skill-row-bottom">
+                  {a.relevant && <span className="ap-ats-tag ap-ats-tag--matched">Relevant</span>}
+                  {a.required && <span className="ap-ats-tag ap-ats-tag--matched">Tied to requirement</span>}
+                </div>
+              </div>
+            ))}
+          </div>,
+          sectionScoreChip(result.weightage?.achievements.score_pct)
+        )}
+
       </div>
     )
   }
@@ -338,8 +665,7 @@ function ApplicationProgress() {
       return (
         <div className="ap-detail-msg">
           <p className="ap-detail-msg-title">ATS Screening Failed</p>
-          {data.ats_reason && <p className="ap-detail-msg-body">{data.ats_reason}</p>}
-          {renderAtsBreakdown()}
+          {renderAtsResult()}
         </div>
       )
     }
@@ -369,8 +695,7 @@ function ApplicationProgress() {
       return (
         <div className="ap-detail-msg">
           <p className="ap-detail-msg-title">ATS Screening Passed</p>
-          {data.ats_reason && <p className="ap-detail-msg-body">{data.ats_reason}</p>}
-          {renderAtsBreakdown()}
+          {renderAtsResult()}
         </div>
       )
     }
