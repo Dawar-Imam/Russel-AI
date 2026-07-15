@@ -1,9 +1,16 @@
 from pathlib import Path
 
+from dotenv import load_dotenv
 from langchain_openai import ChatOpenAI
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _ENV_FILE = Path(__file__).parent.parent.parent / ".env"
+
+# LangSmith's tracing (LANGCHAIN_TRACING_V2 etc.) is read directly from os.environ by the
+# langsmith/langchain internals, not through this Settings object — unlike every other setting
+# here, which callers read via `settings.X` and pass explicitly (see get_llm below). Exporting
+# the .env file into the real process environment is the only way tracing auto-activates.
+load_dotenv(_ENV_FILE)
 
 
 class Settings(BaseSettings):
@@ -13,7 +20,8 @@ class Settings(BaseSettings):
     DATABASE_URL: str = ""
     CORS_ORIGINS: list[str] = ["http://localhost:5173"]
     OPENAI_API_KEY: str = ""
-    OPENAI_MODEL: str = "gpt-4o-mini"
+    OPENAI_MODEL: str = "gpt-5.4-mini"
+    LLAMA_CLOUD_API_KEY: str = ""
     LIVEKIT_URL: str = ""
     LIVEKIT_API_KEY: str = ""
     LIVEKIT_API_SECRET: str = ""
@@ -33,6 +41,12 @@ class Settings(BaseSettings):
     # When True, /status-stream's SSE wait timeout extends to 1 hour so a
     # manual debugger pause mid-flow doesn't get cut off by the normal timeout.
     DEBUG_MODE: bool = False
+    CELERY_BROKER_URL: str = "redis://localhost:6379/0"
+    # LangSmith tracing for the ATS LLM call (see ats_service._invoke_ats_llm)
+    LANGCHAIN_TRACING_V2: bool = False
+    LANGCHAIN_API_KEY: str = ""
+    LANGCHAIN_PROJECT: str = "russell-recruiter-ats"
+    LANGCHAIN_ENDPOINT: str = "https://api.smith.langchain.com"
 
     model_config = SettingsConfigDict(env_file=str(_ENV_FILE), env_file_encoding="utf-8")
 
@@ -40,9 +54,10 @@ class Settings(BaseSettings):
 settings = Settings()
 
 
-def get_llm(temperature: float = 0) -> ChatOpenAI:
+def get_llm(temperature: float = 0, **kwargs) -> ChatOpenAI:
     return ChatOpenAI(
         model=settings.OPENAI_MODEL,
         api_key=settings.OPENAI_API_KEY,
         temperature=temperature,
+        **kwargs,
     )

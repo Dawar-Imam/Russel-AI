@@ -1,10 +1,14 @@
+import asyncio
+import logging
 import uuid
 
-from app.ai.interview_tools.schemas import AnswerItem as AIAnswerItem
-from app.ai.interview_tools.state import AgentState
-from app.ai.interview_tools.tools import generate_questions_tool, score_answers_tool
+from app.ai.ai_services.answer_scoring_service import grade_candidate_answers
+from app.ai.ai_services.cv_relevance_service import fetch_candidate_cv_relevance
+from app.ai.ai_services.question_bank_service import fetch_interview_context
+from app.ai.ai_services.question_generation_service import generate_questions
+from app.ai.interview_tools.schemas import AnswerItem as AIAnswerItem, CandidateCVRelevance
 from app.core.config import settings
-from app.database import get_connection
+from app.database import db_cursor
 from app.schemas.interviews import (
     AnswerItem,
     GenerateQuestionsResponse,
@@ -12,12 +16,45 @@ from app.schemas.interviews import (
     QuestionItem,
     ScoreAnswersResponse,
 )
-from app.services.interview_validator import ValidationInput, validate_interview
+from app.services.interview_validator import (
+    SCORED_STATUSES,
+    TERMINAL_ROUND_STATUSES,
+    ValidationInput,
+    validate_interview,
+)
+from app.services.pregen_lock import (
+    PREGEN_LOCK_WAIT_TIMEOUT_SECONDS as _PREGEN_LOCK_WAIT_TIMEOUT_SECONDS,
+    PREGEN_LOCK_POLL_INTERVAL_SECONDS as _PREGEN_LOCK_POLL_INTERVAL_SECONDS,
+    acquire_pregen_lock as _acquire_pregen_lock,
+    release_pregen_lock as _release_pregen_lock,
+)
+
+logger = logging.getLogger(__name__)
 
 TIMER_SECONDS = settings.INTERVIEW_DURATION_MINUTES * 60
 PASS_THRESHOLD = 6.0
 
 LEAVE_FEEDBACK = "User left the interview, interview automatically closed."
+
+
+def _poll_existing_questions(interview_id: str) -> list[QuestionItem]:
+    """Blocking DB read — run via asyncio.to_thread so it doesn't block the event loop."""
+    with db_cursor() as (conn, cur):
+        return _fetch_existing_questions(cur, interview_id)
+
+
+async def _wait_for_pregenerated_questions(interview_id: str) -> list[QuestionItem]:
+    """Poll for rows written by whoever currently holds the pregen lock for this
+    interview_id, instead of starting a duplicate LLM call. Returns [] on timeout —
+    caller then retries acquiring the lock itself rather than waiting indefinitely."""
+    elapsed = 0.0
+    while elapsed < _PREGEN_LOCK_WAIT_TIMEOUT_SECONDS:
+        await asyncio.sleep(_PREGEN_LOCK_POLL_INTERVAL_SECONDS)
+        elapsed += _PREGEN_LOCK_POLL_INTERVAL_SECONDS
+        found = await asyncio.to_thread(_poll_existing_questions, interview_id)
+        if found:
+            return found
+    return []
 
 # ---------------------------------------------------------------------------
 # Test-mode question cache
@@ -36,9 +73,7 @@ _test_mode_questions: dict[str, list[QuestionItem]] = {}
 
 def get_interview_context(interview_id: str) -> dict:
     """Fetch all context needed for question generation from the interview record."""
-    conn = get_connection()
-    try:
-        cur = conn.cursor()
+    with db_cursor() as (conn, cur):
         cur.execute(
             """
             SELECT
@@ -68,8 +103,6 @@ def get_interview_context(interview_id: str) -> dict:
             "candidate_id": str(row[4]),
             "interview_type": str(row[5]) if row[5] else "",
         }
-    finally:
-        conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -140,7 +173,7 @@ def _update_generated_questions(
 
     extra_texts = new_texts[paired:]
     if extra_texts:
-        updated.extend(_store_generated_questions(
+        updated.extend(store_generated_questions(
             cur, interview_id, extra_texts,
             interview_round_type_id, job_role_id, experience_level_id,
         ))
@@ -148,7 +181,7 @@ def _update_generated_questions(
     return updated
 
 
-def _store_generated_questions(
+def store_generated_questions(
     cur,
     interview_id: str,
     question_texts: list[str],
@@ -251,6 +284,31 @@ def _maybe_mark_hired(cur, interview_id: str) -> None:
     )
 
 
+def find_next_scheduled_round(cur, application_id: str, min_round_order: int = 0) -> str | None:
+    """Return the Interviews.id of the earliest still-Scheduled round for this
+    application with round_order > min_round_order, or None if there isn't one.
+
+    Single shared "what's the next round" lookup — used both when ATS first passes
+    (min_round_order=0, application_service.py) and when a round is scored Pass
+    (min_round_order=<that round's order>, _save_scores_and_complete below) to decide
+    which round's questions to pre-generate next.
+    """
+    cur.execute(
+        """
+        SELECT TOP 1 i.id
+        FROM Interviews i
+        JOIN InterviewRounds ir ON ir.id = i.interview_round_id
+        WHERE i.application_id = ?
+          AND i.status = 'Scheduled'
+          AND ir.round_order > ?
+        ORDER BY ir.round_order
+        """,
+        application_id, min_round_order,
+    )
+    row = cur.fetchone()
+    return str(row[0]) if row else None
+
+
 def _save_question_scores(cur, iq_ids: list[str], graded_answers) -> None:
     """Persist per-question AI scores/notes only — used when the interview's
     final status/feedback is already locked in (e.g. the voice agent already
@@ -271,7 +329,10 @@ def _save_scores_and_complete(
     overall_score: float,
     interview_result: str,
     ai_feedback: str | None = None,
-) -> None:
+) -> str | None:
+    """Returns the next round's Interviews.id to pre-generate questions for, if this
+    result was a Pass and a next round exists — the caller fires the Celery trigger
+    for it after commit. None on Failed, or when there's no next round."""
     for iq_id, ga in zip(iq_ids, graded_answers):
         cur.execute(
             """
@@ -291,8 +352,22 @@ def _save_scores_and_complete(
     )
     if interview_result == "Failed":
         _mark_subsequent_rounds_not_needed(cur, interview_id)
+        return None
     elif interview_result == "Pass":
         _maybe_mark_hired(cur, interview_id)
+        cur.execute(
+            """
+            SELECT i.application_id, ir.round_order
+            FROM Interviews i
+            JOIN InterviewRounds ir ON ir.id = i.interview_round_id
+            WHERE i.id = ?
+            """,
+            interview_id,
+        )
+        row = cur.fetchone()
+        if row:
+            return find_next_scheduled_round(cur, str(row[0]), min_round_order=int(row[1]))
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -304,12 +379,8 @@ def get_interview_questions(interview_id: str, test_mode: bool = False) -> list[
         cached = _test_mode_questions.get(interview_id)
         if cached:
             return cached
-    conn = get_connection()
-    try:
-        cur = conn.cursor()
+    with db_cursor() as (conn, cur):
         return _fetch_existing_questions(cur, interview_id)
-    finally:
-        conn.close()
 
 
 def merge_test_mode_answers(interview_id: str, extracted: list[dict]) -> None:
@@ -353,10 +424,7 @@ def save_voice_answers_bulk(interview_id: str, extracted: list[dict]) -> None:
     If InterviewQuestions rows already exist for this interview, delete them,
     then insert `extracted` as fresh Questions + InterviewQuestions rows.
     """
-    conn = get_connection()
-    try:
-        cur = conn.cursor()
-
+    with db_cursor() as (conn, cur):
         cur.execute("SELECT id FROM InterviewQuestions WHERE interview_id = ?", interview_id)
         if cur.fetchall():
             cur.execute("DELETE FROM InterviewQuestions WHERE interview_id = ?", interview_id)
@@ -387,8 +455,6 @@ def save_voice_answers_bulk(interview_id: str, extracted: list[dict]) -> None:
             )
 
         conn.commit()
-    finally:
-        conn.close()
 
 
 def _fetch_current_status(cur, interview_id: str) -> str:
@@ -402,10 +468,8 @@ def mark_interview_terminated(interview_id: str, reason: str) -> None:
     decided on (misconduct, no-response timeout, weak performance, processing
     failure, etc.) — persists status=Failed with the caller's actual `reason`
     as feedback. Idempotent: no-ops if already Pass/Failed."""
-    conn = get_connection()
-    try:
-        cur = conn.cursor()
-        if _fetch_current_status(cur, interview_id).lower() in ("pass", "failed"):
+    with db_cursor() as (conn, cur):
+        if _fetch_current_status(cur, interview_id).lower() in SCORED_STATUSES:
             return
         cur.execute(
             """UPDATE Interviews
@@ -415,15 +479,11 @@ def mark_interview_terminated(interview_id: str, reason: str) -> None:
         )
         _mark_subsequent_rounds_not_needed(cur, interview_id)
         conn.commit()
-    finally:
-        conn.close()
 
 
 def mark_interview_failed_on_leave(interview_id: str, interview_type: str = "written") -> None:
     """Force-fail an interview when the candidate leaves mid-session (tab switch / logout / refresh)."""
-    conn = get_connection()
-    try:
-        cur = conn.cursor()
+    with db_cursor() as (conn, cur):
         vr = validate_interview(ValidationInput(
             event_type="tab_switch",
             computed_score=0.0,
@@ -443,28 +503,11 @@ def mark_interview_failed_on_leave(interview_id: str, interview_type: str = "wri
         if vr.final_status == "Failed":
             _mark_subsequent_rounds_not_needed(cur, interview_id)
         conn.commit()
-    finally:
-        conn.close()
 
 
-async def generate_interview_questions(
-    interview_id: str,
-    return_questions: bool = True,
-    test_mode: bool = False,
-) -> GenerateQuestionsResponse:
-    # --- 1. Fetch interview context ---
-    ctx = get_interview_context(interview_id)
-    interview_type = ctx["interview_type"]
-    candidate_id = ctx["candidate_id"]
-    job_posting_id = ctx["job_posting_id"]
-    application_id = ctx["application_id"]
-    interview_round_type_id = ctx["interview_round_type_id"]
-    job_role_id = ctx["job_role_id"]
-
-    # --- 2. Fetch existing questions + experience level ---
-    conn = get_connection()
-    try:
-        cur = conn.cursor()
+def _fetch_generation_context(interview_id: str, candidate_id: str):
+    """Blocking DB read — run via asyncio.to_thread so it doesn't block the event loop."""
+    with db_cursor() as (conn, cur):
         existing = _fetch_existing_questions(cur, interview_id)
         cur.execute(
             "SELECT experience_level_id FROM CandidateProfiles WHERE id = ?",
@@ -474,12 +517,77 @@ async def generate_interview_questions(
         experience_level_id = int(cp_row[0]) if cp_row and cp_row[0] else 1
         cur.execute("SELECT status FROM Interviews WHERE id = ?", interview_id)
         current_status_row = cur.fetchone()
-    finally:
-        conn.close()
+    return existing, experience_level_id, current_status_row
+
+
+def _mark_in_progress(interview_id: str) -> None:
+    """Blocking DB write — run via asyncio.to_thread so it doesn't block the event loop."""
+    with db_cursor() as (conn, cur):
+        cur.execute("UPDATE Interviews SET status = 'In Progress' WHERE id = ?", interview_id)
+        conn.commit()
+
+
+def _upsert_generated_questions(
+    interview_id: str,
+    current_status_row,
+    existing: list[QuestionItem],
+    new_texts: list[str],
+    interview_round_type_id: int,
+    job_role_id: int,
+    experience_level_id: int,
+) -> list[QuestionItem]:
+    """Blocking DB write — run via asyncio.to_thread so it doesn't block the event loop."""
+    with db_cursor() as (conn, cur):
+        if current_status_row and str(current_status_row[0]).lower() in TERMINAL_ROUND_STATUSES:
+            raise ValueError(
+                f"Interview {interview_id} is already completed ({current_status_row[0]}) "
+                "and cannot be restarted."
+            )
+
+        if existing:
+            items = _update_generated_questions(
+                cur, interview_id, existing, new_texts,
+                interview_round_type_id, job_role_id, experience_level_id,
+            )
+        else:
+            items = store_generated_questions(
+                cur,
+                interview_id,
+                new_texts,
+                interview_round_type_id,
+                job_role_id,
+                experience_level_id,
+            )
+        cur.execute(
+            "UPDATE Interviews SET status = 'In Progress' WHERE id = ?",
+            interview_id,
+        )
+        conn.commit()
+    return items
+
+
+async def generate_interview_questions(
+    interview_id: str,
+    return_questions: bool = True,
+    test_mode: bool = False,
+) -> GenerateQuestionsResponse:
+    # --- 1. Fetch interview context ---
+    ctx = await asyncio.to_thread(get_interview_context, interview_id)
+    interview_type = ctx["interview_type"]
+    candidate_id = ctx["candidate_id"]
+    job_posting_id = ctx["job_posting_id"]
+    application_id = ctx["application_id"]
+    interview_round_type_id = ctx["interview_round_type_id"]
+    job_role_id = ctx["job_role_id"]
+
+    # --- 2. Fetch existing questions + experience level ---
+    existing, experience_level_id, current_status_row = await asyncio.to_thread(
+        _fetch_generation_context, interview_id, candidate_id
+    )
 
     # In test mode with an already-completed interview: return cached/existing
     # questions without touching the DB at all.
-    if test_mode and current_status_row and str(current_status_row[0]).lower() in ("pass", "failed"):
+    if test_mode and current_status_row and str(current_status_row[0]).lower() in SCORED_STATUSES:
         items = _test_mode_questions.get(interview_id) or existing or []
         return GenerateQuestionsResponse(
             interview_id=interview_id,
@@ -489,74 +597,111 @@ async def generate_interview_questions(
             enable_fail_cases=settings.ENABLE_FAIL_CASES,
         )
 
-    # --- 3. Always generate fresh questions via AI ---
-    state: AgentState = {
-        "candidate_id": candidate_id,
-        "job_posting_id": job_posting_id,
-        "application_id": application_id,
-        "interview_round_type_id": interview_round_type_id,
-        "job_role_id": job_role_id,
-        "experience_level_id": experience_level_id,
-        "count": 10,
-    }
-    result = await generate_questions_tool(state)
-    if result["status"] != "success":
-        raise RuntimeError("AI question generation failed")
+    # Pre-generation cache hit: `existing` non-empty AND status still 'Scheduled' is only
+    # possible via the background Celery task (written_test_tasks.trigger ->
+    # pregenerate_interview_questions) — nothing else writes InterviewQuestions before this
+    # function itself flips status to 'In Progress'. Skip the LLM call entirely, just mark
+    # the round started and hand back what's already stored. Not applied in test_mode,
+    # which never shares rows with the real pre-generation path.
+    if not test_mode and existing and current_status_row and str(current_status_row[0]) == "Scheduled":
+        await asyncio.to_thread(_mark_in_progress, interview_id)
+        return GenerateQuestionsResponse(
+            interview_id=interview_id,
+            questions=existing if return_questions else [],
+            timer_seconds=TIMER_SECONDS,
+            interview_type=interview_type,
+            enable_fail_cases=settings.ENABLE_FAIL_CASES,
+        )
 
-    new_texts = [q.question_text for q in result["questions"]]
-
-    if test_mode:
-        # Test mode never touches Questions/InterviewQuestions — questions live only
-        # in the in-memory cache, keyed by interview_id, so test runs can't drift out
-        # of sync with (or pollute) real DB rows.
-        items = [
-            QuestionItem(
-                iq_id=str(uuid.uuid4()),
-                question_id=str(uuid.uuid4()),
-                question_text=text,
-                candidate_answer=None,
-                score=None,
-                notes=None,
-            )
-            for text in new_texts
-        ]
-        _test_mode_questions[interview_id] = items
-    else:
-        # Real generation for this interview_id — any leftover test-mode cache
-        # entry is now stale and must never resurface for this ID again.
-        clear_test_mode_cache(interview_id)
-
-        # --- 4. Upsert: update existing rows or insert new ones ---
-        conn = get_connection()
-        try:
-            cur = conn.cursor()
-            if current_status_row and str(current_status_row[0]).lower() in ("pass", "failed", "not needed"):
-                raise ValueError(
-                    f"Interview {interview_id} is already completed ({current_status_row[0]}) "
-                    "and cannot be restarted."
+    # This is a genuine first-generation (existing empty, not test_mode) — the only case
+    # that can race with a concurrent pregenerate_interview_questions call for the same
+    # interview_id. Acquire the same lock pre-generation uses before any LLM call or DB
+    # write; if pre-generation already holds it, wait for its result instead of starting
+    # a duplicate generation, so the candidate never sees an empty state.
+    holding_pregen_lock = False
+    if not test_mode and not existing:
+        holding_pregen_lock = _acquire_pregen_lock(interview_id)
+        if not holding_pregen_lock:
+            waited = await _wait_for_pregenerated_questions(interview_id)
+            if waited:
+                await asyncio.to_thread(_mark_in_progress, interview_id)
+                return GenerateQuestionsResponse(
+                    interview_id=interview_id,
+                    questions=waited if return_questions else [],
+                    timer_seconds=TIMER_SECONDS,
+                    interview_type=interview_type,
+                    enable_fail_cases=settings.ENABLE_FAIL_CASES,
+                )
+            # Waited the full timeout and nothing appeared yet — the original holder is
+            # either still generating (unusually slow call) or crashed without releasing
+            # (lock's 30s TTL will have expired by now in that case). Try to acquire once
+            # more so our own write below stays serialized against it; if that still fails
+            # (holder genuinely still alive past 25s), proceed unlocked as a last resort
+            # rather than block the candidate indefinitely — loud log so it's visible.
+            holding_pregen_lock = _acquire_pregen_lock(interview_id)
+            if not holding_pregen_lock:
+                logger.warning(
+                    "generate_interview_questions: interview_id=%s pregen lock still held after %.0fs wait — "
+                    "proceeding unlocked, a duplicate write is possible",
+                    interview_id, _PREGEN_LOCK_WAIT_TIMEOUT_SECONDS,
                 )
 
-            if existing:
-                items = _update_generated_questions(
-                    cur, interview_id, existing, new_texts,
-                    interview_round_type_id, job_role_id, experience_level_id,
+    try:
+        # --- 3. Always generate fresh questions via AI ---
+        context = await fetch_interview_context(
+            interview_round_type_id=interview_round_type_id,
+            job_role_id=job_role_id,
+            experience_level_id=experience_level_id,
+        )
+        parsed_cv_text = await fetch_candidate_cv_relevance(application_id=application_id)
+        candidate_relevance = CandidateCVRelevance(
+            job_experience_summary=parsed_cv_text,
+            relevant_skills=[],
+            relevant_projects=[],
+        )
+        generated = await generate_questions(
+            example_questions=[],
+            candidate_relevance=candidate_relevance,
+            count=10,
+            context=context,
+        )
+        new_texts = [q.question_text for q in generated.generated_questions]
+
+        if test_mode:
+            # Test mode never touches Questions/InterviewQuestions — questions live only
+            # in the in-memory cache, keyed by interview_id, so test runs can't drift out
+            # of sync with (or pollute) real DB rows.
+            items = [
+                QuestionItem(
+                    iq_id=str(uuid.uuid4()),
+                    question_id=str(uuid.uuid4()),
+                    question_text=text,
+                    candidate_answer=None,
+                    score=None,
+                    notes=None,
                 )
-            else:
-                items = _store_generated_questions(
-                    cur,
-                    interview_id,
-                    new_texts,
-                    interview_round_type_id,
-                    job_role_id,
-                    experience_level_id,
-                )
-            cur.execute(
-                "UPDATE Interviews SET status = 'In Progress' WHERE id = ?",
+                for text in new_texts
+            ]
+            _test_mode_questions[interview_id] = items
+        else:
+            # Real generation for this interview_id — any leftover test-mode cache
+            # entry is now stale and must never resurface for this ID again.
+            clear_test_mode_cache(interview_id)
+
+            # --- 4. Upsert: update existing rows or insert new ones ---
+            items = await asyncio.to_thread(
+                _upsert_generated_questions,
                 interview_id,
+                current_status_row,
+                existing,
+                new_texts,
+                interview_round_type_id,
+                job_role_id,
+                experience_level_id,
             )
-            conn.commit()
-        finally:
-            conn.close()
+    finally:
+        if holding_pregen_lock:
+            _release_pregen_lock(interview_id)
 
     return GenerateQuestionsResponse(
         interview_id=interview_id,
@@ -583,10 +728,7 @@ async def score_interview_answers(
     cached = _test_mode_questions.get(interview_id) if test_mode else None
 
     # --- 1. Fetch questions and build list to score ---
-    conn = get_connection()
-    try:
-        cur = conn.cursor()
-
+    with db_cursor() as (conn, cur):
         cur.execute("SELECT status FROM Interviews WHERE id = ?", interview_id)
         status_row = cur.fetchone()
         if not status_row:
@@ -597,7 +739,7 @@ async def score_interview_answers(
         # concluded pass/fail and the frontend just wants the graded breakdown) is
         # always allowed; the idempotency check below prevents it from flipping an
         # already-final status.
-        if not test_mode and not fetch_from_db and str(status_row[0]).lower() in ("pass", "failed", "not needed"):
+        if not test_mode and not fetch_from_db and str(status_row[0]).lower() in TERMINAL_ROUND_STATUSES:
             raise ValueError("This interview has already been completed and cannot be rescored.")
 
         stored = cached if cached else _fetch_existing_questions(cur, interview_id)
@@ -623,8 +765,6 @@ async def score_interview_answers(
                 )
                 for a in answers
             ]
-    finally:
-        conn.close()
 
     # --- 2. Score answers via AI (no DB connection held during this) ---
     ai_answers = [
@@ -634,15 +774,12 @@ async def score_interview_answers(
         )
         for item in to_score
     ]
-    state: AgentState = {"answers": ai_answers, "interview_type": interview_type}
-    result = await score_answers_tool(state)
-    if result["status"] != "success":
-        raise RuntimeError("AI answer scoring failed")
+    graded = await grade_candidate_answers(ai_answers, interview_type=interview_type)
 
     # --- 3. Validate result ---
     vr = validate_interview(ValidationInput(
         event_type=event_type,
-        computed_score=result["overall_score"],
+        computed_score=graded.overall_score,
         failing_criteria=PASS_THRESHOLD,
         enable_fail_cases=settings.ENABLE_FAIL_CASES,
         current_status=str(status_row[0]),
@@ -651,28 +788,34 @@ async def score_interview_answers(
 
     if not test_mode:
         # --- 4. Persist scores (normal mode only) ---
-        conn = get_connection()
-        try:
-            cur = conn.cursor()
+        next_round_to_pregenerate: str | None = None
+        with db_cursor() as (conn, cur):
             if vr.applied_rule == "idempotency_guard":
                 # Status/feedback are already final (voice agent already concluded
                 # pass/fail) — only fill in per-question scores, don't touch them.
-                _save_question_scores(cur, [item.iq_id for item in to_score], result["graded_answers"])
+                _save_question_scores(cur, [item.iq_id for item in to_score], graded.graded_answers)
             else:
-                _save_scores_and_complete(
+                next_round_to_pregenerate = _save_scores_and_complete(
                     cur, interview_id,
                     [item.iq_id for item in to_score],
-                    result["graded_answers"],
+                    graded.graded_answers,
                     vr.final_score, vr.final_status,
                     vr.final_feedback or None,
                 )
             conn.commit()
-        finally:
-            conn.close()
+
+        if next_round_to_pregenerate:
+            # Deliberately deferred: written_test_tasks.py imports
+            # question_pregeneration_service.py, which imports this module — so a
+            # top-level import here would reintroduce a circular import. This is a
+            # one-directional dependency-inversion, not a workaround for an
+            # unresolved cycle (see app/services/question_pregeneration_service.py).
+            from app.tasks import written_test_tasks
+            written_test_tasks.trigger.delay(next_round_to_pregenerate)
 
     return ScoreAnswersResponse(
         overall_score=vr.final_score,
-        total_graded=result["total_graded"],
+        total_graded=graded.total_graded,
         graded_answers=[
             GradedAnswer(
                 question_text=to_score[i].question_text,
@@ -680,7 +823,7 @@ async def score_interview_answers(
                 score=g.score,
                 notes=g.notes,
             )
-            for i, g in enumerate(result["graded_answers"])
+            for i, g in enumerate(graded.graded_answers)
         ],
         result=vr.final_status,
     )

@@ -21,6 +21,11 @@ dependencies = [
     "livekit-agents[deepgram,openai,silero,elevenlabs]>=1.0.0",
     "livekit-plugins-noise-cancellation>=0.2.0",
     "python-dotenv>=1.0.0",
+    "openpyxl>=3.1.0",
+    "tenacity>=9.0.0",
+    "celery>=5.4.0",
+    "redis>=5.0.0",
+    "langsmith>=0.1.0",
 ]
 
 [tool.uv]

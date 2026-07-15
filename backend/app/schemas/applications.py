@@ -2,106 +2,63 @@ from typing import Literal
 
 from pydantic import BaseModel
 
+from app.ai.ai_services.ats_service import (
+    ATSCategoryScore as _ATSCategoryScore,
+    ATSWeightage as _ATSWeightage,
+    GraceCredit as ATSGraceCredit,
+    RelevantExperienceResult as ATSRelevantExperience,
+    RequirementMatchResult as _RequirementMatchResult,
+    ResponsibilityMatchResult as ATSResponsibilityMatchItem,
+    SectionMatchResult as ATSSectionMatchItem,
+)
+
 
 class ApplyRequest(BaseModel):
     job_posting_id: str
     candidate_id: str
 
 
-class ATSCategoryScore(BaseModel):
-    score_pct: float
-    weight_pct: float
-    weighted_score: float
+# ---------------------------------------------------------------------------
+# ATS result — the field shapes below are owned by app.ai.ai_services.ats_service
+# (the AI service that produces a fresh ATS result); these subclasses only relax
+# a few fields to Optional/defaulted so _parse_ats_details() can degrade legacy or
+# malformed stored `ats_details` JSON to a partial/None result instead of raising,
+# without needing a second, hand-maintained copy of every field.
+# ---------------------------------------------------------------------------
 
 
-class ATSWeightage(BaseModel):
+class ATSCategoryScore(_ATSCategoryScore):
+    included: bool = True
+
+
+class ATSWeightage(_ATSWeightage):
     experience: ATSCategoryScore
     skills: ATSCategoryScore
     projects: ATSCategoryScore
     certifications: ATSCategoryScore
     education: ATSCategoryScore
     achievements: ATSCategoryScore
-    weighted_average: float
-    pass_threshold: int
+    qualify_threshold: float = 65
+    pass_fail: Literal["PASS", "FAIL"] | None = None
 
 
-class ATSSeniorityMatch(BaseModel):
-    required: str
-    candidate: str
-    status: Literal["match", "underqualified", "overqualified"]
-    note: str
-
-
-class ATSYearsMatch(BaseModel):
-    required_years: float | None = None
-    candidate_years: float | None = None
-
-
-class ATSSkillMatchItem(BaseModel):
-    requirement: str
-    tier: Literal["primary", "secondary", "tertiary"]
-    candidate_skill: str | None = None
-    match_type: Literal["exact", "alternative", "not_found"]
-    score: float
+class ATSRequirementMatchItem(_RequirementMatchResult):
+    category: Literal["skills", "projects", "certifications", "education", "achievements"] = "skills"
     max_score: float
-    note: str
-
-
-class ATSResponsibilityMatchItem(BaseModel):
-    requirement: str
-    evidence: str | None = None
-    match_type: Literal["direct", "close", "not_found"]
-    score: float
-
-
-class ATSExperienceMatching(BaseModel):
-    seniority: ATSSeniorityMatch
-    years: ATSYearsMatch
-    responsibilities: list[ATSResponsibilityMatchItem] = []
-
-
-class ATSProjectMatchItem(BaseModel):
-    project_name: str
-    complexity: float
-    technologies: float
-    impact: float
-    relevance: float
-    total: float
-    max: float = 4.0
-    note: str
-
-
-class ATSCertificationMatchItem(BaseModel):
-    certification: str
-    matches_requirement: bool
-    recognition: Literal["industry_recognized", "not_recognized"]
-    score: float
-
-
-class ATSEducationMatching(BaseModel):
-    relevant: bool
-    score: float
-    note: str
-
-
-class ATSAchievementMatchItem(BaseModel):
-    achievement: str
-    relevant: bool
-    required: bool
-    score: float
 
 
 class ATSCheckResponse(BaseModel):
-    verdict: Literal["PASS", "FAIL"]
+    verdict: Literal["QUALIFIED", "UNDERQUALIFIED", "OVERQUALIFIED"]
     verdict_summary: str
     weightage: ATSWeightage | None = None
-    skill_matching: list[ATSSkillMatchItem] = []
-    experience_matching: ATSExperienceMatching | None = None
-    projects_matching: list[ATSProjectMatchItem] = []
-    certifications_matching: list[ATSCertificationMatchItem] = []
-    education_matching: ATSEducationMatching | None = None
-    achievements_matching: list[ATSAchievementMatchItem] = []
-    additional_skills: list[str] = []
+    requirement_matching: list[ATSRequirementMatchItem] = []
+    relevant_experience: ATSRelevantExperience | None = None
+    section_matching: list[ATSSectionMatchItem] = []
+    grace_credits: list[ATSGraceCredit] = []
+    additional_cv_content: list[str] = []
+    is_overqualified: bool = False
+    final_verdict: Literal["PASS", "FAIL"] | None = None
+    override_reason: str | None = None
 
 
 class ApplyResponse(BaseModel):

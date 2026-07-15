@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.api.endpoints import ws
 from app.api.router import api_router
 from app.core.config import settings
 from app.core.logging import configure_logging
@@ -18,6 +19,7 @@ app.add_middleware(
 )
 
 app.include_router(api_router)
+app.include_router(ws.router)
 # app.include_router(api_router, prefix=settings.API_V1_PREFIX)
 
 

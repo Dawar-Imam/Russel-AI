@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 
 from app.schemas.applications import (
@@ -8,6 +10,8 @@ from app.schemas.applications import (
     MyApplicationItem,
 )
 from app.services.application_service import apply_to_job, get_interview_questions, get_interview_stages, get_my_applications, run_ats_for_application
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -38,7 +42,7 @@ async def apply(
     try:
         await run_ats_for_application(result.application_id)
     except Exception:
-        pass
+        logger.exception("ATS run failed for application_id=%s", result.application_id)
 
     return result
 
@@ -51,7 +55,7 @@ async def ats_check(
     from app.ai.ai_services.ats_service import check_ats_eligibility
 
     try:
-        result = await check_ats_eligibility(candidate_id, job_posting_id)
+        result, _model_version = await check_ats_eligibility(candidate_id, job_posting_id)
         return ATSCheckResponse(**result.model_dump())
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

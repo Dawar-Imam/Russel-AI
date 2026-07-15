@@ -2,8 +2,8 @@ import re
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
-from app.schemas.auth import CandidateProfileResponse, CreateSkillRequest, RecruiterProfileResponse, RecruiterSigninResponse, RecruiterSignupRequest, RecruiterSignupResponse, SigninRequest, SigninResponse, SignupMetadataResponse, SignupResponse, SkillItem
-from app.services.auth_service import get_candidate_profile, get_or_create_skill, get_recruiter_profile, get_signup_metadata, signin_candidate, signin_recruiter, signup_candidate, signup_recruiter
+from app.schemas.auth import CandidateProfileResponse, CreateJobRoleRequest, CreateSkillRequest, JobRoleItem, JobRoleSearchResponse, RecruiterProfileResponse, RecruiterSigninResponse, RecruiterSignupRequest, RecruiterSignupResponse, SigninRequest, SigninResponse, SignupMetadataResponse, SignupResponse, SkillItem, SkillSearchResponse
+from app.services.auth_service import get_candidate_profile, get_or_create_job_role, get_or_create_skill, get_recruiter_profile, get_signup_metadata, search_job_roles, search_skills_for_role, signin_candidate, signin_recruiter, signup_candidate, signup_recruiter
 
 router = APIRouter()
 
@@ -25,6 +25,32 @@ def create_skill(body: CreateSkillRequest) -> SkillItem:
         return get_or_create_skill(name=body.name, job_role_id=body.job_role_id)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post("/job-roles", response_model=JobRoleItem)
+def create_job_role(body: CreateJobRoleRequest) -> JobRoleItem:
+    try:
+        return get_or_create_job_role(title=body.title)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get("/job-roles/search", response_model=JobRoleSearchResponse)
+def job_roles_search(q: str = "", limit: int = 20) -> JobRoleSearchResponse:
+    try:
+        return JobRoleSearchResponse(results=search_job_roles(query=q, limit=min(max(limit, 1), 50)))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get("/skills/search", response_model=SkillSearchResponse)
+def skills_search(role_id: int, q: str = "", limit: int = 20) -> SkillSearchResponse:
+    try:
+        return SkillSearchResponse(results=search_skills_for_role(role_id=role_id, query=q, limit=min(max(limit, 1), 50)))
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 

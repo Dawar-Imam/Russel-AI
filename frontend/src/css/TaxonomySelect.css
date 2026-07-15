@@ -1,0 +1,21 @@
+.taxonomy-select__control,
+.taxonomy-select__menu,
+.taxonomy-select__input,
+.taxonomy-select__placeholder,
+.taxonomy-select__single-value,
+.taxonomy-select__option {
+  font-family: var(--font-sans);
+  font-size: 14px;
+}
+
+.taxonomy-select__control--is-disabled {
+  opacity: 0.6;
+}
+
+.taxonomy-select__loading-indicator {
+  color: var(--color-primary);
+}
+
+.taxonomy-select__option--is-focused:not(.taxonomy-select__option--is-selected) {
+  color: var(--color-primary);
+}

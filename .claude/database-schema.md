@@ -180,11 +180,13 @@ CREATE TABLE Resumes (
 | id | uniqueidentifier PK |
 | job_id | uniqueidentifier FK -> JobPostings |
 | candidate_id | uniqueidentifier FK -> CandidateProfiles |
-| status | varchar(50) — `ATS_PENDING` → `ATS_PASS` / `ATS_FAIL` → `IN_PROGRESS` → `HIRED` / `REJECTED` |
+| status | varchar(50) — `ATS_PENDING` → `ATS_PASS` / `ATS_FAIL` → `IN_PROGRESS` → `HIRED` / `REJECTED`; also `ATS_ERROR` (LLM output failed strict schema validation — never persisted, application stays retryable) |
 | cover_letter | nvarchar(MAX) NULL |
 | applied_at | datetime2 |
 | ats_details | nvarchar(MAX) NULL — full weighted ATS JSON result (`ATSCheckResponse`): `verdict`, `verdict_summary`, `weightage`, `skill_matching`, `experience_matching`, `projects_matching`, `certifications_matching`, `education_matching`, `achievements_matching`, `additional_skills` |
 | resume_id | uniqueidentifier FK -> Resumes NULL |
+| ats_evaluated_at | datetime2 NULL — UTC timestamp of the ATS LLM run that produced `ats_details` |
+| ats_model_version | varchar(100) NULL — LLM model identifier (`settings.OPENAI_MODEL`) used for that run |
 
 > **Migrations required**:
 > ```sql
@@ -199,6 +201,8 @@ CREATE TABLE Resumes (
 > -- Rows written before the weighted-scoring rewrite still hold the old shape (`reason`,
 > -- `role_assessment`, etc.) — the read path treats those as ats_result=None rather than
 > -- migrating them in place.
+> ALTER TABLE Applications ADD ats_evaluated_at datetime2 NULL;
+> ALTER TABLE Applications ADD ats_model_version varchar(100) NULL;
 > ```
 
 ### InterviewRounds

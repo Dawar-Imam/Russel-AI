@@ -13,11 +13,29 @@ export interface InterviewRoundInput {
   description?: string
 }
 
+export interface ATSCriterionInput {
+  section: string
+  weight: number
+}
+
 export interface JobInterviewRoundItem {
   round_order: number
   round_type_name: string
   failing_criteria: number | null
   description: string | null
+}
+
+export interface ATSCriterionSummary {
+  section: string
+  weight: number
+}
+
+export interface ATSCriteriaSummary {
+  has_config: boolean
+  criteria: ATSCriterionSummary[]
+  qualify_threshold: number
+  overqualify_threshold: number | null
+  auto_reject_overqualified: boolean
 }
 
 export interface JobListItem {
@@ -35,6 +53,9 @@ export interface JobListItem {
   expires_at: string | null
   required_skills: string[]
   status: string
+  // Only populated on recruiter-facing listings (fetchRecruiterJobs) — null for the
+  // public/candidate job list.
+  ats_criteria: ATSCriteriaSummary | null
 }
 
 // ── Analytics types ───────────────────────────────────────────────────────────
@@ -129,6 +150,10 @@ export interface JobPostRequest {
   expires_at?: string
   skill_ids?: number[]
   interview_rounds?: InterviewRoundInput[]
+  ats_criteria: ATSCriterionInput[]
+  qualify_threshold?: number
+  overqualify_threshold?: number
+  auto_reject_overqualified?: boolean
 }
 
 export interface JobPostResponse {

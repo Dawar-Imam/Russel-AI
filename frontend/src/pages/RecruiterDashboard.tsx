@@ -2,9 +2,12 @@ import { useEffect, useMemo, useRef, useState, type ChangeEvent, type FormEvent,
 import { useLocation, useNavigate } from 'react-router-dom'
 import Button from '../components/Button'
 import Select from '../components/Select'
+import TaxonomySelect from '../components/TaxonomySelect'
 import Modal from '../components/Modal'
+import InfoTooltip from '../components/InfoTooltip'
 import FilterPanel, { type FilterState } from '../components/FilterPanel'
-import { createSkill, fetchSignupMetadata, type ExperienceLevel, type JobRole, type Skill } from '../api/auth'
+import { createJobRole, createSkill, fetchSignupMetadata, searchJobRoles, searchSkills, type ExperienceLevel } from '../api/auth'
+import type { TaxonomyOption } from '../components/TaxonomySelect'
 import {
   fetchInterviewRoundTypes,
   fetchJobRounds,
@@ -22,6 +25,28 @@ interface SelectedRound {
   name: string
   failing_criteria: string
 }
+
+interface ATSCriterionState {
+  section: string
+  label: string
+  enabled: boolean
+  weight: string
+}
+
+const ATS_SECTION_DEFS: { section: string; label: string; defaultWeight: number }[] = [
+  { section: 'experience', label: 'Experience', defaultWeight: 30 },
+  { section: 'skills', label: 'Skills', defaultWeight: 35 },
+  { section: 'projects', label: 'Projects', defaultWeight: 20 },
+  { section: 'certifications', label: 'Certifications', defaultWeight: 5 },
+  { section: 'education', label: 'Education', defaultWeight: 5 },
+  { section: 'achievements', label: 'Achievements', defaultWeight: 5 },
+]
+
+function defaultAtsCriteria(): ATSCriterionState[] {
+  return ATS_SECTION_DEFS.map((d) => ({ section: d.section, label: d.label, enabled: true, weight: String(d.defaultWeight) }))
+}
+
+const ATS_SECTION_LABELS: Record<string, string> = Object.fromEntries(ATS_SECTION_DEFS.map((d) => [d.section, d.label]))
 
 const JOB_TYPES = ['Full-time', 'Part-time', 'Remote', 'Contract', 'Hybrid']
 
@@ -45,6 +70,17 @@ function formatSalaryRange(min: string, max: string): string | undefined {
 
 function blockNonNumericKey(e: KeyboardEvent<HTMLInputElement>) {
   if (['e', 'E', '+', '-'].includes(e.key)) e.preventDefault()
+}
+
+function validateJobCategoryText(text: string): string | null {
+  if (text.trim() === '') return null
+  return /\d/.test(text) ? 'Job category cannot contain numbers.' : null
+}
+
+function validateQualifyThreshold(value: string): string | null {
+  if (value.trim() === '') return 'Qualify threshold is required.'
+  const n = Number(value)
+  return Number.isNaN(n) || n < 0 || n > 100 ? 'Must be between 0 and 100.' : null
 }
 
 function todayIso() {
@@ -74,14 +110,14 @@ function RecruiterDashboard() {
 
   const [showForm, setShowForm] = useState(false)
 
-  const [jobRoles, setJobRoles] = useState<JobRole[]>([])
   const [experienceLevels, setExperienceLevels] = useState<ExperienceLevel[]>([])
-  const [allSkills, setAllSkills] = useState<Skill[]>([])
   const [roundTypes, setRoundTypes] = useState<InterviewRoundType[]>([])
   const [metaLoading, setMetaLoading] = useState(false)
 
   // Draft form state — persists across open/close; cleared only after successful post
-  const [jobRoleId, setJobRoleId] = useState<number | ''>('')
+  const [jobRole, setJobRole] = useState<TaxonomyOption | null>(null)
+  const [jobCategoryInputText, setJobCategoryInputText] = useState('')
+  const [jobCategoryError, setJobCategoryError] = useState<string | null>(null)
   const [experienceLevelId, setExperienceLevelId] = useState<number | ''>('')
   const [jobDescription, setJobDescription] = useState('')
   const [jobLocation, setJobLocation] = useState('')
@@ -90,17 +126,20 @@ function RecruiterDashboard() {
   const [formSalaryMax, setFormSalaryMax] = useState('')
   const [formSalaryError, setFormSalaryError] = useState<string | null>(null)
   const [expiresAt, setExpiresAt] = useState('')
-  const [selectedSkillIds, setSelectedSkillIds] = useState<number[]>([])
-  const [selectedSkillId, setSelectedSkillId] = useState<string>('')
-  const [customSkillName, setCustomSkillName] = useState('')
-  const [addingCustomSkill, setAddingCustomSkill] = useState(false)
-  const [customSkillError, setCustomSkillError] = useState<string | null>(null)
+  const [selectedSkills, setSelectedSkills] = useState<TaxonomyOption[]>([])
   const [selectedRounds, setSelectedRounds] = useState<SelectedRound[]>([])
   const [selectedRoundTypeId, setSelectedRoundTypeId] = useState<string>('')
+  const [atsCriteria, setAtsCriteria] = useState<ATSCriterionState[]>(defaultAtsCriteria())
+  const [qualifyThreshold, setQualifyThreshold] = useState('65')
+  const [qualifyThresholdError, setQualifyThresholdError] = useState<string | null>(null)
+  const [overqualifyThreshold, setOverqualifyThreshold] = useState('')
+  const [autoRejectOverqualified, setAutoRejectOverqualified] = useState(false)
   const [posting, setPosting] = useState(false)
   const [postError, setPostError] = useState<string | null>(null)
   const [attemptedPost, setAttemptedPost] = useState(false)
   const [expiresAtError, setExpiresAtError] = useState<string | null>(null)
+
+  const jobRoleId: number | '' = jobRole ? jobRole.value : ''
 
   const dragIndexRef = useRef<number | null>(null)
 
@@ -164,45 +203,36 @@ function RecruiterDashboard() {
 
   function handleOpenForm() {
     setShowForm(true)
-    if (jobRoles.length > 0) return
+    if (experienceLevels.length > 0) return
     setMetaLoading(true)
     Promise.all([fetchSignupMetadata(), fetchInterviewRoundTypes()])
       .then(([meta, rts]) => {
-        setJobRoles(meta.job_roles)
         setExperienceLevels(meta.experience_levels)
-        setAllSkills(meta.skills)
         setRoundTypes(rts)
       })
       .catch(() => {})
       .finally(() => setMetaLoading(false))
   }
 
-  const skillsForRole = useMemo(
-    () => allSkills.filter((s) => jobRoleId === '' || s.job_role_ids.includes(Number(jobRoleId))),
-    [allSkills, jobRoleId],
-  )
-
-  function handleAddAllSkills() {
-    const idsToAdd = skillsForRole.map((s) => s.id).filter((id) => !selectedSkillIds.includes(id))
-    if (idsToAdd.length === 0) return
-    setSelectedSkillIds((prev) => [...prev, ...idsToAdd])
+  async function loadJobRoleOptions(query: string): Promise<TaxonomyOption[]> {
+    const roles = await searchJobRoles(query)
+    return roles.map((r) => ({ value: r.id, label: r.title }))
   }
 
-  async function handleAddCustomSkill() {
-    const name = customSkillName.trim()
-    if (!name) return
-    setAddingCustomSkill(true)
-    setCustomSkillError(null)
-    try {
-      const skill = await createSkill(name, jobRoleId === '' ? null : Number(jobRoleId))
-      setAllSkills((prev) => (prev.some((s) => s.id === skill.id) ? prev : [...prev, skill]))
-      setSelectedSkillIds((prev) => (prev.includes(skill.id) ? prev : [...prev, skill.id]))
-      setCustomSkillName('')
-    } catch (err) {
-      setCustomSkillError(err instanceof Error ? err.message : 'Failed to add skill')
-    } finally {
-      setAddingCustomSkill(false)
-    }
+  async function createJobRoleOption(name: string): Promise<TaxonomyOption> {
+    const role = await createJobRole(name)
+    return { value: role.id, label: role.title }
+  }
+
+  async function loadSkillOptions(query: string): Promise<TaxonomyOption[]> {
+    if (jobRoleId === '') return []
+    const skills = await searchSkills(Number(jobRoleId), query)
+    return skills.map((s) => ({ value: s.id, label: s.name }))
+  }
+
+  async function createSkillOption(name: string): Promise<TaxonomyOption> {
+    const skill = await createSkill(name, jobRoleId === '' ? null : Number(jobRoleId))
+    return { value: skill.id, label: skill.name }
   }
 
   function handleCloseForm() {
@@ -211,10 +241,36 @@ function RecruiterDashboard() {
   }
 
   function handleResetForm() {
-    setJobRoleId(''); setExperienceLevelId(''); setJobDescription(''); setJobLocation('')
+    setJobRole(null); setJobCategoryInputText(''); setJobCategoryError(null)
+    setExperienceLevelId(''); setJobDescription(''); setJobLocation('')
     setJobType(''); setFormSalaryMin(''); setFormSalaryMax(''); setFormSalaryError(null)
-    setExpiresAt(''); setExpiresAtError(null); setSelectedSkillIds([]); setSelectedSkillId('')
+    setExpiresAt(''); setExpiresAtError(null); setSelectedSkills([])
     setSelectedRounds([]); setSelectedRoundTypeId(''); setPostError(null); setAttemptedPost(false)
+    setAtsCriteria(defaultAtsCriteria())
+    setQualifyThreshold('65'); setQualifyThresholdError(null)
+    setOverqualifyThreshold(''); setAutoRejectOverqualified(false)
+  }
+
+  function handleToggleAtsSection(section: string) {
+    setAtsCriteria((prev) => prev.map((c) => (c.section === section ? { ...c, enabled: !c.enabled } : c)))
+  }
+
+  function handleAtsWeightChange(section: string, value: string) {
+    setAtsCriteria((prev) => prev.map((c) => (c.section === section ? { ...c, weight: value } : c)))
+  }
+
+  function handleJobCategoryInputChange(value: string, actionMeta: { action: string }) {
+    if (actionMeta.action !== 'input-change') return
+    setJobCategoryInputText(value)
+    if (jobCategoryError) setJobCategoryError(validateJobCategoryText(value))
+  }
+
+  function handleJobCategoryBlur() {
+    setJobCategoryError(validateJobCategoryText(jobCategoryInputText))
+  }
+
+  function handleQualifyThresholdBlur() {
+    setQualifyThresholdError(validateQualifyThreshold(qualifyThreshold))
   }
 
   function handleExpiresAtChange(value: string) {
@@ -274,8 +330,13 @@ function RecruiterDashboard() {
   async function handlePostJob(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     setAttemptedPost(true)
+    const jobCategoryErr = jobRoleId === '' ? validateJobCategoryText(jobCategoryInputText) : null
+    setJobCategoryError(jobCategoryErr)
+    const qualifyErr = validateQualifyThreshold(qualifyThreshold)
+    setQualifyThresholdError(qualifyErr)
     if (
       jobRoleId === '' ||
+      jobCategoryErr ||
       experienceLevelId === '' ||
       !jobType ||
       !jobDescription.trim() ||
@@ -284,7 +345,9 @@ function RecruiterDashboard() {
       !formSalaryMax.trim() ||
       formSalaryError ||
       expiresAtError ||
-      selectedRounds.length === 0
+      qualifyErr ||
+      selectedRounds.length === 0 ||
+      !atsValid
     ) return
     setPosting(true)
     setPostError(null)
@@ -298,12 +361,16 @@ function RecruiterDashboard() {
         job_type: jobType,
         salary_range: formatSalaryRange(formSalaryMin, formSalaryMax),
         expires_at: expiresAt || undefined,
-        skill_ids: selectedSkillIds,
+        skill_ids: selectedSkills.map((s) => s.value),
         interview_rounds: selectedRounds.map((r, i) => ({
           round_type_id: r.round_type_id,
           round_order: i + 1,
           failing_criteria: r.failing_criteria !== '' ? Math.min(100, Math.max(0, Number(r.failing_criteria))) : null,
         })),
+        ats_criteria: atsEnabledCriteria.map((c) => ({ section: c.section, weight: Number(c.weight) || 0 })),
+        qualify_threshold: qualifyThreshold !== '' ? Math.min(100, Math.max(0, Number(qualifyThreshold))) : undefined,
+        overqualify_threshold: overqualifyThreshold !== '' ? Math.max(0, Number(overqualifyThreshold)) : undefined,
+        auto_reject_overqualified: overqualifyThreshold !== '' ? autoRejectOverqualified : false,
       })
       setShowForm(false)
       handleResetForm()
@@ -351,6 +418,10 @@ function RecruiterDashboard() {
   }
 
   if (!recruiterId) return null
+
+  const atsEnabledCriteria = atsCriteria.filter((c) => c.enabled)
+  const atsTotalWeight = atsEnabledCriteria.reduce((sum, c) => sum + (Number(c.weight) || 0), 0)
+  const atsValid = atsEnabledCriteria.length > 0 && atsTotalWeight === 100
 
   return (
     <main className="rd-page">
@@ -457,16 +528,25 @@ function RecruiterDashboard() {
                   <div className="rd-field">
                     <label className="rd-label">Job Category<span className="required-star"> *</span></label>
                     {metaLoading ? <p className="rd-state-text">Loading…</p> : (
-                      <Select value={jobRoleId} onChange={(e: ChangeEvent<HTMLSelectElement>) => {
-                        setJobRoleId(Number(e.target.value))
-                        setSelectedSkillIds([])
-                        setSelectedSkillId('')
-                      }}>
-                        <option value="" disabled>Select a category</option>
-                        {jobRoles.map((r) => <option key={r.id} value={r.id}>{r.title}</option>)}
-                      </Select>
+                      <TaxonomySelect
+                        loadOptions={loadJobRoleOptions}
+                        onCreateOption={createJobRoleOption}
+                        value={jobRole}
+                        onChange={(opt) => {
+                          setJobRole(opt)
+                          setSelectedSkills([])
+                          setJobCategoryInputText('')
+                          setJobCategoryError(null)
+                        }}
+                        onInputChange={handleJobCategoryInputChange}
+                        onBlur={handleJobCategoryBlur}
+                        placeholder="Search or type to add a category…"
+                      />
                     )}
-                    {attemptedPost && jobRoleId === '' && (
+                    {jobCategoryError && (
+                      <span className="rd-field-error">{jobCategoryError}</span>
+                    )}
+                    {attemptedPost && jobRoleId === '' && !jobCategoryError && (
                       <span className="rd-field-error">Job category is required.</span>
                     )}
                   </div>
@@ -552,79 +632,30 @@ function RecruiterDashboard() {
 
                 <div className="rd-field">
                   <label className="rd-label">Required Skills <span className="rd-optional">(optional)</span></label>
-                  <div className="rd-skill-add-row">
-                    <select
-                      className="rd-rounds-select"
-                      value={selectedSkillId}
-                      onChange={(e) => setSelectedSkillId(e.target.value)}
-                      disabled={metaLoading || jobRoleId === ''}
-                    >
-                      <option value="">{jobRoleId === '' ? 'Select a job category first…' : 'Select a skill…'}</option>
-                      {skillsForRole
-                        .filter((s) => !selectedSkillIds.includes(s.id))
-                        .map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-                    </select>
-                    <button
-                      type="button"
-                      className="rd-add-btn"
-                      disabled={!selectedSkillId}
-                      onClick={() => {
-                        const id = Number(selectedSkillId)
-                        setSelectedSkillIds((prev) => [...prev, id])
-                        setSelectedSkillId('')
-                      }}
-                    >
-                      Add
-                    </button>
-                    <button
-                      type="button"
-                      className="rd-add-btn"
-                      disabled={metaLoading || jobRoleId === '' || skillsForRole.every((s) => selectedSkillIds.includes(s.id))}
-                      onClick={handleAddAllSkills}
-                    >
-                      Add All
-                    </button>
-                  </div>
-                  <div className="rd-skill-add-row">
-                    <input
-                      className="rd-input"
-                      type="text"
-                      placeholder="Add a custom skill…"
-                      value={customSkillName}
-                      onChange={(e) => setCustomSkillName(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
-                          e.preventDefault()
-                          void handleAddCustomSkill()
-                        }
-                      }}
-                    />
-                    <button
-                      type="button"
-                      className="rd-add-btn"
-                      disabled={!customSkillName.trim() || addingCustomSkill}
-                      onClick={() => void handleAddCustomSkill()}
-                    >
-                      {addingCustomSkill ? 'Adding…' : 'Add Custom'}
-                    </button>
-                  </div>
-                  {customSkillError && <span className="rd-field-error">{customSkillError}</span>}
-                  {selectedSkillIds.length > 0 && (
+                  <TaxonomySelect
+                    key={jobRoleId || 'none'}
+                    isMulti
+                    loadOptions={loadSkillOptions}
+                    onCreateOption={createSkillOption}
+                    value={selectedSkills}
+                    onChange={setSelectedSkills}
+                    placeholder={jobRoleId === '' ? 'Select a job category first…' : 'Search or type to add skills…'}
+                    isDisabled={metaLoading || jobRoleId === ''}
+                    controlShouldRenderValue={false}
+                  />
+                  {selectedSkills.length > 0 && (
                     <div className="rd-skill-tags">
-                      {selectedSkillIds.map((id) => {
-                        const skill = allSkills.find((s) => s.id === id)
-                        return skill ? (
-                          <span key={id} className="rd-skill-tag">
-                            {skill.name}
-                            <button
-                              type="button"
-                              className="rd-skill-tag-remove"
-                              onClick={() => setSelectedSkillIds((prev) => prev.filter((sid) => sid !== id))}
-                              aria-label={`Remove ${skill.name}`}
-                            >✕</button>
-                          </span>
-                        ) : null
-                      })}
+                      {selectedSkills.map((opt) => (
+                        <span key={opt.value} className="rd-skill-tag">
+                          {opt.label}
+                          <button
+                            type="button"
+                            className="rd-skill-tag-remove"
+                            onClick={() => setSelectedSkills((prev) => prev.filter((s) => s.value !== opt.value))}
+                            aria-label={`Remove ${opt.label}`}
+                          >✕</button>
+                        </span>
+                      ))}
                     </div>
                   )}
                 </div>
@@ -635,6 +666,96 @@ function RecruiterDashboard() {
 
               {/* Right — interview rounds */}
               <div className="rd-form-right">
+                <div className="rd-rounds-header">
+                  <span className="rd-label">ATS Evaluation Sections<span className="required-star"> *</span></span>
+                  <span className="rd-rounds-count">{atsTotalWeight}% total</span>
+                </div>
+                <ol className="rd-rounds-list">
+                  {atsCriteria.map((c) => (
+                    <li key={c.section} className="rd-round-item">
+                      <input
+                        type="checkbox"
+                        checked={c.enabled}
+                        onChange={() => handleToggleAtsSection(c.section)}
+                      />
+                      <span className="rd-round-name">{c.label}</span>
+                      {c.enabled && (
+                        <div className="rd-round-threshold">
+                          <input
+                            className="rd-threshold-input"
+                            type="number" min="0" max="100"
+                            value={c.weight}
+                            onChange={(e) => handleAtsWeightChange(c.section, e.target.value)}
+                            onKeyDown={blockNonNumericKey}
+                          />
+                          <span className="rd-threshold-suffix">%</span>
+                        </div>
+                      )}
+                    </li>
+                  ))}
+                </ol>
+                {attemptedPost && atsEnabledCriteria.length === 0 && (
+                  <span className="rd-field-error">Select at least one ATS section</span>
+                )}
+                {attemptedPost && atsEnabledCriteria.length > 0 && atsTotalWeight !== 100 && (
+                  <span className="rd-field-error">Weights must total 100%</span>
+                )}
+
+                <ol className="rd-rounds-list">
+                  <li className="rd-round-item">
+                    <span className="rd-round-name">
+                      Qualify threshold
+                      <InfoTooltip text="Minimum weighted score required to pass ATS." />
+                    </span>
+                    <div className="rd-round-threshold">
+                      <input
+                        className="rd-threshold-input"
+                        type="number" min="0" max="100"
+                        value={qualifyThreshold}
+                        onChange={(e) => setQualifyThreshold(e.target.value)}
+                        onBlur={handleQualifyThresholdBlur}
+                        onKeyDown={blockNonNumericKey}
+                      />
+                      <span className="rd-threshold-suffix">%</span>
+                    </div>
+                  </li>
+                  {qualifyThresholdError && (
+                    <li className="rd-round-item">
+                      <span className="rd-field-error">{qualifyThresholdError}</span>
+                    </li>
+                  )}
+                  <li className="rd-round-item">
+                    <span className="rd-round-name">
+                      Overqualify threshold (optional)
+                      <InfoTooltip text="A multiplier, not a percentage — enter 2 to flag candidates with 2× (double) the required years, 1.5 for 1.5×, and so on. Leave blank to never flag overqualification." />
+                    </span>
+                    <div className="rd-round-threshold">
+                      <input
+                        className="rd-threshold-input"
+                        type="number" min="0" step="0.1"
+                        placeholder="e.g. 2"
+                        value={overqualifyThreshold}
+                        onChange={(e) => setOverqualifyThreshold(e.target.value)}
+                        onKeyDown={blockNonNumericKey}
+                      />
+                      <span className="rd-threshold-suffix">×</span>
+                    </div>
+                  </li>
+                  {overqualifyThreshold !== '' && (
+                    <li className="rd-round-item">
+                      <input
+                        type="checkbox"
+                        checked={autoRejectOverqualified}
+                        onChange={() => setAutoRejectOverqualified((v) => !v)}
+                      />
+                      <span className="rd-round-name">Auto-reject overqualified candidates</span>
+                    </li>
+                  )}
+                </ol>
+                <p className="rd-threshold-hint">
+                  Qualify threshold = minimum weighted score to pass ATS. Overqualify threshold is a multiplier, not a percentage — enter 2 to flag candidates with 2× (double) the required years, 1.5 for 1.5×, and so on. Leave blank to never flag overqualification.
+                </p>
+
                 <div className="rd-rounds-header">
                   <span className="rd-label">Interview Rounds<span className="required-star"> *</span></span>
                   <span className="rd-rounds-count">{selectedRounds.length} added</span>
@@ -704,7 +825,7 @@ function RecruiterDashboard() {
 
             <div className="rd-form-actions">
               <Button type="button" variant="secondary" onClick={handleCloseForm}>Discard</Button>
-              <Button type="submit" variant="primary" disabled={posting || !!formSalaryError || !!expiresAtError}>
+              <Button type="submit" variant="primary" disabled={posting || !!formSalaryError || !!expiresAtError || !!jobCategoryError || !!qualifyThresholdError}>
                 {posting ? 'Publishing…' : 'Publish Job'}
               </Button>
             </div>
@@ -803,6 +924,41 @@ function RecruiterDashboard() {
                         </li>
                       ))}
                     </ol>
+                  )}
+                </div>
+
+                <div className="rd-detail-rounds-section">
+                  <span className="rd-label">ATS Screening Criteria</span>
+                  {detailJob.ats_criteria && detailJob.ats_criteria.has_config && detailJob.ats_criteria.criteria.length > 0 ? (
+                    <>
+                      <ol className="rd-detail-rounds">
+                        {detailJob.ats_criteria.criteria.map((c) => (
+                          <li key={c.section} className="rd-detail-round-item">
+                            <span className="rd-round-name">{ATS_SECTION_LABELS[c.section] ?? c.section}</span>
+                            <span className="rd-pass-pill">{c.weight}%</span>
+                          </li>
+                        ))}
+                      </ol>
+                      <div className="rd-detail-meta">
+                        <div className="rd-meta-item">
+                          <span className="rd-label">Qualify Threshold</span>
+                          <span className="rd-meta-value">{detailJob.ats_criteria.qualify_threshold}%</span>
+                        </div>
+                        <div className="rd-meta-item">
+                          <span className="rd-label">Overqualify Threshold</span>
+                          <span className="rd-meta-value">
+                            {detailJob.ats_criteria.overqualify_threshold != null
+                              ? `${detailJob.ats_criteria.overqualify_threshold}×`
+                              : 'Not set'}
+                          </span>
+                        </div>
+                      </div>
+                      <span className={`rd-badge${detailJob.ats_criteria.auto_reject_overqualified ? ' rd-badge--salary' : ''}`}>
+                        Auto-reject overqualified: {detailJob.ats_criteria.auto_reject_overqualified ? 'On' : 'Off'}
+                      </span>
+                    </>
+                  ) : (
+                    <p className="rd-rounds-empty-text" style={{ marginTop: 8 }}>Default ATS criteria (65% threshold)</p>
                   )}
                 </div>
 

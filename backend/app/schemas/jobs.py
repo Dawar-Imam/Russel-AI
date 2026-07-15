@@ -1,6 +1,6 @@
 from typing import Literal
 
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel, Field, field_validator
 
 VALID_JOB_TYPES = ('Full-time', 'Part-time', 'Remote', 'Contract', 'Hybrid')
 
@@ -25,6 +25,11 @@ class InterviewRoundInput(BaseModel):
         return v
 
 
+class ATSCriterionInput(BaseModel):
+    section: Literal['experience', 'skills', 'projects', 'certifications', 'education', 'achievements']
+    weight: float = Field(ge=0, le=100)
+
+
 class JobPostRequest(BaseModel):
     recruiter_id: str
     job_role_id: int
@@ -36,6 +41,15 @@ class JobPostRequest(BaseModel):
     expires_at: str | None = None
     skill_ids: list[int] = []
     interview_rounds: list[InterviewRoundInput] = []
+    ats_criteria: list[ATSCriterionInput] = Field(..., min_length=1)
+    # Axis 1 (PASS/FAIL) — weighted_average vs this threshold. Defaults to 65 when not set by the
+    # recruiter, rather than being required, so the form doesn't force every recruiter to think
+    # about it.
+    qualify_threshold: float = Field(65, ge=0, le=100)
+    # Axis 2 (overqualification flag) — independent of qualify_threshold. None means
+    # overqualification is never auto-rejected, only shown informationally.
+    overqualify_threshold: float | None = Field(None, ge=0)
+    auto_reject_overqualified: bool = False
 
     @field_validator('description', 'location', 'recruiter_id')
     @classmethod
@@ -43,6 +57,13 @@ class JobPostRequest(BaseModel):
         v = v.strip()
         if not v:
             raise ValueError('This field is required')
+        return v
+
+    @field_validator('ats_criteria')
+    @classmethod
+    def validate_ats_criteria(cls, v: list[ATSCriterionInput]) -> list[ATSCriterionInput]:
+        if abs(sum(c.weight for c in v) - 100) > 1e-6:
+            raise ValueError('ats_criteria weights must sum to 100')
         return v
 
     @field_validator('salary_range')
@@ -67,6 +88,25 @@ class JobInterviewRoundItem(BaseModel):
     description: str | None
 
 
+class ATSCriterionSummary(BaseModel):
+    section: str
+    weight: float
+
+
+class ATSCriteriaSummary(BaseModel):
+    """Read-only, normalized view of a job's ats_criteria for display (e.g. the
+    recruiter dashboard's job detail dialog). has_config=False means the job predates
+    recruiter-defined ATS weighting (or the stored JSON was malformed) and the
+    hardcoded default category weights are in effect instead of `criteria`.
+    """
+
+    has_config: bool
+    criteria: list[ATSCriterionSummary]
+    qualify_threshold: float
+    overqualify_threshold: float | None
+    auto_reject_overqualified: bool
+
+
 class JobListItem(BaseModel):
     id: str
     description: str
@@ -82,6 +122,9 @@ class JobListItem(BaseModel):
     expires_at: str | None
     required_skills: list[str]
     status: str = 'active'
+    # Only populated for recruiter-facing listings (list_recruiter_jobs) — omitted (None)
+    # from the public/candidate job list so scoring thresholds aren't exposed to candidates.
+    ats_criteria: ATSCriteriaSummary | None = None
 
 
 # ── Job analytics schemas ─────────────────────────────────────────────────────

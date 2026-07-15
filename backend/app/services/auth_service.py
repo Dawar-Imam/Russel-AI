@@ -4,8 +4,8 @@ import secrets
 import uuid
 from pathlib import Path
 
-from app.database import get_connection
-from app.schemas.auth import CandidateProfileResponse, ExperienceLevelItem, JobRoleItem, RecruiterProfileResponse, RecruiterSigninResponse, RecruiterSignupResponse, SigninResponse, SignupMetadataResponse, SignupResponse, SkillItem
+from app.database import db_cursor, escape_like
+from app.schemas.auth import TAXONOMY_NAME_RE, CandidateProfileResponse, ExperienceLevelItem, JobRoleItem, RecruiterProfileResponse, RecruiterSigninResponse, RecruiterSignupResponse, SigninResponse, SignupMetadataResponse, SignupResponse, SkillItem
 from app.services.cv_parser_service import parse_and_store_cv, store_resume_record
 
 
@@ -24,10 +24,7 @@ def _verify_password(password: str, stored_hash: str) -> bool:
 
 
 def get_signup_metadata() -> SignupMetadataResponse:
-    conn = get_connection()
-    try:
-        cur = conn.cursor()
-
+    with db_cursor() as (conn, cur):
         cur.execute("SELECT id, title, category FROM JobRoles WHERE is_active = 1 ORDER BY title")
         job_roles = [JobRoleItem(id=row[0], title=row[1], category=row[2]) for row in cur.fetchall()]
 
@@ -56,16 +53,42 @@ def get_signup_metadata() -> SignupMetadataResponse:
             skills=list(skill_map.values()),
             experience_levels=experience_levels,
         )
-    finally:
-        conn.close()
+
+
+def search_job_roles(query: str, limit: int = 20) -> list[JobRoleItem]:
+    with db_cursor() as (conn, cur):
+        like = f"%{escape_like(query.strip())}%"
+        cur.execute(
+            "SELECT TOP (?) id, title, category FROM JobRoles WHERE is_active = 1 AND title LIKE ? ORDER BY title",
+            limit,
+            like,
+        )
+        return [JobRoleItem(id=row[0], title=row[1], category=row[2]) for row in cur.fetchall()]
+
+
+def search_skills_for_role(role_id: int, query: str, limit: int = 20) -> list[SkillItem]:
+    with db_cursor() as (conn, cur):
+        like = f"%{escape_like(query.strip())}%"
+        cur.execute(
+            """
+            SELECT TOP (?) s.id, s.name, s.category
+            FROM SkillSets s
+            JOIN RoleSkills rs ON rs.skill_id = s.id
+            WHERE rs.job_role_id = ? AND s.is_active = 1 AND s.name LIKE ?
+            ORDER BY s.name
+            """,
+            limit,
+            role_id,
+            like,
+        )
+        return [SkillItem(id=row[0], name=row[1], category=row[2], job_role_ids=[role_id]) for row in cur.fetchall()]
 
 
 def get_or_create_skill(name: str, job_role_id: int | None = None) -> SkillItem:
     name = name.strip()
-    conn = get_connection()
-    try:
-        cur = conn.cursor()
-
+    if not TAXONOMY_NAME_RE.match(name):
+        raise ValueError('Skill name must be 2-100 characters and contain at least one letter')
+    with db_cursor() as (conn, cur):
         cur.execute(
             "SELECT id, name, category FROM SkillSets WHERE LOWER(name) = LOWER(?) AND is_active = 1",
             name,
@@ -91,11 +114,46 @@ def get_or_create_skill(name: str, job_role_id: int | None = None) -> SkillItem:
         cur.execute("SELECT job_role_id FROM RoleSkills WHERE skill_id = ?", skill_id)
         job_role_ids = [int(r[0]) for r in cur.fetchall()]
         if job_role_id is not None and job_role_id not in job_role_ids:
+            # Unlike SkillSets/JobRoles, RoleSkills.id IS an IDENTITY column.
+            cur.execute(
+                "INSERT INTO RoleSkills (job_role_id, skill_id) VALUES (?, ?)",
+                job_role_id,
+                skill_id,
+            )
+            conn.commit()
             job_role_ids.append(job_role_id)
 
         return SkillItem(id=skill_id, name=existing_name, category=category, job_role_ids=job_role_ids)
-    finally:
-        conn.close()
+
+
+def get_or_create_job_role(title: str) -> JobRoleItem:
+    title = title.strip()
+    if not TAXONOMY_NAME_RE.match(title):
+        raise ValueError('Job category title must be 2-100 characters and contain at least one letter')
+    with db_cursor() as (conn, cur):
+        cur.execute(
+            "SELECT id, title, category FROM JobRoles WHERE LOWER(title) = LOWER(?) AND is_active = 1",
+            title,
+        )
+        row = cur.fetchone()
+        if row:
+            role_id, existing_title, category = int(row[0]), str(row[1]), row[2]
+        else:
+            # JobRoles.id has no IDENTITY property in the database, so the
+            # next id must be computed and supplied explicitly. UPDLOCK+HOLDLOCK
+            # serializes concurrent inserts against the same table to avoid a
+            # duplicate-id race.
+            cur.execute("SELECT ISNULL(MAX(id), 0) + 1 FROM JobRoles WITH (UPDLOCK, HOLDLOCK)")
+            role_id = int(cur.fetchone()[0])
+            cur.execute(
+                "INSERT INTO JobRoles (id, title, category, is_active) VALUES (?, ?, 'Custom', 1)",
+                role_id,
+                title,
+            )
+            existing_title, category = title, "Custom"
+            conn.commit()
+
+        return JobRoleItem(id=role_id, title=existing_title, category=category)
 
 
 def _get_experience_level_id(conn, experience_years: float) -> int:
@@ -123,10 +181,7 @@ def signup_candidate(
     cv_content: bytes | None,
     cv_filename: str | None,
 ) -> SignupResponse:
-    conn = get_connection()
-    try:
-        cur = conn.cursor()
-
+    with db_cursor() as (conn, cur):
         cur.execute("SELECT id FROM Users WHERE email = ?", email)
         if cur.fetchone():
             raise ValueError("An account with this email already exists.")
@@ -141,9 +196,6 @@ def signup_candidate(
         user_id = str(uuid.uuid4())
         candidate_id = str(uuid.uuid4())
 
-    finally:
-        conn.close()
-
     # Parse and store CV outside the connection (opens its own connections internally)
     cv_data: dict = {"bio": None, "linkedin_url": None, "current_location": None, "total_experience_years": None, "skills": []}
     resume_url: str | None = None
@@ -153,10 +205,7 @@ def signup_candidate(
         cv_data = result
         resume_url = result["file_url"]
 
-    conn = get_connection()
-    try:
-        cur = conn.cursor()
-
+    with db_cursor() as (conn, cur):
         # Re-check email uniqueness in case of race condition
         cur.execute("SELECT id FROM Users WHERE email = ?", email)
         if cur.fetchone():
@@ -224,8 +273,6 @@ def signup_candidate(
             )
 
         conn.commit()
-    finally:
-        conn.close()
 
     # Insert Resumes row only after CandidateProfiles is committed (FK constraint)
     if cv_content and cv_data.get("resume_id"):
@@ -245,9 +292,7 @@ def signup_candidate(
 
 
 def signin_candidate(email: str, password: str) -> SigninResponse:
-    conn = get_connection()
-    try:
-        cur = conn.cursor()
+    with db_cursor() as (conn, cur):
         cur.execute("SELECT id, password_hash FROM Users WHERE email = ? AND is_active = 1", email)
         row = cur.fetchone()
         if not row or not _verify_password(password, str(row[1])):
@@ -262,8 +307,6 @@ def signin_candidate(email: str, password: str) -> SigninResponse:
             candidate_id=str(cp_row[0]),
             message="Signed in successfully.",
         )
-    finally:
-        conn.close()
 
 
 def signup_recruiter(
@@ -274,10 +317,7 @@ def signup_recruiter(
     company_name: str,
     designation: str,
 ) -> RecruiterSignupResponse:
-    conn = get_connection()
-    try:
-        cur = conn.cursor()
-
+    with db_cursor() as (conn, cur):
         cur.execute("SELECT id FROM Users WHERE email = ?", email)
         if cur.fetchone():
             raise ValueError("An account with this email already exists.")
@@ -331,14 +371,10 @@ def signup_recruiter(
             recruiter_id=recruiter_id,
             message="Account created successfully.",
         )
-    finally:
-        conn.close()
 
 
 def get_candidate_profile(candidate_id: str) -> CandidateProfileResponse:
-    conn = get_connection()
-    try:
-        cur = conn.cursor()
+    with db_cursor() as (conn, cur):
         cur.execute(
             """
             SELECT
@@ -397,14 +433,10 @@ def get_candidate_profile(candidate_id: str) -> CandidateProfileResponse:
             resume_url=str(row[11]) if row[11] else None,
             member_since=member_since,
         )
-    finally:
-        conn.close()
 
 
 def get_recruiter_profile(recruiter_id: str) -> RecruiterProfileResponse:
-    conn = get_connection()
-    try:
-        cur = conn.cursor()
+    with db_cursor() as (conn, cur):
         cur.execute(
             """
             SELECT
@@ -435,27 +467,18 @@ def get_recruiter_profile(recruiter_id: str) -> RecruiterProfileResponse:
             company_verified=bool(row[5]),
             member_since=member_since,
         )
-    finally:
-        conn.close()
 
 
 def update_candidate_cv(candidate_id: str, cv_content: bytes, cv_filename: str | None) -> str:
     """Parse a new CV, store it in Resumes, and update the candidate's profile + skills. Returns resume_id."""
-    conn = get_connection()
-    try:
-        cur = conn.cursor()
+    with db_cursor() as (conn, cur):
         cur.execute("SELECT id FROM CandidateProfiles WHERE id = ?", candidate_id)
         if not cur.fetchone():
             raise ValueError("Candidate profile not found.")
-    finally:
-        conn.close()
 
     result = parse_and_store_cv(cv_content, cv_filename, candidate_id)
 
-    conn = get_connection()
-    try:
-        cur = conn.cursor()
-
+    with db_cursor() as (conn, cur):
         set_clauses: list[str] = ["resume_url = ?", "updated_at = GETDATE()"]
         params: list = [result["file_url"]]
 
@@ -507,16 +530,12 @@ def update_candidate_cv(candidate_id: str, cv_content: bytes, cv_filename: str |
                 )
 
         conn.commit()
-    finally:
-        conn.close()
 
     return result["resume_id"]
 
 
 def signin_recruiter(email: str, password: str) -> RecruiterSigninResponse:
-    conn = get_connection()
-    try:
-        cur = conn.cursor()
+    with db_cursor() as (conn, cur):
         cur.execute("SELECT id, password_hash FROM Users WHERE email = ? AND is_active = 1", email)
         row = cur.fetchone()
         if not row or not _verify_password(password, str(row[1])):
@@ -531,5 +550,3 @@ def signin_recruiter(email: str, password: str) -> RecruiterSigninResponse:
             recruiter_id=str(rp_row[0]),
             message="Signed in successfully.",
         )
-    finally:
-        conn.close()

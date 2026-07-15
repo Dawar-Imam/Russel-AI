@@ -6,7 +6,8 @@ import tempfile
 import uuid
 from pathlib import Path
 
-from app.database import get_connection
+from app.core.config import get_llm, settings
+from app.database import db_cursor
 
 _UPLOADS_DIR = Path(__file__).parent.parent.parent / "uploads" / "resumes"
 _SUPPORTED_EXTS = {".pdf", ".docx", ".doc", ".png", ".jpg", ".jpeg", ".webp", ".tiff"}
@@ -40,7 +41,7 @@ def _docx_to_text(file_content: bytes) -> str:
 def _llamaparse_to_markdown(file_content: bytes, file_ext: str = ".pdf") -> str:
     """Parse CV file to plain text. Uses LlamaParse when available; falls back per file type."""
     ext = file_ext.lower()
-    api_key = os.environ.get("LLAMA_CLOUD_API_KEY", "")
+    api_key = settings.LLAMA_CLOUD_API_KEY
 
     if not api_key:
         if ext == ".pdf":
@@ -90,11 +91,11 @@ def _llm_extract(md_text: str, available_skills: list[dict]) -> dict:
         return empty
 
     try:
-        from openai import OpenAI
-
-        api_key = os.environ.get("OPENAI_API_KEY", "")
-        model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
-        client = OpenAI(api_key=api_key)
+        llm = get_llm(
+            temperature=0.1,
+            max_tokens=1500,
+            model_kwargs={"response_format": {"type": "json_object"}},
+        )
 
         skill_names = [s["name"] for s in available_skills]
 
@@ -118,14 +119,8 @@ Return a JSON object with these fields:
 
 Return ONLY the JSON object, no markdown fences, no explanation."""
 
-        response = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            response_format={"type": "json_object"},
-            temperature=0.1,
-            max_tokens=1500,
-        )
-        raw = response.choices[0].message.content or "{}"
+        response = llm.invoke(prompt)
+        raw = response.content or "{}"
         parsed = json.loads(raw)
     except Exception:
         return empty
@@ -162,9 +157,7 @@ def store_resume_record(
     parsed_text: str | None,
 ) -> None:
     """Insert a row into the Resumes table. Call this only after CandidateProfiles is committed."""
-    conn = get_connection()
-    try:
-        cur = conn.cursor()
+    with db_cursor() as (conn, cur):
         cur.execute(
             """
             INSERT INTO Resumes (id, candidate_id, file_url, file_name, parsed_text, uploaded_at)
@@ -177,8 +170,6 @@ def store_resume_record(
             parsed_text or None,
         )
         conn.commit()
-    finally:
-        conn.close()
 
 
 def parse_and_store_cv(
@@ -211,13 +202,9 @@ def parse_and_store_cv(
 
     parsed_text = _llamaparse_to_markdown(file_content, ext)
 
-    conn = get_connection()
-    try:
-        cur = conn.cursor()
+    with db_cursor() as (conn, cur):
         cur.execute("SELECT id, name FROM SkillSets WHERE is_active = 1")
         available_skills = [{"id": int(row[0]), "name": str(row[1])} for row in cur.fetchall()]
-    finally:
-        conn.close()
 
     structured = _llm_extract(parsed_text, available_skills)
 

@@ -15,6 +15,17 @@ _EXIT_EVENTS = frozenset({
     "user_exit", "logout", "tab_switch", "refresh", "navigation",
 })
 
+# Interviews.status values (lowercased) that represent a scored, final outcome
+# for this specific round. Deliberately narrower than TERMINAL_ROUND_STATUSES
+# below — "not needed" rounds were never scored, so they don't count as
+# "already decided" for idempotency purposes.
+SCORED_STATUSES = ("pass", "failed")
+
+# Interviews.status values (lowercased) after which a round must never be
+# regenerated or rescored — either it was scored (SCORED_STATUSES) or it was
+# cascade-skipped because an earlier round in the same application failed.
+TERMINAL_ROUND_STATUSES = ("pass", "failed", "not needed")
+
 _FEEDBACK_WRITTEN_LEAVE = "User left the interview, interview automatically closed."
 _FEEDBACK_ORAL_LEAVE = "User switched tabs and cheated, thus interview closed."
 _FEEDBACK_CHEATING = (
@@ -74,7 +85,7 @@ def validate_interview(inp: ValidationInput) -> ValidationResult:
     logs: list[str] = []
 
     # ── 1. Idempotency ─────────────────────────────────────────────────────
-    if inp.current_status.lower() in ("pass", "failed"):
+    if inp.current_status.lower() in SCORED_STATUSES:
         logs.append(f"idempotency: already '{inp.current_status}' — no change")
         return ValidationResult(
             final_score=inp.computed_score,

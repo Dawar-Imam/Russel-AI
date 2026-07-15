@@ -1,6 +1,6 @@
 import json
 
-from app.database import get_connection
+from app.database import db_cursor
 
 
 async def fetch_job_post_data(job_posting_id: str, job_role_id: int) -> str:
@@ -9,10 +9,7 @@ async def fetch_job_post_data(job_posting_id: str, job_role_id: int) -> str:
     Pulls: JobRoles.title/category, ExperienceLevels.name, JobPostings.description,
     and required skills (JobRequiredSkills -> SkillSets) for the given job posting.
     """
-    conn = get_connection()
-    try:
-        cur = conn.cursor()
-
+    with db_cursor() as (conn, cur):
         cur.execute(
             """
             SELECT
@@ -44,8 +41,6 @@ async def fetch_job_post_data(job_posting_id: str, job_role_id: int) -> str:
             job_posting_id,
         )
         skills = [r[0] for r in cur.fetchall()]
-    finally:
-        conn.close()
 
     return json.dumps(
         {

@@ -61,6 +61,33 @@ export async function createSkill(name: string, jobRoleId: number | null = null)
   return body as Skill
 }
 
+export async function createJobRole(title: string): Promise<JobRole> {
+  const res = await fetch(`${BASE_URL}/api/auth/job-roles`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ title: toTitleCase(title) }),
+  })
+  const body = (await res.json()) as { detail?: string } & Partial<JobRole>
+  if (!res.ok) throw new Error(body.detail ?? 'Failed to add job category')
+  return body as JobRole
+}
+
+export async function searchJobRoles(query: string, limit = 20): Promise<JobRole[]> {
+  const params = new URLSearchParams({ q: query, limit: String(limit) })
+  const res = await fetch(`${BASE_URL}/api/auth/job-roles/search?${params.toString()}`)
+  if (!res.ok) throw new Error('Failed to search job categories')
+  const body = (await res.json()) as { results: JobRole[] }
+  return body.results
+}
+
+export async function searchSkills(roleId: number, query: string, limit = 20): Promise<Skill[]> {
+  const params = new URLSearchParams({ role_id: String(roleId), q: query, limit: String(limit) })
+  const res = await fetch(`${BASE_URL}/api/auth/skills/search?${params.toString()}`)
+  if (!res.ok) throw new Error('Failed to search skills')
+  const body = (await res.json()) as { results: Skill[] }
+  return body.results
+}
+
 export async function signupCandidate(data: {
   firstName: string
   lastName: string

@@ -81,6 +81,11 @@ target/
 # Jupyter Notebook
 .ipynb_checkpoints
 
+# 
+rough/
+scripts/
+KMS/
+
 # IPython
 profile_default/
 ipython_config.py

@@ -1,11 +1,14 @@
+import asyncio
 import json
 import logging
 import uuid
+from datetime import datetime, timezone
 
 from pydantic import ValidationError
 
-from app.database import get_connection
+from app.database import db_cursor
 from app.schemas.applications import ATSCheckResponse, ApplyResponse, InterviewQuestionItem, InterviewRoundInfo, InterviewStagesResponse, MyApplicationItem
+from app.services.events import publish_ats_completed
 
 logger = logging.getLogger(__name__)
 
@@ -44,10 +47,7 @@ def apply_to_job(
         cv_result = parse_and_store_cv(cv_content, cv_filename, candidate_id)
         resume_id = cv_result["resume_id"]
 
-    conn = get_connection()
-    try:
-        cur = conn.cursor()
-
+    with db_cursor() as (conn, cur):
         # Validate the candidate profile exists (prevents recruiter from applying)
         cur.execute("SELECT id FROM CandidateProfiles WHERE id = ?", candidate_id)
         if not cur.fetchone():
@@ -100,8 +100,6 @@ def apply_to_job(
 
         msg = "Application created, pending ATS screening." if created else "Application already exists."
         return ApplyResponse(application_id=application_id, created=created, message=msg)
-    finally:
-        conn.close()
 
 
 def _create_interviews_for_application(cur, application_id: str, job_posting_id: str) -> None:
@@ -140,10 +138,7 @@ def _create_interviews_for_application(cur, application_id: str, job_posting_id:
 
 
 def get_interview_stages(application_id: str) -> InterviewStagesResponse:
-    conn = get_connection()
-    try:
-        cur = conn.cursor()
-
+    with db_cursor() as (conn, cur):
         # Resolve job_posting_id and ATS info from application (join for job meta)
         cur.execute(
             """
@@ -250,8 +245,6 @@ def get_interview_stages(application_id: str) -> InterviewStagesResponse:
             experience_level_name=experience_level_name,
             company=company,
         )
-    finally:
-        conn.close()
 
 
 def _derive_status(app_status: str, active_interview_status: str | None) -> str:
@@ -272,9 +265,7 @@ def _derive_status(app_status: str, active_interview_status: str | None) -> str:
 
 
 def get_my_applications(candidate_id: str) -> list[MyApplicationItem]:
-    conn = get_connection()
-    try:
-        cur = conn.cursor()
+    with db_cursor() as (conn, cur):
         cur.execute(
             """
             SELECT
@@ -330,14 +321,10 @@ def get_my_applications(candidate_id: str) -> list[MyApplicationItem]:
             )
             for r in rows
         ]
-    finally:
-        conn.close()
 
 
 def get_interview_questions(interview_id: str) -> list[InterviewQuestionItem]:
-    conn = get_connection()
-    try:
-        cur = conn.cursor()
+    with db_cursor() as (conn, cur):
         cur.execute(
             """
             SELECT q.id, q.question_text, iq.candidate_answer, iq.score, iq.notes
@@ -359,19 +346,13 @@ def get_interview_questions(interview_id: str) -> list[InterviewQuestionItem]:
             )
             for r in rows
         ]
-    finally:
-        conn.close()
 
 
-async def run_ats_for_application(application_id: str) -> ATSCheckResponse:
-    """Run ATS eligibility check for an application and persist the result.
-
-    If ATS has already run (status is not ATS_PENDING), returns the cached result immediately.
-    Uses parsed CV text when available; falls back to profile/skills data.
-    """
-    conn = get_connection()
-    try:
-        cur = conn.cursor()
+def _fetch_application_for_ats(
+    application_id: str,
+) -> tuple[str, str, str, ATSCheckResponse | None, str | None]:
+    """Blocking DB read — run via asyncio.to_thread so it doesn't block the event loop."""
+    with db_cursor() as (conn, cur):
         cur.execute(
             "SELECT job_id, candidate_id, status, ats_details, resume_id FROM Applications WHERE id = ?",
             application_id,
@@ -389,46 +370,112 @@ async def run_ats_for_application(application_id: str) -> ATSCheckResponse:
             resume_row = cur.fetchone()
             if resume_row and resume_row[0]:
                 parsed_text = str(resume_row[0])
-    finally:
-        conn.close()
+    return job_id, candidate_id, status, cached_ats_result, parsed_text
 
-    # Return cached result if ATS already ran
-    if status in _ATS_PASSED_STATUSES:
-        conn = get_connection()
-        try:
-            cur = conn.cursor()
-            _create_interviews_for_application(cur, application_id, job_id)
-            conn.commit()
-        finally:
-            conn.close()
-        if cached_ats_result:
-            return cached_ats_result
-        return ATSCheckResponse(verdict="PASS", verdict_summary="Candidate passed ATS screening.")
-    if status in _ATS_FAILED_STATUSES:
-        if cached_ats_result:
-            return cached_ats_result
-        return ATSCheckResponse(verdict="FAIL", verdict_summary="Candidate did not pass ATS screening.")
 
-    # Run the LLM-powered ATS check
-    from app.ai.ai_services.ats_service import check_ats_eligibility
-    result = await check_ats_eligibility(candidate_id, job_id, parsed_text=parsed_text)
+def _create_interviews_and_commit(application_id: str, job_id: str) -> None:
+    """Blocking DB write — run via asyncio.to_thread so it doesn't block the event loop."""
+    with db_cursor() as (conn, cur):
+        _create_interviews_for_application(cur, application_id, job_id)
+        conn.commit()
 
-    new_status = "ATS_PASS" if result.verdict == "PASS" else "ATS_FAIL"
-    details_json = result.model_dump_json()
 
-    conn = get_connection()
-    try:
-        cur = conn.cursor()
+def _mark_ats_error(application_id: str) -> None:
+    """Blocking DB write — run via asyncio.to_thread so it doesn't block the event loop."""
+    with db_cursor() as (conn, cur):
+        cur.execute("UPDATE Applications SET status = 'ATS_ERROR' WHERE id = ?", application_id)
+        conn.commit()
+
+
+def _persist_ats_result(
+    application_id: str,
+    job_id: str,
+    new_status: str,
+    details_json: str,
+    evaluated_at: datetime,
+    model_version: str,
+) -> str | None:
+    """Blocking DB write — run via asyncio.to_thread so it doesn't block the event loop.
+
+    Returns the next round's Interviews.id to pre-generate questions for, if ATS passed
+    and a next round exists — the caller fires the Celery trigger for it.
+    """
+    target_interview_id: str | None = None
+    with db_cursor() as (conn, cur):
         cur.execute(
-            "UPDATE Applications SET status = ?, ats_details = ? WHERE id = ?",
+            "UPDATE Applications SET status = ?, ats_details = ?, ats_evaluated_at = ?, ats_model_version = ? WHERE id = ?",
             new_status,
             details_json,
+            evaluated_at,
+            model_version,
             application_id,
         )
         if new_status == "ATS_PASS":
             _create_interviews_for_application(cur, application_id, job_id)
+            from app.services.interview_service import find_next_scheduled_round
+            target_interview_id = find_next_scheduled_round(cur, application_id, min_round_order=0)
         conn.commit()
-    finally:
-        conn.close()
+    return target_interview_id
+
+
+async def run_ats_for_application(application_id: str) -> ATSCheckResponse:
+    """Run ATS eligibility check for an application and persist the result.
+
+    If ATS has already run (status is not ATS_PENDING), returns the cached result immediately.
+    Uses parsed CV text when available; falls back to profile/skills data.
+    """
+    job_id, candidate_id, status, cached_ats_result, parsed_text = await asyncio.to_thread(
+        _fetch_application_for_ats, application_id
+    )
+
+    # Return cached result if ATS already ran
+    if status in _ATS_PASSED_STATUSES:
+        await asyncio.to_thread(_create_interviews_and_commit, application_id, job_id)
+        if cached_ats_result:
+            return cached_ats_result
+        return ATSCheckResponse(verdict="QUALIFIED", verdict_summary="Candidate passed ATS screening.", final_verdict="PASS")
+    if status in _ATS_FAILED_STATUSES:
+        if cached_ats_result:
+            return cached_ats_result
+        return ATSCheckResponse(verdict="UNDERQUALIFIED", verdict_summary="Candidate did not pass ATS screening.", final_verdict="FAIL")
+
+    # Run the LLM-powered ATS check
+    from app.ai.ai_services.ats_service import ATSValidationError, check_ats_eligibility
+    try:
+        result, model_version = await check_ats_eligibility(
+            candidate_id, job_id, parsed_text=parsed_text, application_id=application_id
+        )
+    except ATSValidationError as exc:
+        # Malformed LLM output must never reach the DB — leave the application at ATS_ERROR
+        # (queryable/distinct from ATS_PENDING) rather than writing a bad ats_details blob or
+        # flipping status to PASS/FAIL on data we don't trust.
+        logger.error("ATS: validation failed for application=%s, leaving status unset: %s", application_id, exc)
+        await asyncio.to_thread(_mark_ats_error, application_id)
+        raise
+
+    new_status = "ATS_PASS" if result.final_verdict == "PASS" else "ATS_FAIL"
+    details_json = result.model_dump_json()
+    evaluated_at = datetime.now(timezone.utc)
+
+    target_interview_id = await asyncio.to_thread(
+        _persist_ats_result, application_id, job_id, new_status, details_json, evaluated_at, model_version
+    )
+
+    if new_status == "ATS_PASS" and target_interview_id:
+        from app.tasks import written_test_tasks
+        written_test_tasks.trigger.delay(target_interview_id)
+
+    await publish_ats_completed(
+        application_id,
+        {
+            "event": "ats_completed",
+            "application_id": application_id,
+            "status": new_status,
+            "verdict": result.verdict,
+            "final_verdict": result.final_verdict,
+            "verdict_summary": result.verdict_summary,
+            "weightage": result.weightage.model_dump(),
+        },
+    )
 
     return ATSCheckResponse(**result.model_dump())

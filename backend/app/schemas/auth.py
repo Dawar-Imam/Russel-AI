@@ -4,6 +4,10 @@ from pydantic import BaseModel, field_validator
 
 _EMAIL_RE = re.compile(r'^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$')
 
+# A taxonomy name (job category or skill) must contain at least one letter and
+# be 2-100 chars, so "12345" or "!!!" can't be entered as a category/skill.
+TAXONOMY_NAME_RE = re.compile(r'^(?=.*[A-Za-z]).{2,100}$')
+
 
 class JobRoleItem(BaseModel):
     id: int
@@ -26,9 +30,29 @@ class CreateSkillRequest(BaseModel):
     @classmethod
     def validate_name(cls, v: str) -> str:
         v = v.strip()
-        if not v:
-            raise ValueError('Skill name is required')
+        if not TAXONOMY_NAME_RE.match(v):
+            raise ValueError('Skill name must be 2-100 characters and contain at least one letter')
         return v
+
+
+class CreateJobRoleRequest(BaseModel):
+    title: str
+
+    @field_validator('title')
+    @classmethod
+    def validate_title(cls, v: str) -> str:
+        v = v.strip()
+        if not TAXONOMY_NAME_RE.match(v):
+            raise ValueError('Job category title must be 2-100 characters and contain at least one letter')
+        return v
+
+
+class JobRoleSearchResponse(BaseModel):
+    results: list[JobRoleItem]
+
+
+class SkillSearchResponse(BaseModel):
+    results: list[SkillItem]
 
 
 class ExperienceLevelItem(BaseModel):

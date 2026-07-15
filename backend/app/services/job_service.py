@@ -1,7 +1,11 @@
+import json
 import uuid
 
-from app.database import get_connection
+from app.ai.ai_services.ats_service import parse_ats_criteria
+from app.database import db_cursor, escape_like
 from app.schemas.jobs import (
+    ATSCriteriaSummary,
+    ATSCriterionSummary,
     CandidateInfo,
     CandidatePanelResponse,
     CandidateSkillItem,
@@ -19,9 +23,7 @@ from app.schemas.jobs import (
 
 
 def get_job_rounds(job_id: str) -> list[JobInterviewRoundItem]:
-    conn = get_connection()
-    try:
-        cur = conn.cursor()
+    with db_cursor() as (conn, cur):
         cur.execute(
             """
             SELECT ir.round_order, irt.name, ir.failing_criteria, ir.description
@@ -41,33 +43,19 @@ def get_job_rounds(job_id: str) -> list[JobInterviewRoundItem]:
             )
             for row in cur.fetchall()
         ]
-    finally:
-        conn.close()
-
-
-def _escape_like(value: str) -> str:
-    """Escape SQL Server LIKE special characters so user input is treated literally."""
-    return value.replace("[", "[[]").replace("%", "[%]").replace("_", "[_]")
 
 
 def list_interview_round_types() -> list[InterviewRoundTypeItem]:
-    conn = get_connection()
-    try:
-        cur = conn.cursor()
+    with db_cursor() as (conn, cur):
         cur.execute("SELECT id, name, description FROM InterviewRoundTypes ORDER BY id")
         return [
             InterviewRoundTypeItem(id=int(row[0]), name=str(row[1]), description=str(row[2]) if row[2] else None)
             for row in cur.fetchall()
         ]
-    finally:
-        conn.close()
 
 
 def post_job(data: JobPostRequest) -> JobPostResponse:
-    conn = get_connection()
-    try:
-        cur = conn.cursor()
-
+    with db_cursor() as (conn, cur):
         cur.execute("SELECT company_id FROM RecruiterProfiles WHERE id = ?", data.recruiter_id)
         row = cur.fetchone()
         if not row:
@@ -79,8 +67,8 @@ def post_job(data: JobPostRequest) -> JobPostResponse:
             """
             INSERT INTO JobPostings
                 (id, recruiter_id, company_id, job_role_id, experience_level_id, description,
-                 location, job_type, salary_range, status, posted_at, expires_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', GETDATE(), ?)
+                 location, job_type, salary_range, status, posted_at, expires_at, ats_criteria)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', GETDATE(), ?, ?)
             """,
             job_id,
             data.recruiter_id,
@@ -92,6 +80,12 @@ def post_job(data: JobPostRequest) -> JobPostResponse:
             data.job_type,
             data.salary_range,
             data.expires_at,
+            json.dumps({
+                "criteria": [c.model_dump() for c in data.ats_criteria],
+                "qualify_threshold": data.qualify_threshold,
+                "overqualify_threshold": data.overqualify_threshold,
+                "auto_reject_overqualified": data.auto_reject_overqualified,
+            }),
         )
 
         for skill_id in data.skill_ids:
@@ -124,8 +118,6 @@ def post_job(data: JobPostRequest) -> JobPostResponse:
 
         conn.commit()
         return JobPostResponse(job_id=job_id, message="Job posted successfully.")
-    finally:
-        conn.close()
 
 
 def _row_to_job(row) -> JobListItem:
@@ -171,6 +163,44 @@ _JOB_GROUP_BY = """
              jp.job_role_id, el.name, jp.experience_level_id, jp.status
 """
 
+# Recruiter-only variant — adds jp.ats_criteria so the dashboard can display a job's
+# configured ATS weighting/thresholds. Not used for the public/candidate job list so
+# scoring thresholds aren't exposed to candidates.
+_RECRUITER_JOB_SELECT = """
+    SELECT jp.id, jp.description, c.name, jr.title,
+           jp.location, jp.job_type, jp.salary_range,
+           CONVERT(varchar, jp.posted_at, 127),
+           CONVERT(varchar, jp.expires_at, 127),
+           STRING_AGG(s.name, ',') WITHIN GROUP (ORDER BY s.name),
+           jp.job_role_id, el.name, jp.experience_level_id,
+           jp.status, jp.ats_criteria
+    FROM JobPostings jp
+    JOIN Companies c ON c.id = jp.company_id
+    JOIN JobRoles jr ON jr.id = jp.job_role_id
+    JOIN ExperienceLevels el ON el.id = jp.experience_level_id
+    LEFT JOIN JobRequiredSkills jrs ON jrs.job_id = jp.id
+    LEFT JOIN SkillSets s ON s.id = jrs.skill_id
+"""
+
+_RECRUITER_JOB_GROUP_BY = """
+    GROUP BY jp.id, jp.description, c.name, jr.title,
+             jp.location, jp.job_type, jp.salary_range, jp.posted_at, jp.expires_at,
+             jp.job_role_id, el.name, jp.experience_level_id, jp.status, jp.ats_criteria
+"""
+
+
+def _row_to_recruiter_job(row) -> JobListItem:
+    job = _row_to_job(row)
+    parsed = parse_ats_criteria(row[14])
+    job.ats_criteria = ATSCriteriaSummary(
+        has_config=parsed.has_config,
+        criteria=[ATSCriterionSummary(section=c["section"], weight=c["weight"]) for c in parsed.criteria],
+        qualify_threshold=parsed.qualify_threshold,
+        overqualify_threshold=parsed.overqualify_threshold,
+        auto_reject_overqualified=parsed.auto_reject_overqualified,
+    )
+    return job
+
 
 def list_jobs(
     job_role_id: int | None = None,
@@ -182,10 +212,7 @@ def list_jobs(
     offset: int = 0,
     limit: int = 50,
 ) -> list[JobListItem]:
-    conn = get_connection()
-    try:
-        cur = conn.cursor()
-
+    with db_cursor() as (conn, cur):
         conditions = [
             "jp.status = 'active'",
             "(jp.expires_at IS NULL OR CAST(jp.expires_at AS DATE) >= CAST(GETDATE() AS DATE))",
@@ -204,13 +231,13 @@ def list_jobs(
             params.append(experience_level_id)
         if location:
             conditions.append("jp.location LIKE ?")
-            params.append(f"%{_escape_like(location)}%")
+            params.append(f"%{escape_like(location)}%")
         if job_type:
             conditions.append("jp.job_type = ?")
             params.append(job_type)
         if salary_range:
             conditions.append("jp.salary_range LIKE ?")
-            params.append(f"%{_escape_like(salary_range)}%")
+            params.append(f"%{escape_like(salary_range)}%")
         if candidate_id:
             conditions.append(
                 "NOT EXISTS (SELECT 1 FROM Applications a WHERE a.job_id = jp.id AND a.candidate_id = ?)"
@@ -230,33 +257,24 @@ def list_jobs(
 
         cur.execute(sql, *params)
         return [_row_to_job(row) for row in cur.fetchall()]
-    finally:
-        conn.close()
 
 
 def list_recruiter_jobs(recruiter_id: str) -> list[JobListItem]:
-    conn = get_connection()
-    try:
-        cur = conn.cursor()
+    with db_cursor() as (conn, cur):
         cur.execute(
-            _JOB_SELECT
+            _RECRUITER_JOB_SELECT
             + "WHERE jp.recruiter_id = ?"
-            + _JOB_GROUP_BY
+            + _RECRUITER_JOB_GROUP_BY
             + "ORDER BY jp.posted_at DESC",
             recruiter_id,
         )
-        return [_row_to_job(row) for row in cur.fetchall()]
-    finally:
-        conn.close()
+        return [_row_to_recruiter_job(row) for row in cur.fetchall()]
 
 
 # ── Analytics ─────────────────────────────────────────────────────────────────
 
 def get_job_stats(job_id: str) -> JobStatsResponse:
-    conn = get_connection()
-    try:
-        cur = conn.cursor()
-
+    with db_cursor() as (conn, cur):
         cur.execute(
             """
             SELECT jr.title, jp.description, jp.status
@@ -340,14 +358,10 @@ def get_job_stats(job_id: str) -> JobStatsResponse:
             passed_all_rounds=passed_all_rounds,
             hired_count=hired_count,
         )
-    finally:
-        conn.close()
 
 
 def get_round_candidates(job_id: str, round_order: int) -> list[RoundCandidateItem]:
-    conn = get_connection()
-    try:
-        cur = conn.cursor()
+    with db_cursor() as (conn, cur):
         cur.execute(
             """
             SELECT cp.id, a.id, i.id,
@@ -374,15 +388,10 @@ def get_round_candidates(job_id: str, round_order: int) -> list[RoundCandidateIt
             )
             for r in cur.fetchall()
         ]
-    finally:
-        conn.close()
 
 
 def get_candidate_panel(application_id: str, interview_id: str) -> CandidatePanelResponse:
-    conn = get_connection()
-    try:
-        cur = conn.cursor()
-
+    with db_cursor() as (conn, cur):
         cur.execute(
             """
             SELECT u.first_name, u.last_name, u.email, cp.bio, cp.current_location,
@@ -497,14 +506,10 @@ def get_candidate_panel(application_id: str, interview_id: str) -> CandidatePane
             progress=progress,
             evaluation=evaluation,
         )
-    finally:
-        conn.close()
 
 
 def get_interview_qa(interview_id: str) -> list[EvaluationQuestionItem]:
-    conn = get_connection()
-    try:
-        cur = conn.cursor()
+    with db_cursor() as (conn, cur):
         cur.execute(
             """
             SELECT q.question_text, iq.candidate_answer, iq.score, iq.notes
@@ -524,5 +529,3 @@ def get_interview_qa(interview_id: str) -> list[EvaluationQuestionItem]:
             )
             for r in cur.fetchall()
         ]
-    finally:
-        conn.close()

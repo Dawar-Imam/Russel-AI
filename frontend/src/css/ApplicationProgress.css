@@ -540,12 +540,6 @@ body.light-theme .stage-bubble {
   border: 1px solid var(--color-border);
 }
 
-.ap-ats-tag--matched {
-  color: var(--color-primary);
-  border-color: rgba(var(--color-primary-rgb), 0.35);
-  background-color: rgba(var(--color-primary-rgb), 0.08);
-}
-
 .ap-ats-tag--missing {
   color: var(--color-alert);
   border-color: rgba(var(--color-alert-rgb), 0.35);
@@ -737,25 +731,8 @@ body.light-theme .stage-bubble {
   color: var(--color-alert);
 }
 
-/* ATS skill / responsibility / certification / achievement rows (shared list pattern) */
-.ap-ats-skill-table {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-}
-
-.ap-ats-skill-row {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: var(--space-3);
-  background-color: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-}
-
-.ap-ats-skill-row-top,
-.ap-ats-skill-row-bottom {
+/* ATS section-match row (shared pattern for projects/certifications/education/achievements) */
+.ap-ats-skill-row-top {
   display: flex;
   align-items: center;
   gap: var(--space-2);
@@ -831,8 +808,8 @@ body.light-theme .stage-bubble {
   color: var(--color-text-secondary);
 }
 
-/* Tier badges (skill_matching) */
-.ap-ats-tier-badge {
+/* Confidence badges (requirement_matching) */
+.ap-ats-confidence-badge {
   display: inline-flex;
   align-items: center;
   padding: 2px 10px;
@@ -845,19 +822,19 @@ body.light-theme .stage-bubble {
   flex-shrink: 0;
 }
 
-.ap-ats-tier-badge--primary {
+.ap-ats-confidence-badge--high {
   color: var(--color-primary);
   border-color: rgba(var(--color-primary-rgb), 0.4);
   background-color: rgba(var(--color-primary-rgb), 0.08);
 }
 
-.ap-ats-tier-badge--secondary {
+.ap-ats-confidence-badge--medium {
   color: var(--color-info-text);
   border-color: rgba(var(--color-secondary-rgb), 0.4);
   background-color: rgba(var(--color-secondary-rgb), 0.12);
 }
 
-.ap-ats-tier-badge--tertiary {
+.ap-ats-confidence-badge--low {
   color: var(--color-text-secondary);
   border-color: var(--color-border);
   background-color: rgba(var(--color-muted-rgb), 0.12);
@@ -945,31 +922,6 @@ body.light-theme .stage-bubble {
   color: var(--color-alert);
   border-color: rgba(var(--color-alert-rgb), 0.35);
   background-color: rgba(var(--color-alert-rgb), 0.08);
-}
-
-/* Projects matching */
-.ap-ats-project-list {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-3);
-}
-
-.ap-ats-project-card {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: var(--space-3);
-  background-color: var(--color-surface);
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-sm);
-}
-
-.ap-ats-project-subscores {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--space-3);
-  font-size: 11px;
-  color: var(--color-text-secondary);
 }
 
 /* Q&A area */

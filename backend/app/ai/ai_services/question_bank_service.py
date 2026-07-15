@@ -1,6 +1,6 @@
 from dataclasses import dataclass
 
-from app.database import get_connection
+from app.database import db_cursor
 from app.ai.interview_tools.schemas import FetchQuestionsFromDBOutput, QuestionItem
 
 
@@ -13,9 +13,7 @@ async def fetch_questions_from_db(
     """Random sample of active questions from Questions, scoped to the given
     round type, job role, and experience level."""
 
-    conn = get_connection()
-    try:
-        cur = conn.cursor()
+    with db_cursor() as (conn, cur):
         cur.execute(
             """
             SELECT TOP (?) question_text
@@ -32,8 +30,6 @@ async def fetch_questions_from_db(
             experience_level_id,
         )
         rows = cur.fetchall()
-    finally:
-        conn.close()
 
     return FetchQuestionsFromDBOutput(
         questions=[QuestionItem(question_text=row[0]) for row in rows]
@@ -55,10 +51,7 @@ async def fetch_interview_context(
 ) -> InterviewContext:
     """Resolve lookup ids to human-readable labels for the generate_questions() prompt."""
 
-    conn = get_connection()
-    try:
-        cur = conn.cursor()
-
+    with db_cursor() as (conn, cur):
         cur.execute("SELECT title, category FROM JobRoles WHERE id = ?", job_role_id)
         job_role = cur.fetchone()
 
@@ -67,8 +60,6 @@ async def fetch_interview_context(
 
         cur.execute("SELECT name FROM InterviewRoundTypes WHERE id = ?", interview_round_type_id)
         round_type = cur.fetchone()
-    finally:
-        conn.close()
 
     return InterviewContext(
         job_role_title=job_role[0],

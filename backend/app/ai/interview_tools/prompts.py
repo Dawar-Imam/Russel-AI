@@ -96,27 +96,6 @@ Return exactly {count} questions as `generated_questions`, each with only a \
 """
 
 
-EXTRACT_RESUME_CV_RELEVANCE_SYSTEM_PROMPT = """You are the resume-parsing component of \
-Russel.AI's Interview Agent.
-
-Given the raw text extracted from a candidate's resume (PDF), extract:
-
-- `job_experience_summary`: a concise 2-4 sentence summary of the candidate's \
-work experience, seniority, and domain background.
-- `relevant_skills`: technical and professional skills mentioned in the resume, \
-each with a `skill_name`, an estimated `proficiency_level` \
-("Beginner" | "Intermediate" | "Advanced" | "Expert"), and `years_of_experience` \
-(your best estimate based on the resume content).
-- `relevant_projects`: notable projects mentioned in the resume, each with a \
-`project_name`, a short `description`, and `skills_used` (the list of skills \
-or technologies used).
-
-If a section is not present in the resume, return an empty list for \
-`relevant_skills` / `relevant_projects`, or an empty string for \
-`job_experience_summary`.
-"""
-
-
 GRADE_ANSWERS_SYSTEM_PROMPT = """You are the answer-grading component of Russel.AI's Interview Agent.
 
 You are a reasoning model, not a keyword or sentiment scorer. A score is the \
