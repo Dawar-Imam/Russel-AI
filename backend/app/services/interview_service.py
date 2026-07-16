@@ -1,4 +1,5 @@
 import asyncio
+import json
 import logging
 import uuid
 
@@ -6,7 +7,11 @@ from app.ai.ai_services.answer_scoring_service import grade_candidate_answers
 from app.ai.ai_services.cv_relevance_service import fetch_candidate_cv_relevance
 from app.ai.ai_services.question_bank_service import fetch_interview_context
 from app.ai.ai_services.question_generation_service import generate_questions
-from app.ai.interview_tools.schemas import AnswerItem as AIAnswerItem, CandidateCVRelevance
+from app.ai.interview_tools.schemas import (
+    AnswerItem as AIAnswerItem,
+    CandidateCVRelevance,
+    QuestionItem as AIQuestionItem,
+)
 from app.core.config import settings
 from app.database import db_cursor
 from app.schemas.interviews import (
@@ -20,8 +25,10 @@ from app.services.interview_validator import (
     SCORED_STATUSES,
     TERMINAL_ROUND_STATUSES,
     ValidationInput,
+    WRITTEN_TEST_MIN_CORRECT,
     validate_interview,
 )
+from app.services.mcq_redis_cache import shuffle_mcq_options
 from app.services.pregen_lock import (
     PREGEN_LOCK_WAIT_TIMEOUT_SECONDS as _PREGEN_LOCK_WAIT_TIMEOUT_SECONDS,
     PREGEN_LOCK_POLL_INTERVAL_SECONDS as _PREGEN_LOCK_POLL_INTERVAL_SECONDS,
@@ -33,6 +40,8 @@ logger = logging.getLogger(__name__)
 
 TIMER_SECONDS = settings.INTERVIEW_DURATION_MINUTES * 60
 PASS_THRESHOLD = 6.0
+WRITTEN_TEST_QUESTION_COUNT = 15
+CORRECT_ANSWER_SCORE_THRESHOLD = 7
 
 LEAVE_FEEDBACK = "User left the interview, interview automatically closed."
 
@@ -109,11 +118,23 @@ def get_interview_context(interview_id: str) -> dict:
 # DB helpers
 # ---------------------------------------------------------------------------
 
+def _parse_options(options_json: str | None) -> tuple[list[str] | None, str | None]:
+    """Questions.options stores {"choices": [...], "correct_option": "..."} for MCQs, NULL otherwise."""
+    if not options_json:
+        return None, None
+    try:
+        parsed = json.loads(options_json)
+    except (TypeError, ValueError):
+        return None, None
+    return parsed.get("choices"), parsed.get("correct_option")
+
+
 def _fetch_existing_questions(cur, interview_id: str) -> list[QuestionItem]:
     """Return questions for this interview with complete data from both tables."""
     cur.execute(
         """
-        SELECT iq.id, iq.question_id, q.question_text, iq.candidate_answer, iq.score, iq.notes
+        SELECT iq.id, iq.question_id, q.question_text, q.question_type, q.options,
+               iq.candidate_answer, iq.score, iq.notes
         FROM InterviewQuestions iq
         JOIN Questions q ON q.id = iq.question_id
         WHERE iq.interview_id = ?
@@ -121,29 +142,50 @@ def _fetch_existing_questions(cur, interview_id: str) -> list[QuestionItem]:
         """,
         interview_id,
     )
-    return [
-        QuestionItem(
+    items = []
+    for r in cur.fetchall():
+        choices, correct_option = _parse_options(r[4])
+        items.append(QuestionItem(
             iq_id=str(r[0]),
             question_id=str(r[1]),
             question_text=r[2],
-            candidate_answer=r[3],
-            score=float(r[4]) if r[4] is not None else None,
-            notes=r[5],
-        )
-        for r in cur.fetchall()
-    ]
+            question_type=r[3] or "short_answer",
+            options=choices,
+            correct_option=correct_option,
+            candidate_answer=r[5],
+            score=float(r[6]) if r[6] is not None else None,
+            notes=r[7],
+        ))
+    return items
+
+
+def _shuffle_and_serialize_options(
+    item: AIQuestionItem, job_posting_id: str
+) -> tuple[list[str] | None, str | None]:
+    """Shuffles MCQ option order per candidate (see mcq_redis_cache.shuffle_mcq_options)
+    so different candidates for the same job don't see the same ordering, and returns
+    both the shuffled choices (for the in-memory QuestionItem handed back to the caller)
+    and the JSON blob to persist — the two must always agree, or the candidate would see
+    one order while a DB re-fetch would produce another. correct_option is stored as
+    literal text, matched by value at grading time — no index remapping needed."""
+    if item.question_type != "mcq" or not item.options:
+        return None, None
+    shuffled = shuffle_mcq_options(job_posting_id, item.question_text, item.options)
+    options_json = json.dumps({"choices": shuffled, "correct_option": item.correct_option})
+    return shuffled, options_json
 
 
 def _update_generated_questions(
     cur,
     interview_id: str,
     existing: list[QuestionItem],
-    new_texts: list[str],
+    new_items: list[AIQuestionItem],
     interview_round_type_id: int,
     job_role_id: int,
     experience_level_id: int,
+    job_posting_id: str,
 ) -> list[QuestionItem]:
-    """UPDATE Questions.question_text in-place, paired by position with new_texts.
+    """UPDATE Questions in-place, paired by position with new_items.
 
     If the freshly generated count differs from `existing` (e.g. a regenerate
     that produces more/fewer questions than a prior attempt), surplus old rows
@@ -151,17 +193,21 @@ def _update_generated_questions(
     always exactly matches the new generation, so no stale leftover question
     from a previous attempt can ever resurface alongside the new ones.
     """
-    paired = min(len(existing), len(new_texts))
+    paired = min(len(existing), len(new_items))
     updated: list[QuestionItem] = []
-    for item, new_text in zip(existing[:paired], new_texts[:paired]):
+    for item, new_q in zip(existing[:paired], new_items[:paired]):
+        shuffled_options, options_json = _shuffle_and_serialize_options(new_q, job_posting_id)
         cur.execute(
-            "UPDATE Questions SET question_text = ? WHERE id = ?",
-            new_text, item.question_id,
+            "UPDATE Questions SET question_text = ?, question_type = ?, options = ? WHERE id = ?",
+            new_q.question_text, new_q.question_type, options_json, item.question_id,
         )
         updated.append(QuestionItem(
             iq_id=item.iq_id,
             question_id=item.question_id,
-            question_text=new_text,
+            question_text=new_q.question_text,
+            question_type=new_q.question_type,
+            options=shuffled_options,
+            correct_option=new_q.correct_option,
             candidate_answer=item.candidate_answer,
             score=item.score,
             notes=item.notes,
@@ -171,11 +217,11 @@ def _update_generated_questions(
         cur.execute("DELETE FROM InterviewQuestions WHERE id = ?", stale.iq_id)
         cur.execute("DELETE FROM Questions WHERE id = ?", stale.question_id)
 
-    extra_texts = new_texts[paired:]
-    if extra_texts:
+    extra_items = new_items[paired:]
+    if extra_items:
         updated.extend(store_generated_questions(
-            cur, interview_id, extra_texts,
-            interview_round_type_id, job_role_id, experience_level_id,
+            cur, interview_id, extra_items,
+            interview_round_type_id, job_role_id, experience_level_id, job_posting_id,
         ))
 
     return updated
@@ -184,24 +230,27 @@ def _update_generated_questions(
 def store_generated_questions(
     cur,
     interview_id: str,
-    question_texts: list[str],
+    questions: list[AIQuestionItem],
     interview_round_type_id: int,
     job_role_id: int,
     experience_level_id: int,
+    job_posting_id: str,
 ) -> list[QuestionItem]:
     """Insert into Questions + InterviewQuestions; return items with full data."""
     items: list[QuestionItem] = []
-    for q_text in question_texts:
+    for q in questions:
         q_id = str(uuid.uuid4())
         iq_id = str(uuid.uuid4())
+        shuffled_options, options_json = _shuffle_and_serialize_options(q, job_posting_id)
         cur.execute(
             """
             INSERT INTO Questions
                 (id, interview_round_type_id, job_role_id, experience_level_id,
-                 question_text, is_active, ai_generated, created_at)
-            VALUES (?, ?, ?, ?, ?, 1, 1, GETDATE())
+                 question_text, question_type, options, is_active, ai_generated, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, 1, 1, GETDATE())
             """,
-            q_id, interview_round_type_id, job_role_id, experience_level_id, q_text,
+            q_id, interview_round_type_id, job_role_id, experience_level_id,
+            q.question_text, q.question_type, options_json,
         )
         cur.execute(
             """
@@ -214,7 +263,10 @@ def store_generated_questions(
         items.append(QuestionItem(
             iq_id=iq_id,
             question_id=q_id,
-            question_text=q_text,
+            question_text=q.question_text,
+            question_type=q.question_type,
+            options=shuffled_options,
+            correct_option=q.correct_option,
             candidate_answer=None,
             score=None,
             notes=None,
@@ -544,10 +596,11 @@ def _upsert_generated_questions(
     interview_id: str,
     current_status_row,
     existing: list[QuestionItem],
-    new_texts: list[str],
+    new_items: list[AIQuestionItem],
     interview_round_type_id: int,
     job_role_id: int,
     experience_level_id: int,
+    job_posting_id: str,
 ) -> list[QuestionItem]:
     """Blocking DB write — run via asyncio.to_thread so it doesn't block the event loop."""
     with db_cursor() as (conn, cur):
@@ -559,17 +612,18 @@ def _upsert_generated_questions(
 
         if existing:
             items = _update_generated_questions(
-                cur, interview_id, existing, new_texts,
-                interview_round_type_id, job_role_id, experience_level_id,
+                cur, interview_id, existing, new_items,
+                interview_round_type_id, job_role_id, experience_level_id, job_posting_id,
             )
         else:
             items = store_generated_questions(
                 cur,
                 interview_id,
-                new_texts,
+                new_items,
                 interview_round_type_id,
                 job_role_id,
                 experience_level_id,
+                job_posting_id,
             )
         cur.execute(
             "UPDATE Interviews SET status = 'In Progress' WHERE id = ?",
@@ -665,6 +719,7 @@ async def generate_interview_questions(
             interview_round_type_id=interview_round_type_id,
             job_role_id=job_role_id,
             experience_level_id=experience_level_id,
+            job_posting_id=job_posting_id,
         )
         parsed_cv_text = await fetch_candidate_cv_relevance(application_id=application_id)
         candidate_relevance = CandidateCVRelevance(
@@ -675,25 +730,33 @@ async def generate_interview_questions(
         generated = await generate_questions(
             example_questions=[],
             candidate_relevance=candidate_relevance,
-            count=10,
+            count=WRITTEN_TEST_QUESTION_COUNT,
             context=context,
         )
-        new_texts = [q.question_text for q in generated.generated_questions]
+        new_items = generated.generated_questions
 
         if test_mode:
             # Test mode never touches Questions/InterviewQuestions — questions live only
             # in the in-memory cache, keyed by interview_id, so test runs can't drift out
-            # of sync with (or pollute) real DB rows.
+            # of sync with (or pollute) real DB rows. Options are still shuffled per the
+            # same per-job Redis cache as the real path, since test mode is still "sent
+            # to a candidate" from the UI's perspective.
             items = [
                 QuestionItem(
                     iq_id=str(uuid.uuid4()),
                     question_id=str(uuid.uuid4()),
-                    question_text=text,
+                    question_text=q.question_text,
+                    question_type=q.question_type,
+                    options=(
+                        shuffle_mcq_options(job_posting_id, q.question_text, q.options)
+                        if q.question_type == "mcq" and q.options else q.options
+                    ),
+                    correct_option=q.correct_option,
                     candidate_answer=None,
                     score=None,
                     notes=None,
                 )
-                for text in new_texts
+                for q in new_items
             ]
             _test_mode_questions[interview_id] = items
         else:
@@ -707,10 +770,11 @@ async def generate_interview_questions(
                 interview_id,
                 current_status_row,
                 existing,
-                new_texts,
+                new_items,
                 interview_round_type_id,
                 job_role_id,
                 experience_level_id,
+                job_posting_id,
             )
     finally:
         if holding_pregen_lock:
@@ -772,6 +836,8 @@ async def score_interview_answers(
                     iq_id=a.iq_id,
                     question_id=iq_map[a.iq_id.lower()].question_id if a.iq_id.lower() in iq_map else "",
                     question_text=iq_map[a.iq_id.lower()].question_text if a.iq_id.lower() in iq_map else a.iq_id,
+                    question_type=iq_map[a.iq_id.lower()].question_type if a.iq_id.lower() in iq_map else "short_answer",
+                    correct_option=iq_map[a.iq_id.lower()].correct_option if a.iq_id.lower() in iq_map else None,
                     candidate_answer=a.candidate_answer,
                     score=None,
                     notes=None,
@@ -784,10 +850,13 @@ async def score_interview_answers(
         AIAnswerItem(
             question_text=item.question_text,
             candidate_answer=item.candidate_answer or "",
+            question_type=item.question_type,
+            correct_option=item.correct_option,
         )
         for item in to_score
     ]
     graded = await grade_candidate_answers(ai_answers, interview_type=interview_type)
+    correct_count = sum(1 for g in graded.graded_answers if g.score >= CORRECT_ANSWER_SCORE_THRESHOLD)
 
     # --- 3. Validate result ---
     vr = validate_interview(ValidationInput(
@@ -797,6 +866,7 @@ async def score_interview_answers(
         enable_fail_cases=settings.ENABLE_FAIL_CASES,
         current_status=str(status_row[0]),
         interview_type=interview_type,
+        correct_count=correct_count,
     ))
 
     if not test_mode:
@@ -835,8 +905,13 @@ async def score_interview_answers(
                 candidate_answer=g.candidate_answer,
                 score=g.score,
                 notes=g.notes,
+                is_correct=g.score >= CORRECT_ANSWER_SCORE_THRESHOLD,
             )
             for i, g in enumerate(graded.graded_answers)
         ],
         result=vr.final_status,
+        improvement_recommendations=graded.improvement_recommendations,
+        total_questions=graded.total_graded,
+        passed_questions=correct_count,
+        passing_threshold=WRITTEN_TEST_MIN_CORRECT,
     )

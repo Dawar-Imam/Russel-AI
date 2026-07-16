@@ -29,6 +29,8 @@ interface RoundInfo {
   scheduled_at: string | null
   completed_at: string | null
   avg_score: number | null
+  questions_correct: number | null
+  questions_total: number | null
 }
 
 interface StagesData {
@@ -125,9 +127,18 @@ function sectionMatchingSummary(
 interface QuestionItem {
   question_id: string
   question_text: string
+  question_type: string
+  options: string[] | null
+  correct_option: string | null
   candidate_answer: string | null
   score: number | null
   notes: string | null
+  is_correct: boolean | null
+}
+
+function isOralRound(round: RoundInfo): boolean {
+  const t = round.title.toLowerCase()
+  return t.includes('oral') || t.includes('voice')
 }
 
 function scoreVerdict(result: number | null): 'pass' | 'fail' | null {
@@ -404,7 +415,14 @@ function ApplicationProgress() {
               {verdictKey === 'pass' ? 'Passed' : verdictKey === 'fail' ? 'Failed' : 'Completed'}
             </span>
           </div>
-          {round.avg_score != null && (
+          {!isOralRound(round) && round.questions_total != null ? (
+            <div className="ap-detail-meta-item">
+              <span className="ap-detail-meta-label">Questions Passed</span>
+              <span className="ap-detail-meta-value">
+                {round.questions_correct ?? 0} / {round.questions_total}
+              </span>
+            </div>
+          ) : round.avg_score != null && (
             <div className="ap-detail-meta-item">
               <span className="ap-detail-meta-label">Avg. Score</span>
               <span className="ap-detail-meta-value">{round.avg_score.toFixed(1)} / 10</span>
@@ -429,7 +447,29 @@ function ApplicationProgress() {
                     )}
                   </div>
                   <p className="ap-qa-question">{q.question_text}</p>
-                  {q.candidate_answer ? (
+                  {q.question_type === 'mcq' && q.options && q.options.length > 0 ? (
+                    <div className="ap-qa-mcq-options">
+                      {q.options.map((opt, oi) => {
+                        const isSelected = q.candidate_answer === opt
+                        const isCorrectOpt = q.correct_option === opt
+                        return (
+                          <div
+                            key={oi}
+                            className={`ap-qa-mcq-option${isSelected ? ' ap-qa-mcq-option--selected' : ''}${isCorrectOpt ? ' ap-qa-mcq-option--correct' : ''}`}
+                          >
+                            <span className="ap-qa-mcq-option-text">{opt}</span>
+                            {isSelected && <span className="ap-qa-mcq-tag">Your answer</span>}
+                            {isCorrectOpt && <span className="ap-qa-mcq-tag ap-qa-mcq-tag--correct">Correct answer</span>}
+                          </div>
+                        )
+                      })}
+                      {q.is_correct != null && (
+                        <p className={`ap-qa-mcq-verdict${q.is_correct ? ' ap-qa-mcq-verdict--correct' : ' ap-qa-mcq-verdict--incorrect'}`}>
+                          {q.is_correct ? 'Correct' : 'Incorrect'}
+                        </p>
+                      )}
+                    </div>
+                  ) : q.candidate_answer ? (
                     <p className="ap-qa-answer">{q.candidate_answer}</p>
                   ) : (
                     <p className="ap-qa-answer ap-qa-answer--empty">No answer recorded</p>

@@ -1126,6 +1126,67 @@ body.light-theme .stage-bubble {
   font-style: italic;
 }
 
+/* ── MCQ result display ── */
+.ap-qa-mcq-options {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.ap-qa-mcq-option {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-4);
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  color: var(--color-text-secondary);
+}
+
+.ap-qa-mcq-option-text {
+  flex: 1;
+}
+
+.ap-qa-mcq-option--selected {
+  border-color: var(--color-primary-dark);
+  color: var(--color-text-primary);
+}
+
+.ap-qa-mcq-option--correct {
+  border-color: var(--color-primary);
+  color: var(--color-text-primary);
+}
+
+.ap-qa-mcq-tag {
+  flex-shrink: 0;
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--color-primary-dark);
+}
+
+.ap-qa-mcq-tag--correct {
+  color: var(--color-primary);
+}
+
+.ap-qa-mcq-verdict {
+  margin: var(--space-1) 0 0;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.ap-qa-mcq-verdict--correct {
+  color: var(--color-primary);
+}
+
+.ap-qa-mcq-verdict--incorrect {
+  color: var(--color-alert);
+}
+
 /* ─────────────────────────────────────────────────────────────
    CTA button  (heading row, next to Test Mode toggle)
 ───────────────────────────────────────────────────────────── */

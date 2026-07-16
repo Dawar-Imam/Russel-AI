@@ -1,4 +1,4 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from app.database import db_cursor
 from app.ai.interview_tools.schemas import FetchQuestionsFromDBOutput, QuestionItem
@@ -42,14 +42,22 @@ class InterviewContext:
     job_role_category: str
     experience_level_name: str
     round_type_name: str
+    job_description: str = ""
+    required_skills: list[str] = field(default_factory=list)
 
 
 async def fetch_interview_context(
     interview_round_type_id: int,
     job_role_id: int,
     experience_level_id: int,
+    job_posting_id: str | None = None,
 ) -> InterviewContext:
-    """Resolve lookup ids to human-readable labels for the generate_questions() prompt."""
+    """Resolve lookup ids to human-readable labels for the generate_questions() prompt.
+
+    When `job_posting_id` is given, also fetches the job posting's description and
+    required skills (JobRequiredSkills -> SkillSets) — same query shape as
+    job_post_service.fetch_job_post_data, reused here for the written-test prompt.
+    """
 
     with db_cursor() as (conn, cur):
         cur.execute("SELECT title, category FROM JobRoles WHERE id = ?", job_role_id)
@@ -61,9 +69,29 @@ async def fetch_interview_context(
         cur.execute("SELECT name FROM InterviewRoundTypes WHERE id = ?", interview_round_type_id)
         round_type = cur.fetchone()
 
+        job_description = ""
+        required_skills: list[str] = []
+        if job_posting_id:
+            cur.execute("SELECT description FROM JobPostings WHERE id = ?", job_posting_id)
+            jp_row = cur.fetchone()
+            job_description = (jp_row[0] or "") if jp_row else ""
+
+            cur.execute(
+                """
+                SELECT ss.name
+                FROM JobRequiredSkills jrs
+                JOIN SkillSets ss ON ss.id = jrs.skill_id
+                WHERE jrs.job_id = ?
+                """,
+                job_posting_id,
+            )
+            required_skills = [r[0] for r in cur.fetchall()]
+
     return InterviewContext(
         job_role_title=job_role[0],
         job_role_category=job_role[1],
         experience_level_name=exp_level[0],
         round_type_name=round_type[0],
+        job_description=job_description,
+        required_skills=required_skills,
     )

@@ -25,6 +25,7 @@ from app.schemas.jobs import (
     RoundCandidateItem,
 )
 from app.services.ats_lock import ats_rerun_batch_key, get_redis_client
+from app.services.mcq_redis_cache import clear_job_queue, init_job_queue
 
 _ATS_RERUN_BATCH_TTL_SECONDS = 3600
 
@@ -124,6 +125,9 @@ def post_job(data: JobPostRequest) -> JobPostResponse:
             )
 
         conn.commit()
+        # Per-job MCQ option-order cache (mcq_redis_cache.py) — best-effort, never
+        # blocks job creation if Redis is unreachable.
+        init_job_queue(job_id)
         return JobPostResponse(job_id=job_id, message="Job posted successfully.")
 
 
@@ -597,6 +601,10 @@ def update_job(job_id: str, recruiter_id: str, data: JobUpdateRequest) -> JobPos
                 )
 
         conn.commit()
+        if data.status == "closed":
+            # Job inactivated — drop its cached MCQ option-order data so nothing
+            # stale lingers in Redis for a job no candidate can apply to anymore.
+            clear_job_queue(job_id)
         return JobPostResponse(job_id=job_id, message="Job updated successfully.")
 
 

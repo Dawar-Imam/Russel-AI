@@ -271,6 +271,19 @@ CREATE TABLE Resumes (
 | is_active | bit |
 | created_at | datetime2 |
 | ai_generated | bit |
+| question_type | varchar(20) NULL — `mcq` \| `short_answer` \| `scenario`; NULL/blank treated as `short_answer` |
+| options | nvarchar(MAX) NULL — MCQ only, JSON `{"choices": ["..."], "correct_option": "..."}`; NULL for non-MCQ |
+
+> **Migration required**:
+> ```sql
+> ALTER TABLE Questions ADD question_type varchar(20) NULL;
+> ALTER TABLE Questions ADD options nvarchar(MAX) NULL;
+> ```
+> `correct_option` (inside the `options` JSON) is never returned by
+> `GET`/generate-questions API responses — `app/schemas/interviews.py`'s
+> `QuestionItem.correct_option` is a server-side-only field
+> (`Field(exclude=True)`) used only by the scoring path, so it can't leak to
+> the candidate before they submit an answer.
 
 ### InterviewQuestions
 | Column | Type |

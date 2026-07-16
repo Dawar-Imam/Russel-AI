@@ -70,6 +70,23 @@ question-format mix.
 Use this ratio to decide how many questions should draw on the candidate's CV \
 (job experience summary, relevant skills, relevant projects) versus the job \
 posting's live required skills.
+
+## MCQ format
+
+Whenever a question's format (per the mix table above) is MCQ, generate new \
+MCQs — do not reuse the same question/option wording verbatim across calls — \
+and populate `question_type="mcq"` and `options` with 3-5 plausible answer \
+choices — exactly one of which is correct. `correct_option` must match one \
+of the `options` entries verbatim (identical text). Distractors should be \
+realistic and relevant to the topic, not obviously wrong filler. Randomise \
+the MCQ option order yourself when writing `options` — do not always place \
+the correct option first, last, or in any fixed position. (The backend also \
+re-shuffles `options` per candidate before storage, so this is a second, \
+independent layer, not the only source of randomisation.)
+
+For "Question Answer" and "Scenario Based" questions, set \
+`question_type="short_answer"` or `question_type="scenario"` respectively, \
+and leave `options`/`correct_option` unset (null).
 """
 
 
@@ -78,6 +95,12 @@ GENERATE_QUESTIONS_USER_PROMPT = """Generate {count} interview questions.
 Job role: {job_role_title} (category: {job_role_category})
 Experience level: {experience_level_name}
 Interview round type: {round_type_name}
+
+Job description:
+{job_description}
+
+Job's required skills:
+{required_skills}
 
 Candidate background:
 {job_experience_summary}
@@ -91,8 +114,10 @@ Candidate's relevant projects:
 Example questions from the question bank (style/format reference only — may be empty):
 {example_questions}
 
-Return exactly {count} questions as `generated_questions`, each with only a \
-`question_text` field.
+Return exactly {count} questions as `generated_questions`. Each question must \
+have `question_text`, `question_type` ("mcq" | "short_answer" | "scenario"), \
+and — only when `question_type` is "mcq" — `options` and `correct_option` as \
+described above.
 """
 
 
@@ -182,6 +207,14 @@ UNANSWERED / INVALID CASES:
 - Irrelevant / nonsensical / incoherent answer → NONSENSE → score 0
 - Vulgar, abusive, or inappropriate content → NONSENSE → score 0
 
+MCQ QUESTIONS:
+- If a question is marked as an MCQ with its correct option given, skip the \
+reasoning layer and classification framework entirely for that question.
+- Score deterministically: 10 if the candidate's selected option matches the \
+given correct option (ignoring case/whitespace differences), otherwise 0.
+- Notes should briefly state whether the selection was correct and, if not, \
+what the correct option was.
+
 ROUND-SPECIFIC RULES:
 
 1. ORAL INTERVIEWS (STT-BASED):
@@ -207,4 +240,17 @@ phrase like "good understanding" or "needs improvement".
 Then compute:
 - overall_score: average of all individual scores
 - total_graded: number of question/answer pairs graded
+
+## Improvement Recommendations
+
+Write `improvement_recommendations`: a short, actionable summary (2-4 \
+sentences) of how the candidate could improve, based ONLY on answers \
+classified STRONG, ADEQUATE, or VAGUE (i.e. a genuine attempt that has room \
+to improve). Reference concrete gaps from those answers.
+
+Do NOT draw on or mention answers classified INVALID or NONSENSE (unanswered, \
+incoherent, irrelevant, abusive, or fabricated) — there is nothing \
+constructive to recommend from those. If every answer is STRONG with no real \
+gaps, or every answer is INVALID/NONSENSE (nothing valid to give feedback on), \
+return an empty string for `improvement_recommendations`.
 """

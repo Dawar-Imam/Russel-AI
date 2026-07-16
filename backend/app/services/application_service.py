@@ -10,6 +10,7 @@ from app.database import db_cursor
 from app.schemas.applications import ATSCheckResponse, ATSRerunNotice, ApplyResponse, InterviewQuestionItem, InterviewRoundInfo, InterviewStagesResponse, MyApplicationItem
 from app.services.ats_lock import acquire_ats_lock, release_ats_lock
 from app.services.events import publish_ats_completed
+from app.services.interview_service import CORRECT_ANSWER_SCORE_THRESHOLD, _parse_options
 
 logger = logging.getLogger(__name__)
 
@@ -567,7 +568,13 @@ def get_interview_stages(application_id: str) -> InterviewStagesResponse:
                 i.completed_at,
                 (SELECT AVG(CAST(iq2.score AS FLOAT))
                  FROM InterviewQuestions iq2
-                 WHERE iq2.interview_id = i.id) AS avg_score
+                 WHERE iq2.interview_id = i.id) AS avg_score,
+                (SELECT COUNT(*)
+                 FROM InterviewQuestions iq3
+                 WHERE iq3.interview_id = i.id AND iq3.score IS NOT NULL) AS questions_total,
+                (SELECT COUNT(*)
+                 FROM InterviewQuestions iq4
+                 WHERE iq4.interview_id = i.id AND iq4.score >= ?) AS questions_correct
             FROM InterviewRounds ir
             JOIN InterviewRoundTypes irt ON irt.id = ir.interview_round_type_id
             LEFT JOIN Interviews i
@@ -576,6 +583,7 @@ def get_interview_stages(application_id: str) -> InterviewStagesResponse:
             WHERE ir.job_posting_id = ?
             ORDER BY ir.round_order
             """,
+            CORRECT_ANSWER_SCORE_THRESHOLD,
             application_id,
             job_posting_id,
         )
@@ -595,6 +603,8 @@ def get_interview_stages(application_id: str) -> InterviewStagesResponse:
             scheduled_at: str | None = r[7].isoformat() if r[7] else None
             completed_at: str | None = r[8].isoformat() if r[8] else None
             avg_score: float | None = float(r[9]) if r[9] is not None else None
+            questions_total: int | None = int(r[10]) if r[10] else None
+            questions_correct: int | None = int(r[11]) if questions_total else None
 
             rounds.append(
                 InterviewRoundInfo(
@@ -608,6 +618,8 @@ def get_interview_stages(application_id: str) -> InterviewStagesResponse:
                     scheduled_at=scheduled_at,
                     completed_at=completed_at,
                     avg_score=avg_score,
+                    questions_total=questions_total,
+                    questions_correct=questions_correct,
                 )
             )
 
@@ -711,7 +723,8 @@ def get_interview_questions(interview_id: str) -> list[InterviewQuestionItem]:
     with db_cursor() as (conn, cur):
         cur.execute(
             """
-            SELECT q.id, q.question_text, iq.candidate_answer, iq.score, iq.notes
+            SELECT q.id, q.question_text, q.question_type, q.options,
+                   iq.candidate_answer, iq.score, iq.notes
             FROM InterviewQuestions iq
             JOIN Questions q ON q.id = iq.question_id
             WHERE iq.interview_id = ?
@@ -720,16 +733,22 @@ def get_interview_questions(interview_id: str) -> list[InterviewQuestionItem]:
             interview_id,
         )
         rows = cur.fetchall()
-        return [
-            InterviewQuestionItem(
+        items = []
+        for r in rows:
+            choices, correct_option = _parse_options(r[3])
+            score = r[5]
+            items.append(InterviewQuestionItem(
                 question_id=str(r[0]),
                 question_text=r[1],
-                candidate_answer=r[2],
-                score=r[3],
-                notes=r[4],
-            )
-            for r in rows
-        ]
+                question_type=r[2] or "short_answer",
+                options=choices,
+                correct_option=correct_option,
+                candidate_answer=r[4],
+                score=score,
+                notes=r[6],
+                is_correct=(score >= CORRECT_ANSWER_SCORE_THRESHOLD) if score is not None else None,
+            ))
+        return items
 
 
 def _fetch_application_for_ats(

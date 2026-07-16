@@ -15,6 +15,7 @@ from app.ai.ai_services.question_generation_service import generate_questions
 from app.ai.interview_tools.schemas import CandidateCVRelevance
 from app.database import db_cursor
 from app.services.interview_service import (
+    WRITTEN_TEST_QUESTION_COUNT,
     _fetch_existing_questions,
     get_interview_context,
     store_generated_questions,
@@ -76,6 +77,7 @@ async def pregenerate_interview_questions(interview_id: str) -> bool:
                 interview_round_type_id=ctx["interview_round_type_id"],
                 job_role_id=ctx["job_role_id"],
                 experience_level_id=experience_level_id,
+                job_posting_id=ctx["job_posting_id"],
             )
             parsed_cv_text = await fetch_candidate_cv_relevance(application_id=ctx["application_id"])
             candidate_relevance = CandidateCVRelevance(
@@ -86,23 +88,24 @@ async def pregenerate_interview_questions(interview_id: str) -> bool:
             generated = await generate_questions(
                 example_questions=[],
                 candidate_relevance=candidate_relevance,
-                count=10,
+                count=WRITTEN_TEST_QUESTION_COUNT,
                 context=context,
             )
         except Exception:
             logger.exception("pregenerate: question generation failed for interview_id=%s", interview_id)
             return False
 
-        new_texts = [q.question_text for q in generated.generated_questions]
+        new_items = generated.generated_questions
 
         with db_cursor() as (conn, cur):
             store_generated_questions(
-                cur, interview_id, new_texts,
+                cur, interview_id, new_items,
                 ctx["interview_round_type_id"], ctx["job_role_id"], experience_level_id,
+                ctx["job_posting_id"],
             )
             conn.commit()
 
-        logger.info("pregenerate: stored %d questions for interview_id=%s", len(new_texts), interview_id)
+        logger.info("pregenerate: stored %d questions for interview_id=%s", len(new_items), interview_id)
         return True
     finally:
         release_pregen_lock(interview_id)

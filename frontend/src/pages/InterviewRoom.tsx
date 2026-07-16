@@ -18,6 +18,8 @@ const MAX_SCORE = 10
 interface QuestionItem {
   iq_id: string
   question_text: string
+  question_type: string
+  options?: string[] | null
 }
 
 interface GradedAnswer {
@@ -25,12 +27,18 @@ interface GradedAnswer {
   candidate_answer: string
   score: number
   notes: string
+  is_correct: boolean
 }
 
 interface Results {
   overall_score: number
   total_graded: number
   graded_answers: GradedAnswer[]
+  improvement_recommendations?: string
+  result: string  // "Pass" | "Failed" — backend-computed, matches passing_threshold
+  total_questions: number
+  passed_questions: number
+  passing_threshold: number
 }
 
 interface ConversationMessage {
@@ -85,6 +93,7 @@ function InterviewRoom() {
 
   const [enableFailCases, setEnableFailCases] = useState(true)
   const [terminatedReason, setTerminatedReason] = useState<string | null>(null)
+  const [autoSubmitted, setAutoSubmitted] = useState(false)
 
   const answersRef = useRef<string[]>([])
   const questionsRef = useRef<QuestionItem[]>([])
@@ -208,7 +217,11 @@ function InterviewRoom() {
   const doSubmit = useCallback(async (triggeredByTimer = false) => {
     if (isSubmittingRef.current) return
     isSubmittingRef.current = true
-    if (timerRef.current) clearInterval(timerRef.current)
+    if (timerRef.current) {
+      clearInterval(timerRef.current)
+      timerRef.current = null
+    }
+    if (triggeredByTimer) setAutoSubmitted(true)
     setPhase('submitting')
 
     try {
@@ -217,6 +230,8 @@ function InterviewRoom() {
         test_mode: localStorage.getItem('russell_test_mode') === '1',
         event_type: triggeredByTimer ? 'timer_end' : 'submit',
         interview_type: 'written',
+        // Snapshotted at call time — includes whatever's currently in the answer
+        // boxes even if the candidate was mid-keystroke when the timer hit 0.
         answers: questionsRef.current.map((q, i) => ({
           iq_id: q.iq_id,
           candidate_answer: answersRef.current[i] ?? '',
@@ -235,6 +250,7 @@ function InterviewRoom() {
       setResults(data)
       setPhase('results')
     } catch (err) {
+      isSubmittingRef.current = false
       setError(err instanceof Error ? err.message : 'Submission failed')
       setPhase('error')
     }
@@ -592,18 +608,41 @@ function InterviewRoom() {
 
   useEffect(() => {
     if (phase !== 'answering') return
-    timerRef.current = setInterval(() => {
-      setTimer((prev) => {
-        if (prev <= 1) {
-          doSubmit(true)
-          return 0
+
+    // Deadline-based, not a per-tick decrement: setInterval side effects (calling
+    // doSubmit from inside a setState updater, as this used to) are unreliable —
+    // React updater functions must stay pure, and browsers throttle/pause
+    // setInterval in backgrounded or minimized tabs, so a naive "subtract 1 every
+    // tick" counter can drift and never actually reach 0. Recomputing the
+    // remaining time from a fixed wall-clock deadline on every tick means that
+    // whenever a tick DOES fire — even a late one after the tab regains focus —
+    // it still detects expiry correctly and submits.
+    const deadline = Date.now() + timer * 1000
+
+    const tick = () => {
+      const remainingMs = deadline - Date.now()
+      const remainingSec = Math.max(0, Math.ceil(remainingMs / 1000))
+      setTimer(remainingSec)
+      if (remainingMs <= 0) {
+        if (timerRef.current) {
+          clearInterval(timerRef.current)
+          timerRef.current = null
         }
-        return prev - 1
-      })
-    }, 1000)
-    return () => {
-      if (timerRef.current) clearInterval(timerRef.current)
+        void doSubmit(true)
+      }
     }
+
+    timerRef.current = setInterval(tick, 1000)
+    return () => {
+      if (timerRef.current) {
+        clearInterval(timerRef.current)
+        timerRef.current = null
+      }
+    }
+  // `timer` is intentionally read once (as the starting point) rather than
+  // listed as a dep — re-running this effect every tick would recreate the
+  // interval every second instead of running a single deadline-based countdown.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [phase, doSubmit])
 
   // ---------------------------------------------------------------------------
@@ -812,17 +851,38 @@ function InterviewRoom() {
                       <span className="ir-question-num">Q{i + 1}</span>
                       <p className="ir-question-text">{q.question_text}</p>
                     </div>
-                    <textarea
-                      className="ir-answer-textarea"
-                      placeholder="Type your answer here…"
-                      value={answers[i] ?? ''}
-                      rows={5}
-                      onChange={(e) => {
-                        const updated = [...answers]
-                        updated[i] = e.target.value
-                        setAnswers(updated)
-                      }}
-                    />
+                    {q.question_type === 'mcq' && q.options && q.options.length > 0 ? (
+                      <div className="ir-mcq-options" role="radiogroup">
+                        {q.options.map((opt, optIdx) => (
+                          <label key={optIdx} className="ir-mcq-option">
+                            <input
+                              type="radio"
+                              name={`ir-mcq-${q.iq_id}`}
+                              value={opt}
+                              checked={(answers[i] ?? '') === opt}
+                              onChange={() => {
+                                const updated = [...answers]
+                                updated[i] = opt
+                                setAnswers(updated)
+                              }}
+                            />
+                            <span>{opt}</span>
+                          </label>
+                        ))}
+                      </div>
+                    ) : (
+                      <textarea
+                        className="ir-answer-textarea"
+                        placeholder="Type your answer here…"
+                        value={answers[i] ?? ''}
+                        rows={5}
+                        onChange={(e) => {
+                          const updated = [...answers]
+                          updated[i] = e.target.value
+                          setAnswers(updated)
+                        }}
+                      />
+                    )}
                   </div>
                 ))}
               </div>
@@ -875,7 +935,9 @@ function InterviewRoom() {
         <div className="ir-center">
           <div className="ir-spinner" />
           <p className="ir-status-text">
-            {isOral ? 'Processing your interview…' : 'Scoring your answers…'}
+            {autoSubmitted
+              ? 'Time expired — submitting your answers…'
+              : isOral ? 'Processing your interview…' : 'Scoring your answers…'}
           </p>
           <p className="ir-status-sub">
             {isOral
@@ -926,20 +988,63 @@ function InterviewRoom() {
 
           <div className="ir-answering-body ir-answering-body--no-bar">
             <div className="ir-form-container">
-              <div className="ir-overall-card">
-                <div
-                  className="ir-overall-accent-bar"
-                  style={{ width: `${(results.overall_score / MAX_SCORE) * 100}%` }}
-                />
-                <div className="ir-overall-left">
-                  <span className="ir-overall-label">Overall Score</span>
-                  <span className="ir-overall-sub">{results.total_graded} questions graded</span>
+              {autoSubmitted && (
+                <p className="ir-timeup-banner">
+                  Time expired — your interview has been submitted automatically.
+                </p>
+              )}
+
+              {isOral || results.total_questions === 0 ? (
+                <div className="ir-overall-card">
+                  <div
+                    className="ir-overall-accent-bar"
+                    style={{ width: `${(results.overall_score / MAX_SCORE) * 100}%` }}
+                  />
+                  <div className="ir-overall-left">
+                    <span className="ir-overall-label">Overall Score</span>
+                    <span className="ir-overall-sub">{results.total_graded} questions graded</span>
+                  </div>
+                  <div className="ir-overall-score-row">
+                    <span className="ir-overall-score">{results.overall_score.toFixed(1)}</span>
+                    <span className="ir-overall-out">/ {MAX_SCORE}</span>
+                  </div>
                 </div>
-                <div className="ir-overall-score-row">
-                  <span className="ir-overall-score">{results.overall_score.toFixed(1)}</span>
-                  <span className="ir-overall-out">/ {MAX_SCORE}</span>
+              ) : (
+                <div className="ir-overall-card ir-overall-card--pass-summary">
+                  <div
+                    className={`ir-overall-accent-bar${results.result === 'Pass' ? '' : ' ir-overall-accent-bar--fail'}`}
+                    style={{ width: `${(results.passed_questions / results.total_questions) * 100}%` }}
+                  />
+                  <div className="ir-overall-left">
+                    <span className="ir-overall-label">Questions Passed</span>
+                    <span className="ir-overall-sub">
+                      Passing Criteria: at least {results.passing_threshold} question
+                      {results.passing_threshold === 1 ? '' : 's'} must be passed.
+                    </span>
+                    <span className="ir-overall-sub ir-overall-sub--muted">
+                      Score: {results.overall_score.toFixed(1)} / {MAX_SCORE}
+                    </span>
+                  </div>
+                  <div className="ir-overall-right">
+                    <div className="ir-overall-score-row">
+                      <span className="ir-overall-score">{results.passed_questions}</span>
+                      <span className="ir-overall-out">out of {results.total_questions}</span>
+                    </div>
+                    <span
+                      className={`ir-final-result-badge${results.result === 'Pass' ? ' ir-final-result-badge--pass' : ' ir-final-result-badge--fail'}`}
+                    >
+                      {results.result === 'Pass' ? 'PASS' : 'FAIL'}
+                    </span>
+                  </div>
                 </div>
-              </div>
+              )}
+
+              {results.improvement_recommendations && (
+                <div className="ir-recommendations-card">
+                  <span className="ir-graded-section-label">Improvement Recommendations</span>
+                  <p className="ir-recommendations-text">{results.improvement_recommendations}</p>
+                </div>
+              )}
 
               <div className="ir-graded-list">
                 {results.graded_answers.map((ga, i) => (
@@ -949,12 +1054,19 @@ function InterviewRoom() {
                         <span className="ir-graded-num">Q{i + 1}</span>
                         <p className="ir-graded-question">{ga.question_text}</p>
                       </div>
-                      <span
-                        className="ir-graded-score-badge"
-                        style={{ color: scoreColor(ga.score) }}
-                      >
-                        {ga.score}<span className="ir-graded-score-denom">/10</span>
-                      </span>
+                      <div className="ir-graded-score-wrap">
+                        <span
+                          className="ir-graded-score-badge"
+                          style={{ color: scoreColor(ga.score) }}
+                        >
+                          {ga.score}<span className="ir-graded-score-denom">/10</span>
+                        </span>
+                        <span
+                          className={`ir-correctness-badge${ga.is_correct ? ' ir-correctness-badge--correct' : ' ir-correctness-badge--incorrect'}`}
+                        >
+                          {ga.is_correct ? 'PASS' : 'FAIL'}
+                        </span>
+                      </div>
                     </div>
 
                     <div className="ir-graded-section">

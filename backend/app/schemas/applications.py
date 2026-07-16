@@ -78,6 +78,12 @@ class InterviewRoundInfo(BaseModel):
     scheduled_at: str | None = None
     completed_at: str | None = None
     avg_score: float | None = None
+    # Written-test scoring: count of questions scored >= the written-test
+    # correct-answer threshold, out of the total questions for this round.
+    # None for rounds with no scored questions yet (e.g. oral rounds, which
+    # keep using avg_score instead — see interview_service.CORRECT_ANSWER_SCORE_THRESHOLD).
+    questions_correct: int | None = None
+    questions_total: int | None = None
 
 
 class ATSRerunNotice(BaseModel):
@@ -105,9 +111,14 @@ class InterviewStagesResponse(BaseModel):
 class InterviewQuestionItem(BaseModel):
     question_id: str
     question_text: str
+    question_type: str = "short_answer"  # "mcq" | "short_answer" | "scenario"
+    options: list[str] | None = None      # MCQ choices
+    correct_option: str | None = None     # MCQ only — safe to expose here since this is
+                                           # post-completion result display, never the live test
     candidate_answer: str | None = None
     score: int | None = None
     notes: str | None = None
+    is_correct: bool | None = None        # None until scored
 
 
 class MyApplicationItem(BaseModel):

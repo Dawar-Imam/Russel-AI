@@ -15,6 +15,12 @@ _EXIT_EVENTS = frozenset({
     "user_exit", "logout", "tab_switch", "refresh", "navigation",
 })
 
+# Written-test pass rule: candidate needs this many questions scored >= 7/10 to
+# pass, independent of the continuous overall_score threshold used for oral
+# rounds. Only applied when interview_type is not oral/voice and correct_count
+# was supplied by the caller.
+WRITTEN_TEST_MIN_CORRECT = 10
+
 # Interviews.status values (lowercased) that represent a scored, final outcome
 # for this specific round. Deliberately narrower than TERMINAL_ROUND_STATUSES
 # below — "not needed" rounds were never scored, so they don't count as
@@ -54,6 +60,25 @@ class ValidationInput:
     current_status: str          # Scheduled | In Progress | Pass | Failed
     interview_type: str = "written"   # written | oral
     cheating_detected: bool = False
+    correct_count: int | None = None  # written tests only: # of questions scored >= 7/10
+
+
+def _determine_pass_status(inp: "ValidationInput", score: float, logs: list[str]) -> str:
+    """Written tests (non-oral) with a supplied correct_count pass on count of
+    correct answers (>= WRITTEN_TEST_MIN_CORRECT); everything else (oral rounds,
+    or written calls that didn't supply correct_count) falls back to the
+    continuous score-vs-failing_criteria threshold."""
+    is_written = inp.interview_type.lower() not in ("oral", "voice")
+    if is_written and inp.correct_count is not None:
+        status = "Pass" if inp.correct_count >= WRITTEN_TEST_MIN_CORRECT else "Failed"
+        logs.append(
+            f"written test: correct_count={inp.correct_count} "
+            f"required>={WRITTEN_TEST_MIN_CORRECT} → {status}"
+        )
+        return status
+    status = "Pass" if score >= inp.failing_criteria else "Failed"
+    logs.append(f"score={score:.1f} criteria={inp.failing_criteria} → {status}")
+    return status
 
 
 @dataclass
@@ -105,11 +130,8 @@ def validate_interview(inp: ValidationInput) -> ValidationResult:
             logs.append("cheating flag suppressed in test mode")
 
         score = max(0.0, inp.computed_score)
-        status = "Pass" if score >= inp.failing_criteria else "Failed"
+        status = _determine_pass_status(inp, score, logs)
         feedback = _FEEDBACK_SCORE_PASS if status == "Pass" else _FEEDBACK_SCORE_FAIL
-        logs.append(
-            f"score={score:.1f} criteria={inp.failing_criteria} → {status}"
-        )
         return ValidationResult(
             final_score=score,
             final_status=status,
@@ -152,12 +174,8 @@ def validate_interview(inp: ValidationInput) -> ValidationResult:
 
     # ── 5. Normal completion / timer / submit — score-based ─────────────────
     score = max(0.0, inp.computed_score)
-    status = "Pass" if score >= inp.failing_criteria else "Failed"
+    status = _determine_pass_status(inp, score, logs)
     feedback = _FEEDBACK_SCORE_PASS if status == "Pass" else _FEEDBACK_SCORE_FAIL
-    logs.append(
-        f"score={score:.1f} criteria={inp.failing_criteria} → {status}"
-        f" (event={inp.event_type})"
-    )
 
     # ── 6. Consistency guard ────────────────────────────────────────────────
     # Pass + score=0 is logically invalid unless it was an intended override

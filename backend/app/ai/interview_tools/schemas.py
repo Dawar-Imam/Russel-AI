@@ -9,6 +9,9 @@ from pydantic import BaseModel
 # ---------------------------------------------------------------------------
 class QuestionItem(BaseModel):
     question_text: str
+    question_type: str = "short_answer"  # "mcq" | "short_answer" | "scenario"
+    options: list[str] | None = None      # choices, only populated for "mcq"
+    correct_option: str | None = None     # must match one entry in options verbatim, only for "mcq"
 
 
 class RelevantSkill(BaseModel):
@@ -46,6 +49,8 @@ class GeneratedQuestions(BaseModel):
 class AnswerItem(BaseModel):
     question_text: str
     candidate_answer: str
+    question_type: str = "short_answer"   # "mcq" | "short_answer" | "scenario"
+    correct_option: str | None = None     # only for "mcq" — used for deterministic grading
 
 
 class GradedAnswer(BaseModel):
@@ -61,3 +66,4 @@ class GradedAnswers(BaseModel):
     overall_score: float
     total_graded: int
     graded_answers: list[GradedAnswer]
+    improvement_recommendations: str = ""

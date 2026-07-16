@@ -11,10 +11,15 @@ async def grade_candidate_answers(
 
     structured_llm = get_llm().with_structured_output(GradedAnswers)
 
-    qa_block = "\n\n".join(
-        f"Q: {answer.question_text}\nA: {answer.candidate_answer or '(no answer)'}"
-        for answer in answers
-    )
+    def _format_answer(answer: AnswerItem) -> str:
+        lines = [f"Q: {answer.question_text}"]
+        if answer.question_type == "mcq" and answer.correct_option:
+            lines.append("Type: MCQ")
+            lines.append(f"Correct option: {answer.correct_option}")
+        lines.append(f"A: {answer.candidate_answer or '(no answer)'}")
+        return "\n".join(lines)
+
+    qa_block = "\n\n".join(_format_answer(answer) for answer in answers)
 
     is_oral = interview_type.lower() in ("oral", "voice")
     round_note = (

@@ -39,6 +39,10 @@ def _format_questions(questions: list[QuestionItem]) -> str:
     return "\n".join(f"- {question.question_text}" for question in questions)
 
 
+def _format_required_skills(skills: list[str]) -> str:
+    return ", ".join(skills) if skills else "(none)"
+
+
 async def generate_questions(
     example_questions: list[QuestionItem],
     candidate_relevance: CandidateCVRelevance,
@@ -56,6 +60,8 @@ async def generate_questions(
         job_role_category=context.job_role_category,
         experience_level_name=context.experience_level_name,
         round_type_name=context.round_type_name,
+        job_description=context.job_description or "(none)",
+        required_skills=_format_required_skills(context.required_skills),
         job_experience_summary=candidate_relevance.job_experience_summary or "(none)",
         relevant_skills=_format_skills(candidate_relevance.relevant_skills),
         relevant_projects=_format_projects(candidate_relevance.relevant_projects),

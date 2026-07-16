@@ -454,6 +454,47 @@
   padding-bottom: 10px;
 }
 
+/* ── Pass/fail summary variant (written-test results) ── */
+.ir-overall-card--pass-summary {
+  flex-wrap: wrap;
+}
+
+.ir-overall-accent-bar--fail {
+  background: linear-gradient(90deg, var(--color-alert) 0%, rgba(var(--color-alert-rgb), 0.25) 100%);
+}
+
+.ir-overall-sub--muted {
+  color: var(--color-text-muted);
+}
+
+.ir-overall-right {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--space-2);
+  flex-shrink: 0;
+}
+
+.ir-final-result-badge {
+  padding: 4px 14px;
+  border-radius: 9999px;
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+}
+
+.ir-final-result-badge--pass {
+  color: var(--color-primary);
+  background: rgba(var(--color-primary-rgb), 0.12);
+  border: 1px solid rgba(var(--color-primary-rgb), 0.3);
+}
+
+.ir-final-result-badge--fail {
+  color: var(--color-alert);
+  background: rgba(var(--color-alert-rgb), 0.12);
+  border: 1px solid rgba(var(--color-alert-rgb), 0.3);
+}
+
 .ir-graded-list {
   width: 100%;
   display: flex;
@@ -563,6 +604,92 @@
   margin: 0;
   font-size: 13px;
   color: var(--color-primary);
+  line-height: 1.6;
+}
+
+/* ── MCQ options ── */
+.ir-mcq-options {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.ir-mcq-option {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  background: var(--color-surface-raised);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm);
+  font-size: 14px;
+  color: var(--color-text-primary);
+  cursor: pointer;
+  transition: border-color 0.15s ease;
+}
+
+.ir-mcq-option:has(input:checked) {
+  border-color: var(--color-primary);
+}
+
+.ir-mcq-option input[type='radio'] {
+  accent-color: var(--color-primary);
+  flex-shrink: 0;
+}
+
+/* ── Question-wise correctness badge ── */
+.ir-graded-score-wrap {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+.ir-correctness-badge {
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.ir-correctness-badge--correct {
+  color: var(--color-primary);
+}
+
+.ir-correctness-badge--incorrect {
+  color: var(--color-alert);
+}
+
+/* ── Auto-submit-on-timer-expiry notice ── */
+.ir-timeup-banner {
+  margin: 0 0 var(--space-6);
+  padding: var(--space-3) var(--space-4);
+  background: rgba(var(--color-alert-rgb), 0.08);
+  border: 1px solid rgba(var(--color-alert-rgb), 0.24);
+  border-radius: var(--radius-sm);
+  color: var(--color-alert);
+  font-size: 13px;
+  font-weight: 600;
+  text-align: center;
+}
+
+/* ── Overall improvement recommendations ── */
+.ir-recommendations-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-4) var(--space-6);
+  background: rgba(var(--color-primary-rgb), 0.06);
+  border: 1px solid rgba(var(--color-primary-rgb), 0.18);
+  border-radius: var(--radius-lg);
+  margin-bottom: var(--space-6);
+}
+
+.ir-recommendations-text {
+  margin: 0;
+  font-size: 13px;
+  color: var(--color-text-secondary);
   line-height: 1.6;
 }
 
