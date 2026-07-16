@@ -80,6 +80,15 @@ class InterviewRoundInfo(BaseModel):
     avg_score: float | None = None
 
 
+class ATSRerunNotice(BaseModel):
+    """Populated on InterviewStagesResponse whenever a recruiter-triggered ATS rerun has
+    landed since the candidate last acknowledged one (Applications.ats_rerun_unseen=1).
+    The frontend shows this once as a popup, then calls the ack endpoint to clear it."""
+    previous_verdict: str | None = None
+    new_verdict: str
+    message: str
+
+
 class InterviewStagesResponse(BaseModel):
     application_id: str
     rounds: list[InterviewRoundInfo]
@@ -90,6 +99,7 @@ class InterviewStagesResponse(BaseModel):
     job_role_title: str | None = None
     experience_level_name: str | None = None
     company: str | None = None
+    ats_rerun_notice: ATSRerunNotice | None = None
 
 
 class InterviewQuestionItem(BaseModel):

@@ -14,5 +14,5 @@ celery_app = Celery(
     "russel_ai",
     broker=settings.CELERY_BROKER_URL,
     backend=settings.CELERY_BROKER_URL,
-    include=["app.tasks.written_test_tasks"],
+    include=["app.tasks.written_test_tasks", "app.tasks.ats_rerun_tasks"],
 )

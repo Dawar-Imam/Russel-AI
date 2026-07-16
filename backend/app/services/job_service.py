@@ -1,5 +1,6 @@
 import json
 import uuid
+from datetime import datetime, timezone
 
 from app.ai.ai_services.ats_service import parse_ats_criteria
 from app.database import db_cursor, escape_like
@@ -18,8 +19,14 @@ from app.schemas.jobs import (
     JobPostResponse,
     JobStatsResponse,
     JobStatsRound,
+    JobUpdateRequest,
+    RerunAtsResponse,
+    RerunAtsStatusResponse,
     RoundCandidateItem,
 )
+from app.services.ats_lock import ats_rerun_batch_key, get_redis_client
+
+_ATS_RERUN_BATCH_TTL_SECONDS = 3600
 
 
 def get_job_rounds(job_id: str) -> list[JobInterviewRoundItem]:
@@ -506,6 +513,206 @@ def get_candidate_panel(application_id: str, interview_id: str) -> CandidatePane
             progress=progress,
             evaluation=evaluation,
         )
+
+
+def get_job_required_skills(job_id: str):
+    from app.schemas.jobs import JobSkillOptionItem
+
+    with db_cursor() as (conn, cur):
+        cur.execute(
+            """
+            SELECT s.id, s.name
+            FROM JobRequiredSkills jrs
+            JOIN SkillSets s ON s.id = jrs.skill_id
+            WHERE jrs.job_id = ?
+            ORDER BY s.name
+            """,
+            job_id,
+        )
+        return [JobSkillOptionItem(id=int(r[0]), name=str(r[1])) for r in cur.fetchall()]
+
+
+def update_job(job_id: str, recruiter_id: str, data: JobUpdateRequest) -> JobPostResponse:
+    """Recruiter edit of an already-posted job — everything except `interview_rounds`
+    (see JobUpdateRequest) is editable: candidates may already have Interviews rows tied
+    to the existing round set, so rounds stay locked once a job is live.
+    """
+    with db_cursor() as (conn, cur):
+        cur.execute("SELECT recruiter_id, ats_criteria FROM JobPostings WHERE id = ?", job_id)
+        row = cur.fetchone()
+        if not row:
+            raise ValueError("Job not found")
+        if str(row[0]).lower() != recruiter_id.lower():
+            raise ValueError("Only the recruiter who posted this job may edit it.")
+
+        updates: list[str] = []
+        params: list = []
+        if data.description is not None:
+            updates.append("description = ?")
+            params.append(data.description)
+        if data.location is not None:
+            updates.append("location = ?")
+            params.append(data.location)
+        if data.job_type is not None:
+            updates.append("job_type = ?")
+            params.append(data.job_type)
+        if data.salary_range is not None:
+            updates.append("salary_range = ?")
+            params.append(data.salary_range)
+        if data.expires_at is not None:
+            updates.append("expires_at = ?")
+            params.append(data.expires_at)
+        if data.status is not None:
+            updates.append("status = ?")
+            params.append(data.status)
+
+        if (
+            data.ats_criteria is not None
+            or data.qualify_threshold is not None
+            or data.overqualify_threshold is not None
+            or data.auto_reject_overqualified is not None
+        ):
+            current = parse_ats_criteria(row[1])
+            updates.append("ats_criteria = ?")
+            params.append(json.dumps({
+                "criteria": [c.model_dump() for c in data.ats_criteria] if data.ats_criteria is not None else current.criteria,
+                "qualify_threshold": data.qualify_threshold if data.qualify_threshold is not None else current.qualify_threshold,
+                "overqualify_threshold": data.overqualify_threshold if data.overqualify_threshold is not None else current.overqualify_threshold,
+                "auto_reject_overqualified": data.auto_reject_overqualified if data.auto_reject_overqualified is not None else current.auto_reject_overqualified,
+            }))
+
+        if updates:
+            params.append(job_id)
+            cur.execute(f"UPDATE JobPostings SET {', '.join(updates)} WHERE id = ?", *params)
+
+        if data.skill_ids is not None:
+            cur.execute("DELETE FROM JobRequiredSkills WHERE job_id = ?", job_id)
+            for skill_id in data.skill_ids:
+                cur.execute(
+                    """
+                    INSERT INTO JobRequiredSkills (id, job_id, skill_id, proficiency_level, is_mandatory)
+                    VALUES (?, ?, ?, 'Intermediate', 1)
+                    """,
+                    str(uuid.uuid4()), job_id, skill_id,
+                )
+
+        conn.commit()
+        return JobPostResponse(job_id=job_id, message="Job updated successfully.")
+
+
+# ── Recruiter-triggered ATS rerun ────────────────────────────────────────────────
+
+
+def select_applications_for_ats_rerun(job_id: str) -> tuple[list[str], int]:
+    """Returns (selected_application_ids, skipped_pending_count) for a job-scoped ATS
+    rerun. Exclusion criteria (re-checked per-application at execution time in
+    application_service.rerun_ats_and_persist, since this snapshot can go stale before
+    each Celery task actually runs):
+      - application status HIRED/REJECTED (fully terminal)
+      - application already has a Failed interview round
+      - application has cleared every active round for this job
+
+    ATS_PENDING applications are still included — application_service.run_ats_for_application
+    and rerun_ats_and_persist share the same per-application Redis lock (ats_lock.py), so if
+    the original apply-time run is genuinely still in flight, the rerun task backs off
+    cleanly instead of racing it; there's no true Celery-task revocation for the original
+    (non-Celery, request-scoped) apply-time run.
+    """
+    from app.services.application_service import is_excluded_from_ats_rerun
+
+    with db_cursor() as (conn, cur):
+        cur.execute("SELECT id, status FROM Applications WHERE job_id = ?", job_id)
+        rows = [(str(r[0]), str(r[1])) for r in cur.fetchall()]
+
+        selected: list[str] = []
+        skipped_pending = 0
+        for application_id, status in rows:
+            if is_excluded_from_ats_rerun(cur, application_id, job_id):
+                continue
+            selected.append(application_id)
+            if status == "ATS_PENDING":
+                skipped_pending += 1
+
+    return selected, skipped_pending
+
+
+def rerun_ats_for_job(job_id: str, recruiter_id: str | None) -> RerunAtsResponse:
+    """Recruiter-triggered ATS rerun entry point: selects candidate application_ids for
+    this job and dispatches one Celery task per id (app.tasks.ats_rerun_tasks.run_single),
+    which calls check_ats_eligibility fresh against the job's current requirements/
+    thresholds and persists the result via application_service.rerun_ats_and_persist.
+    """
+    from app.tasks import ats_rerun_tasks
+
+    with db_cursor() as (conn, cur):
+        cur.execute("SELECT id FROM JobPostings WHERE id = ?", job_id)
+        if not cur.fetchone():
+            raise ValueError("Job not found")
+        cur.execute("SELECT COUNT(*) FROM Applications WHERE job_id = ?", job_id)
+        total_applications = int(cur.fetchone()[0])
+
+    selected, skipped_pending = select_applications_for_ats_rerun(job_id)
+    excluded = total_applications - len(selected)
+
+    for application_id in selected:
+        ats_rerun_tasks.run_single.delay(application_id, recruiter_id)
+
+    try:
+        get_redis_client().set(
+            ats_rerun_batch_key(job_id),
+            json.dumps({
+                "application_ids": selected,
+                "dispatched_at": datetime.now(timezone.utc).isoformat(),
+            }),
+            ex=_ATS_RERUN_BATCH_TTL_SECONDS,
+        )
+    except Exception:
+        # Batch-progress polling degrades to "unknown" if Redis is unreachable — the
+        # reruns themselves are already dispatched and will still run regardless.
+        pass
+
+    return RerunAtsResponse(
+        queued=len(selected),
+        skipped_pending=skipped_pending,
+        excluded=excluded,
+        message=f"ATS rerun queued for {len(selected)} candidate(s).",
+    )
+
+
+def get_ats_rerun_status(job_id: str) -> RerunAtsStatusResponse:
+    """Polled by the recruiter dashboard while a rerun batch is in flight."""
+    try:
+        raw = get_redis_client().get(ats_rerun_batch_key(job_id))
+    except Exception:
+        raw = None
+
+    if not raw:
+        return RerunAtsStatusResponse(total_queued=0, completed=0, in_progress=False)
+
+    batch = json.loads(raw)
+    application_ids: list[str] = batch["application_ids"]
+    dispatched_at = datetime.fromisoformat(batch["dispatched_at"])
+    if not application_ids:
+        return RerunAtsStatusResponse(total_queued=0, completed=0, in_progress=False)
+
+    with db_cursor() as (conn, cur):
+        placeholders = ",".join("?" for _ in application_ids)
+        cur.execute(
+            f"SELECT ats_evaluated_at FROM Applications WHERE id IN ({placeholders})",
+            *application_ids,
+        )
+        rows = cur.fetchall()
+
+    completed = 0
+    for r in rows:
+        if r[0] is None:
+            continue
+        val = r[0] if r[0].tzinfo else r[0].replace(tzinfo=timezone.utc)
+        if val >= dispatched_at:
+            completed += 1
+
+    total = len(application_ids)
+    return RerunAtsStatusResponse(total_queued=total, completed=completed, in_progress=completed < total)
 
 
 def get_interview_qa(interview_id: str) -> list[EvaluationQuestionItem]:

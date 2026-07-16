@@ -7,7 +7,8 @@ from datetime import datetime, timezone
 from pydantic import ValidationError
 
 from app.database import db_cursor
-from app.schemas.applications import ATSCheckResponse, ApplyResponse, InterviewQuestionItem, InterviewRoundInfo, InterviewStagesResponse, MyApplicationItem
+from app.schemas.applications import ATSCheckResponse, ATSRerunNotice, ApplyResponse, InterviewQuestionItem, InterviewRoundInfo, InterviewStagesResponse, MyApplicationItem
+from app.services.ats_lock import acquire_ats_lock, release_ats_lock
 from app.services.events import publish_ats_completed
 
 logger = logging.getLogger(__name__)
@@ -17,6 +18,20 @@ ACTIVE_STATUSES = ("Scheduled", "In Progress")
 # Application statuses that indicate ATS has already passed
 _ATS_PASSED_STATUSES = ("ATS_PASS", "IN_PROGRESS", "HIRED")
 _ATS_FAILED_STATUSES = ("ATS_FAIL", "REJECTED")
+
+# Applications in these statuses are never candidates for a recruiter-triggered ATS rerun
+# (see job_service.select_applications_for_ats_rerun) — the process is fully terminal.
+_TERMINAL_APPLICATION_STATUSES = ("HIRED", "REJECTED")
+
+_VERDICT_LABELS = {
+    "ATS_PASS": "Passed",
+    "ATS_FAIL": "Failed",
+    "ATS_PENDING": "Pending",
+    "ATS_ERROR": "Error",
+    "IN_PROGRESS": "Passed (in interview process)",
+    "HIRED": "Hired",
+    "REJECTED": "Rejected",
+}
 
 
 def _parse_ats_details(raw: str | None) -> ATSCheckResponse | None:
@@ -33,6 +48,365 @@ def _parse_ats_details(raw: str | None) -> ATSCheckResponse | None:
     except (json.JSONDecodeError, ValidationError, TypeError) as exc:
         logger.warning("Failed to parse stored ats_details: %s", exc)
         return None
+
+
+# ============================================================
+# Recruiter-triggered ATS rerun
+# ============================================================
+
+
+def is_excluded_from_ats_rerun(cur, application_id: str, job_id: str) -> bool:
+    """Recheck rerun eligibility at execution time — selection-time criteria (see
+    job_service.select_applications_for_ats_rerun) can go stale between when a batch is
+    dispatched and when this application's Celery task actually runs (e.g. a round failed,
+    or the candidate cleared every round, in the interim)."""
+    cur.execute("SELECT status FROM Applications WHERE id = ?", application_id)
+    row = cur.fetchone()
+    if not row:
+        return True
+    if str(row[0]) in _TERMINAL_APPLICATION_STATUSES:
+        return True
+
+    cur.execute("SELECT 1 FROM Interviews WHERE application_id = ? AND status = 'Failed'", application_id)
+    if cur.fetchone():
+        return True
+
+    cur.execute(
+        "SELECT COUNT(*) FROM InterviewRounds WHERE job_posting_id = ? AND is_active = 1",
+        job_id,
+    )
+    total_rounds = int(cur.fetchone()[0])
+    if total_rounds > 0:
+        cur.execute(
+            """
+            SELECT COUNT(DISTINCT i.interview_round_id)
+            FROM Interviews i
+            JOIN InterviewRounds ir ON ir.id = i.interview_round_id
+            WHERE i.application_id = ? AND ir.job_posting_id = ? AND i.status = 'Pass'
+            """,
+            application_id, job_id,
+        )
+        if int(cur.fetchone()[0]) == total_rounds:
+            return True
+    return False
+
+
+def _insert_ats_history(
+    cur,
+    application_id: str,
+    status: str,
+    ats_details: str | None,
+    ats_evaluated_at,
+    ats_model_version: str | None,
+    recruiter_id: str | None,
+) -> None:
+    cur.execute(
+        """
+        INSERT INTO ATSEvaluationHistory
+            (id, application_id, status, ats_details, ats_evaluated_at, ats_model_version, triggered_by, recruiter_id, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, 'recruiter', ?, GETDATE())
+        """,
+        str(uuid.uuid4()), application_id, status, ats_details, ats_evaluated_at, ats_model_version, recruiter_id,
+    )
+
+
+def _delete_non_in_progress_interviews(cur, application_id: str) -> bool:
+    """Delete every Interviews row (+ its InterviewQuestions) for this application that is
+    NOT currently 'In Progress'. Returns True if an 'In Progress' row still remains — the
+    caller must defer applying the rerun result until that round concludes rather than
+    yank it out from under a live candidate session."""
+    cur.execute(
+        "SELECT 1 FROM Interviews WHERE application_id = ? AND status = 'In Progress'",
+        application_id,
+    )
+    still_in_progress = cur.fetchone() is not None
+
+    cur.execute(
+        "SELECT id FROM Interviews WHERE application_id = ? AND status != 'In Progress'",
+        application_id,
+    )
+    stale_ids = [str(r[0]) for r in cur.fetchall()]
+    for iv_id in stale_ids:
+        cur.execute("DELETE FROM InterviewQuestions WHERE interview_id = ?", iv_id)
+        cur.execute("DELETE FROM Interviews WHERE id = ?", iv_id)
+
+    return still_in_progress
+
+
+def _delete_all_interviews(cur, application_id: str) -> None:
+    cur.execute("SELECT id FROM Interviews WHERE application_id = ?", application_id)
+    ids = [str(r[0]) for r in cur.fetchall()]
+    for iv_id in ids:
+        cur.execute("DELETE FROM InterviewQuestions WHERE interview_id = ?", iv_id)
+        cur.execute("DELETE FROM Interviews WHERE id = ?", iv_id)
+
+
+def apply_pending_ats_rerun(cur, application_id: str) -> bool:
+    """Called right after an interview round is finalized (interview_service.
+    _save_scores_and_complete) and defensively at the top of get_interview_stages(): if a
+    recruiter's PASS->FAIL rerun landed while a round was still 'In Progress', the fail was
+    deferred (see _persist_ats_rerun_result) rather than applied immediately so the
+    candidate's live session was never disturbed. Once that round has concluded — Pass or
+    Failed either way, the deferred FAIL always wins — apply it now. No-ops (returns False)
+    if nothing is pending, or if some round is still In Progress.
+
+    Caller commits; this function only executes statements on the given cursor.
+    """
+    cur.execute(
+        """
+        SELECT pending_ats_rerun_details, pending_ats_rerun_evaluated_at,
+               pending_ats_rerun_model_version, pending_ats_rerun_recruiter_id
+        FROM Applications WHERE id = ?
+        """,
+        application_id,
+    )
+    row = cur.fetchone()
+    if not row or not row[0]:
+        return False
+
+    cur.execute(
+        "SELECT 1 FROM Interviews WHERE application_id = ? AND status = 'In Progress'",
+        application_id,
+    )
+    if cur.fetchone():
+        return False
+
+    pending_details, pending_evaluated_at, pending_model_version, pending_recruiter_id = row
+
+    cur.execute(
+        "SELECT status, ats_details, ats_evaluated_at, ats_model_version FROM Applications WHERE id = ?",
+        application_id,
+    )
+    prev = cur.fetchone()
+    _insert_ats_history(cur, application_id, str(prev[0]), prev[1], prev[2], prev[3], pending_recruiter_id)
+
+    _delete_all_interviews(cur, application_id)
+
+    cur.execute(
+        """
+        UPDATE Applications
+        SET status = 'ATS_FAIL', ats_details = ?, ats_evaluated_at = ?, ats_model_version = ?,
+            ats_rerun_count = ats_rerun_count + 1, ats_rerun_unseen = 1,
+            pending_ats_rerun_details = NULL, pending_ats_rerun_evaluated_at = NULL,
+            pending_ats_rerun_model_version = NULL, pending_ats_rerun_recruiter_id = NULL
+        WHERE id = ?
+        """,
+        pending_details, pending_evaluated_at, pending_model_version, application_id,
+    )
+    logger.info("ATS rerun: applied deferred PASS->FAIL result for application_id=%s", application_id)
+    return True
+
+
+def _fetch_application_for_ats_rerun(application_id: str):
+    """Blocking DB read — run via asyncio.to_thread so it doesn't block the event loop."""
+    with db_cursor() as (conn, cur):
+        cur.execute(
+            "SELECT job_id, candidate_id, status, ats_details, ats_evaluated_at, ats_model_version, resume_id FROM Applications WHERE id = ?",
+            application_id,
+        )
+        row = cur.fetchone()
+        if not row:
+            raise ValueError(f"Application {application_id} not found")
+        job_id, candidate_id, status = str(row[0]), str(row[1]), str(row[2])
+        old_ats_details, old_evaluated_at, old_model_version = row[3], row[4], row[5]
+        resume_id = str(row[6]) if row[6] else None
+
+        excluded = is_excluded_from_ats_rerun(cur, application_id, job_id)
+
+        parsed_text: str | None = None
+        if resume_id:
+            cur.execute("SELECT parsed_text FROM Resumes WHERE id = ?", resume_id)
+            resume_row = cur.fetchone()
+            if resume_row and resume_row[0]:
+                parsed_text = str(resume_row[0])
+
+    return job_id, candidate_id, status, old_ats_details, old_evaluated_at, old_model_version, parsed_text, excluded
+
+
+def _persist_ats_rerun_result(
+    application_id: str,
+    job_id: str,
+    recruiter_id: str | None,
+    old_status: str,
+    old_ats_details: str | None,
+    old_evaluated_at,
+    old_model_version: str | None,
+    details_json: str,
+    evaluated_at: datetime,
+    model_version: str,
+    new_verdict_pass: bool,
+) -> tuple[str | None, bool]:
+    """Blocking DB write — run via asyncio.to_thread so it doesn't block the event loop.
+
+    Returns (target_interview_id_to_pregenerate_or_None, deferred) — `deferred` is True when
+    a PASS->FAIL rerun was computed but held back because a round is still In Progress.
+    """
+    target_interview_id: str | None = None
+    deferred = False
+    was_pass = old_status in _ATS_PASSED_STATUSES
+
+    with db_cursor() as (conn, cur):
+        # Re-check exclusion right before writing — time has passed since selection/fetch.
+        if is_excluded_from_ats_rerun(cur, application_id, job_id):
+            logger.info("ATS rerun: application_id=%s became excluded before write — skipping", application_id)
+            return None, False
+
+        _insert_ats_history(cur, application_id, old_status, old_ats_details, old_evaluated_at, old_model_version, recruiter_id)
+
+        if was_pass and not new_verdict_pass:
+            # PASS -> FAIL
+            still_in_progress = _delete_non_in_progress_interviews(cur, application_id)
+            if still_in_progress:
+                cur.execute(
+                    """
+                    UPDATE Applications
+                    SET pending_ats_rerun_details = ?, pending_ats_rerun_evaluated_at = ?,
+                        pending_ats_rerun_model_version = ?, pending_ats_rerun_recruiter_id = ?
+                    WHERE id = ?
+                    """,
+                    details_json, evaluated_at, model_version, recruiter_id, application_id,
+                )
+                deferred = True
+            else:
+                cur.execute(
+                    """
+                    UPDATE Applications
+                    SET status = 'ATS_FAIL', ats_details = ?, ats_evaluated_at = ?, ats_model_version = ?,
+                        ats_rerun_count = ats_rerun_count + 1, ats_rerun_unseen = 1
+                    WHERE id = ?
+                    """,
+                    details_json, evaluated_at, model_version, application_id,
+                )
+        elif not was_pass and new_verdict_pass:
+            # FAIL/PENDING/ERROR -> PASS: same "normal execution" as a first-time pass.
+            cur.execute(
+                """
+                UPDATE Applications
+                SET status = 'ATS_PASS', ats_details = ?, ats_evaluated_at = ?, ats_model_version = ?,
+                    ats_rerun_count = ats_rerun_count + 1, ats_rerun_unseen = 1
+                WHERE id = ?
+                """,
+                details_json, evaluated_at, model_version, application_id,
+            )
+            _create_interviews_for_application(cur, application_id, job_id)
+            from app.services.interview_service import find_next_scheduled_round
+            target_interview_id = find_next_scheduled_round(cur, application_id, min_round_order=0)
+        else:
+            # PASS -> PASS or FAIL -> FAIL: overwrite ats_details only, no status/interview change.
+            new_status = "ATS_PASS" if new_verdict_pass else "ATS_FAIL"
+            cur.execute(
+                """
+                UPDATE Applications
+                SET ats_details = ?, ats_evaluated_at = ?, ats_model_version = ?,
+                    ats_rerun_count = ats_rerun_count + 1, ats_rerun_unseen = 1
+                WHERE id = ? AND status = ?
+                """,
+                details_json, evaluated_at, model_version, application_id, new_status,
+            )
+
+        conn.commit()
+
+    return target_interview_id, deferred
+
+
+async def rerun_ats_and_persist(application_id: str, recruiter_id: str | None = None) -> None:
+    """Re-run the ATS LLM check for a single application (always live, never cached) and
+    apply the recruiter-rerun decision matrix. Called from ats_rerun_tasks.run_single —
+    the Celery task Job.rerun_ats_for_job dispatches per selected application_id.
+    """
+    acquired = acquire_ats_lock(application_id)
+    if not acquired:
+        logger.info("ATS rerun: application_id=%s already has a run in progress — skipping", application_id)
+        return
+
+    try:
+        (
+            job_id, candidate_id, old_status, old_ats_details, old_evaluated_at,
+            old_model_version, parsed_text, excluded,
+        ) = await asyncio.to_thread(_fetch_application_for_ats_rerun, application_id)
+
+        if excluded:
+            logger.info("ATS rerun: application_id=%s excluded from rerun — skipping", application_id)
+            return
+
+        from app.ai.ai_services.ats_service import ATSValidationError, check_ats_eligibility
+        try:
+            result, model_version = await check_ats_eligibility(
+                candidate_id, job_id, parsed_text=parsed_text, application_id=application_id
+            )
+        except ATSValidationError:
+            # Malformed LLM output: leave the previously-good ats_details/status untouched —
+            # unlike the first-run path, a rerun has something worth preserving.
+            logger.error("ATS rerun: validation failed for application_id=%s — leaving prior result untouched", application_id)
+            return
+
+        evaluated_at = datetime.now(timezone.utc)
+        details_json = result.model_dump_json()
+
+        target_interview_id, deferred = await asyncio.to_thread(
+            _persist_ats_rerun_result,
+            application_id, job_id, recruiter_id,
+            old_status, old_ats_details, old_evaluated_at, old_model_version,
+            details_json, evaluated_at, model_version,
+            result.final_verdict == "PASS",
+        )
+
+        if target_interview_id:
+            from app.tasks import written_test_tasks
+            written_test_tasks.trigger.delay(target_interview_id)
+
+        if not deferred:
+            await publish_ats_completed(
+                application_id,
+                {
+                    "event": "ats_completed",
+                    "application_id": application_id,
+                    "status": "ATS_PASS" if result.final_verdict == "PASS" else "ATS_FAIL",
+                    "verdict": result.verdict,
+                    "final_verdict": result.final_verdict,
+                    "verdict_summary": result.verdict_summary,
+                    "weightage": result.weightage.model_dump() if result.weightage else None,
+                    "is_rerun": True,
+                },
+            )
+    finally:
+        release_ats_lock(application_id)
+
+
+def ack_ats_rerun_notice(application_id: str) -> None:
+    with db_cursor() as (conn, cur):
+        cur.execute("UPDATE Applications SET ats_rerun_unseen = 0 WHERE id = ?", application_id)
+        conn.commit()
+
+
+def _fetch_ats_rerun_notice(cur, application_id: str, current_status: str, current_ats_details: str | None) -> ATSRerunNotice | None:
+    cur.execute("SELECT ats_rerun_unseen FROM Applications WHERE id = ?", application_id)
+    row = cur.fetchone()
+    if not row or not row[0]:
+        return None
+
+    cur.execute(
+        """
+        SELECT TOP 1 status FROM ATSEvaluationHistory
+        WHERE application_id = ? ORDER BY created_at DESC
+        """,
+        application_id,
+    )
+    hist_row = cur.fetchone()
+    previous_status = str(hist_row[0]) if hist_row else None
+
+    current_label = _VERDICT_LABELS.get(current_status, current_status)
+    previous_label = _VERDICT_LABELS.get(previous_status, previous_status) if previous_status else None
+
+    parsed = _parse_ats_details(current_ats_details)
+    summary = f" {parsed.verdict_summary}" if parsed and parsed.verdict_summary else ""
+
+    if previous_label:
+        message = f"Your ATS screening was re-run by the recruiter. Previous result: {previous_label}. New result: {current_label}.{summary}"
+    else:
+        message = f"Your ATS screening was re-run by the recruiter. Result: {current_label}.{summary}"
+
+    return ATSRerunNotice(previous_verdict=previous_label, new_verdict=current_label, message=message)
 
 
 def apply_to_job(
@@ -139,6 +513,13 @@ def _create_interviews_for_application(cur, application_id: str, job_posting_id:
 
 def get_interview_stages(application_id: str) -> InterviewStagesResponse:
     with db_cursor() as (conn, cur):
+        # Defensive re-check: apply any rerun result that was deferred while a round was
+        # In Progress and has since concluded (see apply_pending_ats_rerun) — guarantees a
+        # candidate never sees a stale PASS after a recruiter's rerun has actually failed
+        # them, even if the interview_service.py write-path hook was somehow missed.
+        if apply_pending_ats_rerun(cur, application_id):
+            conn.commit()
+
         # Resolve job_posting_id and ATS info from application (join for job meta)
         cur.execute(
             """
@@ -234,6 +615,8 @@ def get_interview_stages(application_id: str) -> InterviewStagesResponse:
             if current_round_id is None and status in ACTIVE_STATUSES:
                 current_round_id = interview_round_id
 
+        ats_rerun_notice = _fetch_ats_rerun_notice(cur, application_id, app_status, row[2])
+
         return InterviewStagesResponse(
             application_id=application_id,
             rounds=rounds,
@@ -244,6 +627,7 @@ def get_interview_stages(application_id: str) -> InterviewStagesResponse:
             job_role_title=job_role_title,
             experience_level_name=experience_level_name,
             company=company,
+            ats_rerun_notice=ats_rerun_notice,
         )
 
 
@@ -439,43 +823,55 @@ async def run_ats_for_application(application_id: str) -> ATSCheckResponse:
             return cached_ats_result
         return ATSCheckResponse(verdict="UNDERQUALIFIED", verdict_summary="Candidate did not pass ATS screening.", final_verdict="FAIL")
 
-    # Run the LLM-powered ATS check
-    from app.ai.ai_services.ats_service import ATSValidationError, check_ats_eligibility
+    # Run the LLM-powered ATS check. Guarded by the same ats_lock a recruiter-triggered
+    # rerun uses (rerun_ats_and_persist) — if a rerun is somehow dispatched for this
+    # application while its first-time run is still mid-flight, the rerun will see the
+    # lock held and skip cleanly rather than racing this write.
+    if not acquire_ats_lock(application_id):
+        logger.info("ATS: application_id=%s already has a run in progress — skipping duplicate", application_id)
+        if cached_ats_result:
+            return cached_ats_result
+        return ATSCheckResponse(verdict="QUALIFIED", verdict_summary="ATS screening already in progress.", final_verdict=None)
+
     try:
-        result, model_version = await check_ats_eligibility(
-            candidate_id, job_id, parsed_text=parsed_text, application_id=application_id
+        from app.ai.ai_services.ats_service import ATSValidationError, check_ats_eligibility
+        try:
+            result, model_version = await check_ats_eligibility(
+                candidate_id, job_id, parsed_text=parsed_text, application_id=application_id
+            )
+        except ATSValidationError as exc:
+            # Malformed LLM output must never reach the DB — leave the application at ATS_ERROR
+            # (queryable/distinct from ATS_PENDING) rather than writing a bad ats_details blob or
+            # flipping status to PASS/FAIL on data we don't trust.
+            logger.error("ATS: validation failed for application=%s, leaving status unset: %s", application_id, exc)
+            await asyncio.to_thread(_mark_ats_error, application_id)
+            raise
+
+        new_status = "ATS_PASS" if result.final_verdict == "PASS" else "ATS_FAIL"
+        details_json = result.model_dump_json()
+        evaluated_at = datetime.now(timezone.utc)
+
+        target_interview_id = await asyncio.to_thread(
+            _persist_ats_result, application_id, job_id, new_status, details_json, evaluated_at, model_version
         )
-    except ATSValidationError as exc:
-        # Malformed LLM output must never reach the DB — leave the application at ATS_ERROR
-        # (queryable/distinct from ATS_PENDING) rather than writing a bad ats_details blob or
-        # flipping status to PASS/FAIL on data we don't trust.
-        logger.error("ATS: validation failed for application=%s, leaving status unset: %s", application_id, exc)
-        await asyncio.to_thread(_mark_ats_error, application_id)
-        raise
 
-    new_status = "ATS_PASS" if result.final_verdict == "PASS" else "ATS_FAIL"
-    details_json = result.model_dump_json()
-    evaluated_at = datetime.now(timezone.utc)
+        if new_status == "ATS_PASS" and target_interview_id:
+            from app.tasks import written_test_tasks
+            written_test_tasks.trigger.delay(target_interview_id)
 
-    target_interview_id = await asyncio.to_thread(
-        _persist_ats_result, application_id, job_id, new_status, details_json, evaluated_at, model_version
-    )
-
-    if new_status == "ATS_PASS" and target_interview_id:
-        from app.tasks import written_test_tasks
-        written_test_tasks.trigger.delay(target_interview_id)
-
-    await publish_ats_completed(
-        application_id,
-        {
-            "event": "ats_completed",
-            "application_id": application_id,
-            "status": new_status,
-            "verdict": result.verdict,
-            "final_verdict": result.final_verdict,
-            "verdict_summary": result.verdict_summary,
-            "weightage": result.weightage.model_dump(),
-        },
-    )
+        await publish_ats_completed(
+            application_id,
+            {
+                "event": "ats_completed",
+                "application_id": application_id,
+                "status": new_status,
+                "verdict": result.verdict,
+                "final_verdict": result.final_verdict,
+                "verdict_summary": result.verdict_summary,
+                "weightage": result.weightage.model_dump(),
+            },
+        )
+    finally:
+        release_ats_lock(application_id)
 
     return ATSCheckResponse(**result.model_dump())

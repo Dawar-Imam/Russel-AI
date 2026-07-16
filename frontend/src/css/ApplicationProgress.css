@@ -486,6 +486,19 @@ body.light-theme .stage-bubble {
   line-height: 1.6;
 }
 
+.ap-rerun-notice {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-4);
+  padding: var(--space-2);
+  max-width: 420px;
+}
+
+.ap-rerun-notice .ap-detail-msg-body {
+  color: var(--color-text-secondary);
+  font-weight: 500;
+}
+
 /* ATS detailed breakdown */
 .ap-ats-breakdown {
   display: flex;

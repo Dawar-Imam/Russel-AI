@@ -885,6 +885,11 @@
   padding: 10px 14px;
 }
 
+.rd-detail-rounds--locked {
+  opacity: 0.6;
+  pointer-events: none;
+}
+
 .rd-pass-pill {
   margin-left: auto;
   font-size: 11px;

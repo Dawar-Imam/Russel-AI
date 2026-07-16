@@ -161,6 +161,38 @@ export interface JobPostResponse {
   message: string
 }
 
+export interface JobUpdateRequest {
+  description?: string
+  location?: string
+  job_type?: string
+  salary_range?: string | null
+  expires_at?: string | null
+  status?: 'active' | 'closed'
+  skill_ids?: number[]
+  ats_criteria?: ATSCriterionInput[]
+  qualify_threshold?: number
+  overqualify_threshold?: number | null
+  auto_reject_overqualified?: boolean
+}
+
+export interface JobSkillOptionItem {
+  id: number
+  name: string
+}
+
+export interface RerunAtsResponse {
+  queued: number
+  skipped_pending: number
+  excluded: number
+  message: string
+}
+
+export interface RerunAtsStatusResponse {
+  total_queued: number
+  completed: number
+  in_progress: boolean
+}
+
 export async function fetchInterviewRoundTypes(): Promise<InterviewRoundType[]> {
   const res = await fetch(`${BASE_URL}/api/jobs/round-types`)
   if (!res.ok) throw new Error('Failed to load interview round types')
@@ -237,4 +269,36 @@ export async function postJob(data: JobPostRequest): Promise<JobPostResponse> {
   const body = (await res.json()) as { detail?: string } & Partial<JobPostResponse>
   if (!res.ok) throw new Error(body.detail ?? 'Failed to post job')
   return body as JobPostResponse
+}
+
+export async function fetchJobSkills(jobId: string): Promise<JobSkillOptionItem[]> {
+  const res = await fetch(`${BASE_URL}/api/jobs/${encodeURIComponent(jobId)}/skills`)
+  if (!res.ok) throw new Error('Failed to load job skills')
+  return res.json() as Promise<JobSkillOptionItem[]>
+}
+
+export async function updateJob(jobId: string, recruiterId: string, data: JobUpdateRequest): Promise<JobPostResponse> {
+  const res = await fetch(`${BASE_URL}/api/jobs/${encodeURIComponent(jobId)}?recruiter_id=${encodeURIComponent(recruiterId)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(data),
+  })
+  const body = (await res.json()) as { detail?: string } & Partial<JobPostResponse>
+  if (!res.ok) throw new Error(body.detail ?? 'Failed to update job')
+  return body as JobPostResponse
+}
+
+export async function rerunAts(jobId: string, recruiterId: string): Promise<RerunAtsResponse> {
+  const res = await fetch(`${BASE_URL}/api/jobs/${encodeURIComponent(jobId)}/rerun-ats?recruiter_id=${encodeURIComponent(recruiterId)}`, {
+    method: 'POST',
+  })
+  const body = (await res.json()) as { detail?: string } & Partial<RerunAtsResponse>
+  if (!res.ok) throw new Error(body.detail ?? 'Failed to start ATS rerun')
+  return body as RerunAtsResponse
+}
+
+export async function fetchAtsRerunStatus(jobId: string): Promise<RerunAtsStatusResponse> {
+  const res = await fetch(`${BASE_URL}/api/jobs/${encodeURIComponent(jobId)}/rerun-ats/status`)
+  if (!res.ok) throw new Error('Failed to load ATS rerun status')
+  return res.json() as Promise<RerunAtsStatusResponse>
 }

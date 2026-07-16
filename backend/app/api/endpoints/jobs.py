@@ -11,12 +11,18 @@ from app.schemas.jobs import (
     JobListItem,
     JobPostRequest,
     JobPostResponse,
+    JobSkillOptionItem,
     JobStatsResponse,
+    JobUpdateRequest,
+    RerunAtsResponse,
+    RerunAtsStatusResponse,
     RoundCandidateItem,
 )
 from app.services.job_service import (
+    get_ats_rerun_status,
     get_candidate_panel,
     get_interview_qa,
+    get_job_required_skills,
     get_job_rounds,
     get_job_stats,
     get_round_candidates,
@@ -24,6 +30,8 @@ from app.services.job_service import (
     list_jobs,
     list_recruiter_jobs,
     post_job,
+    rerun_ats_for_job,
+    update_job,
 )
 
 router = APIRouter()
@@ -112,6 +120,42 @@ def get_stats_for_job(job_id: str) -> JobStatsResponse:
         return get_job_stats(job_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get("/{job_id}/skills", response_model=list[JobSkillOptionItem])
+def get_skills_for_job(job_id: str) -> list[JobSkillOptionItem]:
+    try:
+        return get_job_required_skills(job_id)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.put("/{job_id}", response_model=JobPostResponse)
+def edit_job(job_id: str, body: JobUpdateRequest, recruiter_id: str = Query(...)) -> JobPostResponse:
+    try:
+        return update_job(job_id, recruiter_id, body)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post("/{job_id}/rerun-ats", response_model=RerunAtsResponse)
+def rerun_ats(job_id: str, recruiter_id: str = Query(...)) -> RerunAtsResponse:
+    try:
+        return rerun_ats_for_job(job_id, recruiter_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.get("/{job_id}/rerun-ats/status", response_model=RerunAtsStatusResponse)
+def rerun_ats_status(job_id: str) -> RerunAtsStatusResponse:
+    try:
+        return get_ats_rerun_status(job_id)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 

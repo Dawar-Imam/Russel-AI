@@ -350,6 +350,19 @@ def _save_scores_and_complete(
         """,
         interview_result, overall_score, ai_feedback, interview_id,
     )
+    # A recruiter's PASS->FAIL ATS rerun may have landed while this round was still In
+    # Progress — it was deferred rather than applied so this live session was never
+    # disturbed. Now that the round has just been finalized (Pass or Failed either way,
+    # the deferred FAIL always wins), apply it: wipes every Interviews row for this
+    # application, so anything this function is about to do below (mark subsequent rounds
+    # not needed, mark hired, pre-generate the next round) would operate on rows that are
+    # about to be deleted anyway — check first and short-circuit.
+    from app.services.application_service import apply_pending_ats_rerun
+    cur.execute("SELECT application_id FROM Interviews WHERE id = ?", interview_id)
+    app_row = cur.fetchone()
+    if app_row and apply_pending_ats_rerun(cur, str(app_row[0])):
+        return None
+
     if interview_result == "Failed":
         _mark_subsequent_rounds_not_needed(cur, interview_id)
         return None

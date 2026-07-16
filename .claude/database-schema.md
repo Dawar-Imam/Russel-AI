@@ -187,6 +187,12 @@ CREATE TABLE Resumes (
 | resume_id | uniqueidentifier FK -> Resumes NULL |
 | ats_evaluated_at | datetime2 NULL — UTC timestamp of the ATS LLM run that produced `ats_details` |
 | ats_model_version | varchar(100) NULL — LLM model identifier (`settings.OPENAI_MODEL`) used for that run |
+| ats_rerun_count | int NOT NULL DEFAULT 0 — number of times a recruiter has explicitly re-run ATS for this application |
+| ats_rerun_unseen | bit NOT NULL DEFAULT 0 — set true whenever a rerun result becomes visible to the candidate; cleared once the candidate's Application Progress page has shown/acked it |
+| pending_ats_rerun_details | nvarchar(MAX) NULL — a computed-but-not-yet-applied rerun ATS result, held here when a PASS→FAIL rerun landed while an `Interviews` round was `In Progress` (see `application_service.apply_pending_ats_rerun`) |
+| pending_ats_rerun_evaluated_at | datetime2 NULL — companion timestamp for `pending_ats_rerun_details` |
+| pending_ats_rerun_model_version | varchar(100) NULL — companion model version for `pending_ats_rerun_details` |
+| pending_ats_rerun_recruiter_id | uniqueidentifier NULL — recruiter who triggered the deferred rerun, carried through to `ATSEvaluationHistory.recruiter_id` once applied |
 
 > **Migrations required**:
 > ```sql
@@ -203,7 +209,31 @@ CREATE TABLE Resumes (
 > -- migrating them in place.
 > ALTER TABLE Applications ADD ats_evaluated_at datetime2 NULL;
 > ALTER TABLE Applications ADD ats_model_version varchar(100) NULL;
+> -- Recruiter-triggered ATS rerun (see application_service.py / job_service.py / ats_rerun_tasks.py):
+> ALTER TABLE Applications ADD ats_rerun_count int NOT NULL CONSTRAINT DF_Applications_ats_rerun_count DEFAULT 0;
+> ALTER TABLE Applications ADD ats_rerun_unseen bit NOT NULL CONSTRAINT DF_Applications_ats_rerun_unseen DEFAULT 0;
+> ALTER TABLE Applications ADD pending_ats_rerun_details nvarchar(MAX) NULL;
+> ALTER TABLE Applications ADD pending_ats_rerun_evaluated_at datetime2 NULL;
+> ALTER TABLE Applications ADD pending_ats_rerun_model_version varchar(100) NULL;
+> ALTER TABLE Applications ADD pending_ats_rerun_recruiter_id uniqueidentifier NULL REFERENCES RecruiterProfiles(id);
+>
+> CREATE TABLE ATSEvaluationHistory (
+>     id                 uniqueidentifier PRIMARY KEY DEFAULT NEWID(),
+>     application_id     uniqueidentifier NOT NULL REFERENCES Applications(id),
+>     status             varchar(50)      NOT NULL,
+>     ats_details        nvarchar(MAX)    NULL,
+>     ats_evaluated_at   datetime2        NULL,
+>     ats_model_version  varchar(100)     NULL,
+>     triggered_by       varchar(20)      NOT NULL DEFAULT 'system',  -- 'system' | 'recruiter'
+>     recruiter_id       uniqueidentifier NULL REFERENCES RecruiterProfiles(id),
+>     created_at         datetime2        NOT NULL DEFAULT SYSUTCDATETIME()
+> );
 > ```
+>
+> `ATSEvaluationHistory` snapshots the *previous* `ats_details`/`status` right before a
+> recruiter-triggered rerun overwrites them — it's what lets the candidate-facing rerun
+> notice say "previously X, now Y" and gives recruiters an audit trail instead of only
+> ever seeing the latest overwrite.
 
 ### InterviewRounds
 | Column | Type |

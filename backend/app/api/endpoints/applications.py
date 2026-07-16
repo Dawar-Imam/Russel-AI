@@ -9,7 +9,7 @@ from app.schemas.applications import (
     InterviewStagesResponse,
     MyApplicationItem,
 )
-from app.services.application_service import apply_to_job, get_interview_questions, get_interview_stages, get_my_applications, run_ats_for_application
+from app.services.application_service import ack_ats_rerun_notice, apply_to_job, get_interview_questions, get_interview_stages, get_my_applications, run_ats_for_application
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +79,15 @@ async def run_ats(application_id: str) -> ATSCheckResponse:
         return await run_ats_for_application(application_id)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post("/{application_id}/ack-ats-rerun")
+def ack_ats_rerun(application_id: str) -> dict:
+    try:
+        ack_ats_rerun_notice(application_id)
+        return {"ok": True}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 

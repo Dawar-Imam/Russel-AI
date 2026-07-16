@@ -82,6 +82,12 @@ export interface ATSCheckResponse {
   override_reason: string | null
 }
 
+export interface ATSRerunNotice {
+  previous_verdict: string | null
+  new_verdict: string
+  message: string
+}
+
 export interface MyApplicationItem {
   application_id: string
   job_id: string
@@ -113,4 +119,10 @@ export async function fetchMyApplications(candidateId: string): Promise<MyApplic
   )
   if (!res.ok) throw new Error('Failed to load your applications')
   return res.json() as Promise<MyApplicationItem[]>
+}
+
+export async function ackAtsRerunNotice(applicationId: string): Promise<void> {
+  await fetch(`${BASE_URL}/api/applications/${encodeURIComponent(applicationId)}/ack-ats-rerun`, {
+    method: 'POST',
+  })
 }

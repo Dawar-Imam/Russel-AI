@@ -76,9 +76,57 @@ class JobPostRequest(BaseModel):
         return v
 
 
+class JobUpdateRequest(BaseModel):
+    """Recruiter edit of an already-posted job. Deliberately excludes `interview_rounds` —
+    rounds are locked once a job is live (candidates may already have Interviews rows tied
+    to them); everything else is editable."""
+    description: str | None = None
+    location: str | None = None
+    job_type: Literal['Full-time', 'Part-time', 'Remote', 'Contract', 'Hybrid'] | None = None
+    salary_range: str | None = None
+    expires_at: str | None = None
+    status: Literal['active', 'closed'] | None = None
+    skill_ids: list[int] | None = None
+    ats_criteria: list[ATSCriterionInput] | None = None
+    qualify_threshold: float | None = Field(None, ge=0, le=100)
+    overqualify_threshold: float | None = Field(None, ge=0)
+    auto_reject_overqualified: bool | None = None
+
+    @field_validator('ats_criteria')
+    @classmethod
+    def validate_ats_criteria(cls, v: list[ATSCriterionInput] | None) -> list[ATSCriterionInput] | None:
+        if v is not None and abs(sum(c.weight for c in v) - 100) > 1e-6:
+            raise ValueError('ats_criteria weights must sum to 100')
+        return v
+
+
 class JobPostResponse(BaseModel):
     job_id: str
     message: str
+
+
+class JobSkillOptionItem(BaseModel):
+    """A job's currently-required skill, with its id — unlike JobListItem.required_skills
+    (a flat list of names via STRING_AGG), this is what the recruiter-edit skill picker
+    needs to pre-fill selections and submit skill_ids back to PUT /jobs/{job_id}."""
+    id: int
+    name: str
+
+
+class RerunAtsResponse(BaseModel):
+    queued: int
+    skipped_pending: int
+    excluded: int
+    message: str
+
+
+class RerunAtsStatusResponse(BaseModel):
+    """Polled by the recruiter dashboard while a rerun batch is in flight — `pending`
+    is derived from how many of the applications queued by the most recent rerun still
+    have an ats_evaluated_at older than when the batch was dispatched."""
+    total_queued: int
+    completed: int
+    in_progress: bool
 
 
 class JobInterviewRoundItem(BaseModel):

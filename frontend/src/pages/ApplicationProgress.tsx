@@ -1,12 +1,15 @@
 import { Fragment, useEffect, useRef, useState, type ReactNode } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import Button from '../components/Button'
+import Modal from '../components/Modal'
 import {
+  ackAtsRerunNotice,
   runAts,
   type ATSCheckResponse,
   type ATSRelevantExperience,
   type ATSRequirementCategory,
   type ATSRequirementMatchItem,
+  type ATSRerunNotice,
   type ATSSectionMatchItem,
   type ATSWeightage,
 } from '../api/applications'
@@ -38,6 +41,7 @@ interface StagesData {
   job_role_title: string | null
   experience_level_name: string | null
   company: string | null
+  ats_rerun_notice: ATSRerunNotice | null
 }
 
 const ATS_CATEGORY_LABELS: Record<
@@ -195,6 +199,7 @@ function ApplicationProgress() {
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const reconnectAttemptsRef = useRef(0)
+  const [rerunNotice, setRerunNotice] = useState<ATSRerunNotice | null>(null)
 
   function fetchStages() {
     if (!applicationId) return
@@ -280,6 +285,17 @@ function ApplicationProgress() {
     fetchStages()
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [applicationId])
+
+  // Recruiter re-ran ATS since the candidate last saw a result — show it once, then ack
+  // so it doesn't reappear on a later visit/refresh.
+  useEffect(() => {
+    if (data?.ats_rerun_notice) setRerunNotice(data.ats_rerun_notice)
+  }, [data])
+
+  function closeRerunNotice() {
+    setRerunNotice(null)
+    if (applicationId) ackAtsRerunNotice(applicationId).catch(() => {})
+  }
 
   // Live updates: reconnecting WebSocket that re-fetches stages when the backend
   // announces ATS completion, instead of waiting on a page refresh/poll.
@@ -779,6 +795,15 @@ function ApplicationProgress() {
 
   return (
     <main className="app-progress-page">
+      <Modal isOpen={rerunNotice !== null} onClose={closeRerunNotice}>
+        {rerunNotice && (
+          <div className="ap-rerun-notice">
+            <p className="ap-detail-msg-title">ATS Screening Updated</p>
+            <p className="ap-detail-msg-body">{rerunNotice.message}</p>
+            <Button variant="primary" onClick={closeRerunNotice}>Got it</Button>
+          </div>
+        )}
+      </Modal>
       <div className="app-progress-body">
 
         {/* Heading row */}
