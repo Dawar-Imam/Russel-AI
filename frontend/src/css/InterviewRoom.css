@@ -463,10 +463,6 @@
   background: linear-gradient(90deg, var(--color-alert) 0%, rgba(var(--color-alert-rgb), 0.25) 100%);
 }
 
-.ir-overall-sub--muted {
-  color: var(--color-text-muted);
-}
-
 .ir-overall-right {
   display: flex;
   flex-direction: column;

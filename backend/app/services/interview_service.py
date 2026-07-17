@@ -10,6 +10,7 @@ from app.ai.ai_services.question_generation_service import generate_questions
 from app.ai.interview_tools.schemas import (
     AnswerItem as AIAnswerItem,
     CandidateCVRelevance,
+    GradedAnswer as AIGradedAnswer,
     QuestionItem as AIQuestionItem,
 )
 from app.core.config import settings
@@ -856,7 +857,32 @@ async def score_interview_answers(
         for item in to_score
     ]
     graded = await grade_candidate_answers(ai_answers, interview_type=interview_type)
-    correct_count = sum(1 for g in graded.graded_answers if g.score >= CORRECT_ANSWER_SCORE_THRESHOLD)
+
+    # The LLM's structured output is not a trustworthy source of truth for what the
+    # candidate actually submitted, or for how many answers it graded — models can
+    # paraphrase or invent a `candidate_answer` echo instead of faithfully reproducing
+    # a blank/nonsense input, and can under-count `graded_answers` relative to
+    # `to_score` (the real, DB-backed question list). Reconcile positionally against
+    # `to_score` so the result can never show text the candidate didn't write, never
+    # silently drop a real question, and never award marks for a blank answer
+    # regardless of what the LLM returned.
+    while len(graded.graded_answers) < len(to_score):
+        missing = to_score[len(graded.graded_answers)]
+        graded.graded_answers.append(AIGradedAnswer(
+            question_text=missing.question_text,
+            candidate_answer="",
+            score=0,
+            notes="Not graded — missing from the AI scoring response.",
+        ))
+    for item, g in zip(to_score, graded.graded_answers):
+        submitted = (item.candidate_answer or "").strip()
+        g.candidate_answer = submitted if submitted else "(no answer)"
+        if not submitted:
+            g.score = 0
+
+    correct_count = sum(
+        1 for g in graded.graded_answers[:len(to_score)] if g.score >= CORRECT_ANSWER_SCORE_THRESHOLD
+    )
 
     # --- 3. Validate result ---
     vr = validate_interview(ValidationInput(
@@ -898,20 +924,24 @@ async def score_interview_answers(
 
     return ScoreAnswersResponse(
         overall_score=vr.final_score,
-        total_graded=graded.total_graded,
+        # len(to_score), not the LLM-reported graded.total_graded — total_graded is
+        # self-counted by the model and can undercount relative to the actual
+        # question set (see reconciliation above), which is what previously caused
+        # the result page to show e.g. "2 out of 13" for a 15-question interview.
+        total_graded=len(to_score),
         graded_answers=[
             GradedAnswer(
-                question_text=to_score[i].question_text,
+                question_text=item.question_text,
                 candidate_answer=g.candidate_answer,
                 score=g.score,
                 notes=g.notes,
                 is_correct=g.score >= CORRECT_ANSWER_SCORE_THRESHOLD,
             )
-            for i, g in enumerate(graded.graded_answers)
+            for item, g in zip(to_score, graded.graded_answers)
         ],
         result=vr.final_status,
         improvement_recommendations=graded.improvement_recommendations,
-        total_questions=graded.total_graded,
+        total_questions=len(to_score),
         passed_questions=correct_count,
         passing_threshold=WRITTEN_TEST_MIN_CORRECT,
     )

@@ -646,9 +646,12 @@ def select_applications_for_ats_rerun(job_id: str) -> tuple[list[str], int]:
 
 def rerun_ats_for_job(job_id: str, recruiter_id: str | None) -> RerunAtsResponse:
     """Recruiter-triggered ATS rerun entry point: selects candidate application_ids for
-    this job and dispatches one Celery task per id (app.tasks.ats_rerun_tasks.run_single),
-    which calls check_ats_eligibility fresh against the job's current requirements/
-    thresholds and persists the result via application_service.rerun_ats_and_persist.
+    this job and dispatches a single Celery task (app.tasks.ats_rerun_tasks.run_batch) for
+    the whole batch — that task fans the applications back out itself via a
+    ThreadPoolExecutor, so Celery only ever schedules one task per rerun request rather
+    than one per application. Each application still gets check_ats_eligibility run fresh
+    against the job's current requirements/thresholds and persisted via
+    application_service.rerun_ats_and_persist, unchanged.
     """
     from app.tasks import ats_rerun_tasks
 
@@ -662,8 +665,8 @@ def rerun_ats_for_job(job_id: str, recruiter_id: str | None) -> RerunAtsResponse
     selected, skipped_pending = select_applications_for_ats_rerun(job_id)
     excluded = total_applications - len(selected)
 
-    for application_id in selected:
-        ats_rerun_tasks.run_single.delay(application_id, recruiter_id)
+    if selected:
+        ats_rerun_tasks.run_batch.delay(selected, recruiter_id)
 
     try:
         get_redis_client().set(

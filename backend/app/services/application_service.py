@@ -2,8 +2,11 @@ import asyncio
 import json
 import logging
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+from enum import Enum
 
+import pyodbc
 from pydantic import ValidationError
 
 from app.database import db_cursor
@@ -54,6 +57,25 @@ def _parse_ats_details(raw: str | None) -> ATSCheckResponse | None:
 # ============================================================
 # Recruiter-triggered ATS rerun
 # ============================================================
+
+# Dedicated, process-lifetime executor for the rerun's blocking DB calls — explicit in
+# place of asyncio.to_thread's implicit per-loop default executor, so thread lifecycle
+# and sizing for this path are controlled rather than created/torn down per Celery task
+# invocation (each ats_rerun_tasks.run_single call runs its own asyncio.run() event loop).
+_ats_rerun_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ats-rerun")
+
+
+class RerunOutcome(str, Enum):
+    """Return type of rerun_ats_and_persist — lets ats_rerun_tasks.run_single tell an
+    intentional skip (EXCLUDED, VALIDATION_FAILED, NOT_FOUND: never retried) apart from
+    a genuinely retryable failure (LOCK_CONTENDED, TRANSIENT_ERROR), instead of every
+    outcome looking identical behind a silent `return`."""
+    SUCCESS = "SUCCESS"
+    LOCK_CONTENDED = "LOCK_CONTENDED"
+    EXCLUDED = "EXCLUDED"
+    VALIDATION_FAILED = "VALIDATION_FAILED"
+    NOT_FOUND = "NOT_FOUND"
+    TRANSIENT_ERROR = "TRANSIENT_ERROR"
 
 
 def is_excluded_from_ats_rerun(cur, application_id: str, job_id: str) -> bool:
@@ -310,27 +332,43 @@ def _persist_ats_rerun_result(
     return target_interview_id, deferred
 
 
-async def rerun_ats_and_persist(application_id: str, recruiter_id: str | None = None) -> None:
+async def rerun_ats_and_persist(application_id: str, recruiter_id: str | None = None) -> RerunOutcome:
     """Re-run the ATS LLM check for a single application (always live, never cached) and
     apply the recruiter-rerun decision matrix. Called from ats_rerun_tasks.run_single —
     the Celery task Job.rerun_ats_for_job dispatches per selected application_id.
+
+    Returns a RerunOutcome so the caller can retry LOCK_CONTENDED/TRANSIENT_ERROR while
+    leaving intentional skips (EXCLUDED/VALIDATION_FAILED/NOT_FOUND) and SUCCESS alone.
+    Only failures before _persist_ats_rerun_result commits are ever classified
+    TRANSIENT_ERROR — once that write succeeds, this always returns SUCCESS, so a Celery
+    retry can never re-run the LLM check and double a persisted result.
     """
     acquired = acquire_ats_lock(application_id)
     if not acquired:
         logger.info("ATS rerun: application_id=%s already has a run in progress — skipping", application_id)
-        return
+        return RerunOutcome.LOCK_CONTENDED
 
     try:
-        (
-            job_id, candidate_id, old_status, old_ats_details, old_evaluated_at,
-            old_model_version, parsed_text, excluded,
-        ) = await asyncio.to_thread(_fetch_application_for_ats_rerun, application_id)
+        from app.ai.ai_services.ats_service import _TRANSIENT_LLM_ERRORS, ATSValidationError, check_ats_eligibility
+
+        try:
+            (
+                job_id, candidate_id, old_status, old_ats_details, old_evaluated_at,
+                old_model_version, parsed_text, excluded,
+            ) = await asyncio.get_running_loop().run_in_executor(
+                _ats_rerun_executor, _fetch_application_for_ats_rerun, application_id
+            )
+        except ValueError:
+            logger.warning("ATS rerun: application_id=%s not found — skipping", application_id)
+            return RerunOutcome.NOT_FOUND
+        except pyodbc.Error:
+            logger.exception("ATS rerun: transient DB error fetching application_id=%s", application_id)
+            return RerunOutcome.TRANSIENT_ERROR
 
         if excluded:
             logger.info("ATS rerun: application_id=%s excluded from rerun — skipping", application_id)
-            return
+            return RerunOutcome.EXCLUDED
 
-        from app.ai.ai_services.ats_service import ATSValidationError, check_ats_eligibility
         try:
             result, model_version = await check_ats_eligibility(
                 candidate_id, job_id, parsed_text=parsed_text, application_id=application_id
@@ -339,12 +377,16 @@ async def rerun_ats_and_persist(application_id: str, recruiter_id: str | None = 
             # Malformed LLM output: leave the previously-good ats_details/status untouched —
             # unlike the first-run path, a rerun has something worth preserving.
             logger.error("ATS rerun: validation failed for application_id=%s — leaving prior result untouched", application_id)
-            return
+            return RerunOutcome.VALIDATION_FAILED
+        except (pyodbc.Error, *_TRANSIENT_LLM_ERRORS):
+            logger.exception("ATS rerun: transient error running ATS check for application_id=%s", application_id)
+            return RerunOutcome.TRANSIENT_ERROR
 
         evaluated_at = datetime.now(timezone.utc)
         details_json = result.model_dump_json()
 
-        target_interview_id, deferred = await asyncio.to_thread(
+        target_interview_id, deferred = await asyncio.get_running_loop().run_in_executor(
+            _ats_rerun_executor,
             _persist_ats_rerun_result,
             application_id, job_id, recruiter_id,
             old_status, old_ats_details, old_evaluated_at, old_model_version,
@@ -352,9 +394,19 @@ async def rerun_ats_and_persist(application_id: str, recruiter_id: str | None = 
             result.final_verdict == "PASS",
         )
 
+        # Persistence has committed — everything below is best-effort. A failure here must
+        # never be retried at the Celery level, since that would re-run the LLM check and
+        # duplicate the history row / ats_rerun_count increment above.
         if target_interview_id:
-            from app.tasks import written_test_tasks
-            written_test_tasks.trigger.delay(target_interview_id)
+            try:
+                from app.tasks import written_test_tasks
+                written_test_tasks.trigger.delay(target_interview_id)
+            except Exception:
+                logger.exception(
+                    "ATS rerun: failed to dispatch written_test_tasks.trigger for interview_id=%s "
+                    "(non-fatal — live generate_interview_questions fallback still applies)",
+                    target_interview_id,
+                )
 
         if not deferred:
             await publish_ats_completed(
@@ -370,6 +422,8 @@ async def rerun_ats_and_persist(application_id: str, recruiter_id: str | None = 
                     "is_rerun": True,
                 },
             )
+
+        return RerunOutcome.SUCCESS
     finally:
         release_ats_lock(application_id)
 

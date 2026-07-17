@@ -1016,13 +1016,10 @@ function InterviewRoom() {
                     style={{ width: `${(results.passed_questions / results.total_questions) * 100}%` }}
                   />
                   <div className="ir-overall-left">
-                    <span className="ir-overall-label">Questions Passed</span>
+                    <span className="ir-overall-label">Passed Questions</span>
                     <span className="ir-overall-sub">
                       Passing Criteria: at least {results.passing_threshold} question
                       {results.passing_threshold === 1 ? '' : 's'} must be passed.
-                    </span>
-                    <span className="ir-overall-sub ir-overall-sub--muted">
-                      Score: {results.overall_score.toFixed(1)} / {MAX_SCORE}
                     </span>
                   </div>
                   <div className="ir-overall-right">
