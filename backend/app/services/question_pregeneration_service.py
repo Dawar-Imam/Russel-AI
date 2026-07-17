@@ -10,9 +10,9 @@ reverse), so no cycle exists here.
 import logging
 
 from app.ai.ai_services.cv_relevance_service import fetch_candidate_cv_relevance
-from app.ai.ai_services.question_bank_service import fetch_interview_context
+from app.ai.ai_services.question_bank_service import InterviewContext, fetch_interview_context
 from app.ai.ai_services.question_generation_service import generate_questions
-from app.ai.interview_tools.schemas import CandidateCVRelevance
+from app.ai.interview_tools.schemas import CandidateCVRelevance, GeneratedQuestions
 from app.database import db_cursor
 from app.services.interview_service import (
     WRITTEN_TEST_QUESTION_COUNT,
@@ -20,9 +20,16 @@ from app.services.interview_service import (
     get_interview_context,
     store_generated_questions,
 )
+from app.services.mcq_redis_cache import (
+    get_queued_orderings,
+    mcq_orderings_match_queue,
+    push_generated_mcqs,
+)
 from app.services.pregen_lock import acquire_pregen_lock, release_pregen_lock
 
 logger = logging.getLogger(__name__)
+
+MAX_GENERATION_ATTEMPTS = 3
 
 
 async def pregenerate_interview_questions(interview_id: str) -> bool:
@@ -85,14 +92,18 @@ async def pregenerate_interview_questions(interview_id: str) -> bool:
                 relevant_skills=[],
                 relevant_projects=[],
             )
-            generated = await generate_questions(
-                example_questions=[],
+            generated = await _generate_with_mcq_retry(
+                job_posting_id=ctx["job_posting_id"],
                 candidate_relevance=candidate_relevance,
-                count=WRITTEN_TEST_QUESTION_COUNT,
                 context=context,
             )
         except Exception:
             logger.exception("pregenerate: question generation failed for interview_id=%s", interview_id)
+            return False
+
+        if generated is None:
+            # Every attempt raised — same as the pre-retry behaviour: return False
+            # so the live generate_interview_questions() fallback still applies.
             return False
 
         new_items = generated.generated_questions
@@ -105,7 +116,56 @@ async def pregenerate_interview_questions(interview_id: str) -> bool:
             )
             conn.commit()
 
+        push_generated_mcqs(ctx["job_posting_id"], new_items)
+
         logger.info("pregenerate: stored %d questions for interview_id=%s", len(new_items), interview_id)
         return True
     finally:
         release_pregen_lock(interview_id)
+
+
+async def _generate_with_mcq_retry(
+    job_posting_id: str,
+    candidate_relevance: CandidateCVRelevance,
+    context: InterviewContext,
+) -> GeneratedQuestions | None:
+    """Calls generate_questions up to MAX_GENERATION_ATTEMPTS times, retrying when
+    either the call raises or the batch it returns reuses an MCQ option ordering
+    already queued for this job (mcq_redis_cache.mcq_orderings_match_queue).
+
+    Returns None only if every attempt raised — the caller then falls back to
+    the live generate_interview_questions() endpoint, unchanged. If attempts
+    kept producing a matching ordering instead, the last successful batch is
+    returned as-is and accepted by the caller: a reused ordering degrades
+    uniqueness, not correctness, so there's nothing to fall back to for that
+    case."""
+    recent_orderings = get_queued_orderings(job_posting_id)
+    generated: GeneratedQuestions | None = None
+
+    for attempt in range(1, MAX_GENERATION_ATTEMPTS + 1):
+        try:
+            generated = await generate_questions(
+                example_questions=[],
+                candidate_relevance=candidate_relevance,
+                count=WRITTEN_TEST_QUESTION_COUNT,
+                context=context,
+                recent_mcq_orderings=recent_orderings,
+            )
+        except Exception:
+            generated = None
+            logger.warning(
+                "pregenerate: generation attempt %d/%d failed for job_id=%s",
+                attempt, MAX_GENERATION_ATTEMPTS, job_posting_id, exc_info=True,
+            )
+            continue
+
+        if not mcq_orderings_match_queue(job_posting_id, generated.generated_questions):
+            break
+
+        logger.info(
+            "pregenerate: generation attempt %d/%d for job_id=%s reused a queued MCQ "
+            "option ordering, retrying",
+            attempt, MAX_GENERATION_ATTEMPTS, job_posting_id,
+        )
+
+    return generated

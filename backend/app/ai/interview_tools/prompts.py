@@ -82,7 +82,10 @@ realistic and relevant to the topic, not obviously wrong filler. Randomise \
 the MCQ option order yourself when writing `options` — do not always place \
 the correct option first, last, or in any fixed position. (The backend also \
 re-shuffles `options` per candidate before storage, so this is a second, \
-independent layer, not the only source of randomisation.)
+independent layer, not the only source of randomisation.) If "Recently used \
+MCQ option orderings for this job" are provided below, do not reproduce any \
+of those exact (question, option-order) pairs verbatim — write a new \
+question, a different option order, or both.
 
 For "Question Answer" and "Scenario Based" questions, set \
 `question_type="short_answer"` or `question_type="scenario"` respectively, \
@@ -113,6 +116,10 @@ Candidate's relevant projects:
 
 Example questions from the question bank (style/format reference only — may be empty):
 {example_questions}
+
+Recently used MCQ option orderings for this job (avoid reproducing these exact \
+question/option-order pairs verbatim — may be empty):
+{recent_mcq_orderings}
 
 Return exactly {count} questions as `generated_questions`. Each question must \
 have `question_text`, `question_type` ("mcq" | "short_answer" | "scenario"), \

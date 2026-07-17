@@ -43,14 +43,28 @@ def _format_required_skills(skills: list[str]) -> str:
     return ", ".join(skills) if skills else "(none)"
 
 
+def _format_recent_mcq_orderings(orderings: list[dict] | None) -> str:
+    if not orderings:
+        return "(none)"
+    return "\n".join(
+        f"- {o['question_text']}: [{', '.join(o['options'])}]" for o in orderings
+    )
+
+
 async def generate_questions(
     example_questions: list[QuestionItem],
     candidate_relevance: CandidateCVRelevance,
     count: int,
     context: InterviewContext,
+    recent_mcq_orderings: list[dict] | None = None,
 ) -> GeneratedQuestions:
     """LLM call producing `count` interview questions for the given example
-    questions, candidate CV relevance, and interview context."""
+    questions, candidate CV relevance, and interview context.
+
+    `recent_mcq_orderings` — optional (question_text, options) pairs already
+    queued for this job (see mcq_redis_cache.get_queued_orderings) — is passed
+    through so the model can avoid reproducing one of those exact option
+    orderings verbatim."""
 
     structured_llm = get_llm(temperature=0.7).with_structured_output(GeneratedQuestions)
 
@@ -66,6 +80,7 @@ async def generate_questions(
         relevant_skills=_format_skills(candidate_relevance.relevant_skills),
         relevant_projects=_format_projects(candidate_relevance.relevant_projects),
         example_questions=_format_questions(example_questions),
+        recent_mcq_orderings=_format_recent_mcq_orderings(recent_mcq_orderings),
     )
 
     return await structured_llm.ainvoke(
