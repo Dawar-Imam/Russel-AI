@@ -24,8 +24,7 @@ from app.schemas.jobs import (
     RerunAtsStatusResponse,
     RoundCandidateItem,
 )
-from app.services.ats_lock import ats_rerun_batch_key, get_redis_client
-from app.services.mcq_redis_cache import clear_job_queue, init_job_queue
+from app.services.ats_lock import ats_rerun_batch_key, get_redis_client, set_latest_rerun_generation_batch
 
 _ATS_RERUN_BATCH_TTL_SECONDS = 3600
 
@@ -34,7 +33,7 @@ def get_job_rounds(job_id: str) -> list[JobInterviewRoundItem]:
     with db_cursor() as (conn, cur):
         cur.execute(
             """
-            SELECT ir.round_order, irt.name, ir.failing_criteria, ir.description
+            SELECT ir.round_order, irt.name, ir.failing_criteria, ir.description, ir.time_limit_minutes
             FROM InterviewRounds ir
             JOIN InterviewRoundTypes irt ON irt.id = ir.interview_round_type_id
             WHERE ir.job_posting_id = ? AND ir.is_active = 1
@@ -48,6 +47,7 @@ def get_job_rounds(job_id: str) -> list[JobInterviewRoundItem]:
                 round_type_name=str(row[1]),
                 failing_criteria=int(row[2]) if row[2] is not None else None,
                 description=str(row[3]) if row[3] else None,
+                time_limit_minutes=int(row[4]) if row[4] is not None else None,
             )
             for row in cur.fetchall()
         ]
@@ -113,8 +113,8 @@ def post_job(data: JobPostRequest) -> JobPostResponse:
                 """
                 INSERT INTO InterviewRounds
                     (id, job_posting_id, interview_round_type_id, round_order,
-                     description, failing_criteria, is_active)
-                VALUES (?, ?, ?, ?, ?, ?, 1)
+                     description, failing_criteria, time_limit_minutes, is_active)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 1)
                 """,
                 round_id,
                 job_id,
@@ -122,12 +122,10 @@ def post_job(data: JobPostRequest) -> JobPostResponse:
                 round_input.round_order,
                 round_input.description,
                 round_input.failing_criteria,
+                round_input.time_limit_minutes,
             )
 
         conn.commit()
-        # Per-job MCQ option-order cache (mcq_redis_cache.py) — best-effort, never
-        # blocks job creation if Redis is unreachable.
-        init_job_queue(job_id)
         return JobPostResponse(job_id=job_id, message="Job posted successfully.")
 
 
@@ -575,6 +573,10 @@ def update_job(job_id: str, recruiter_id: str, data: JobUpdateRequest) -> JobPos
             or data.qualify_threshold is not None
             or data.overqualify_threshold is not None
             or data.auto_reject_overqualified is not None
+            # Required skills are part of what ATS actually scores against too — a
+            # skills-only edit must count as a criteria change for staleness purposes,
+            # same as editing weights/thresholds directly.
+            or data.skill_ids is not None
         ):
             current = parse_ats_criteria(row[1])
             updates.append("ats_criteria = ?")
@@ -584,6 +586,11 @@ def update_job(job_id: str, recruiter_id: str, data: JobUpdateRequest) -> JobPos
                 "overqualify_threshold": data.overqualify_threshold if data.overqualify_threshold is not None else current.overqualify_threshold,
                 "auto_reject_overqualified": data.auto_reject_overqualified if data.auto_reject_overqualified is not None else current.auto_reject_overqualified,
             }))
+            # Staleness versioning (see Applications.ats_run_version) — bump whenever the
+            # criteria (or required skills, which ATS also scores against) actually change,
+            # so select_applications_for_ats_rerun and the interview-completion hook can
+            # tell which already-scored candidates need re-scoring against the new criteria.
+            updates.append("ats_criteria_version = ats_criteria_version + 1")
 
         if updates:
             params.append(job_id)
@@ -601,26 +608,35 @@ def update_job(job_id: str, recruiter_id: str, data: JobUpdateRequest) -> JobPos
                 )
 
         conn.commit()
-        if data.status == "closed":
-            # Job inactivated — drop its cached MCQ option-order data so nothing
-            # stale lingers in Redis for a job no candidate can apply to anymore.
-            clear_job_queue(job_id)
         return JobPostResponse(job_id=job_id, message="Job updated successfully.")
 
 
 # ── Recruiter-triggered ATS rerun ────────────────────────────────────────────────
 
 
-def select_applications_for_ats_rerun(job_id: str) -> tuple[list[str], int]:
-    """Returns (selected_application_ids, skipped_pending_count) for a job-scoped ATS
-    rerun. Exclusion criteria (re-checked per-application at execution time in
+def select_applications_for_ats_rerun(job_id: str) -> tuple[list[str], int, int]:
+    """Returns (selected_application_ids, skipped_pending_count, not_stale_count) for a
+    job-scoped ATS rerun. not_stale_count is how many otherwise-eligible applications
+    were skipped purely because they were already scored against the job's current
+    ats_criteria_version — surfaced to the recruiter (job_service.rerun_ats_for_job) so
+    a 0-queued rerun reads as "nothing to do, criteria haven't changed" instead of
+    looking like the button silently did nothing.
+
+    Exclusion criteria (re-checked per-application at execution time in
     application_service.rerun_ats_and_persist, since this snapshot can go stale before
     each Celery task actually runs):
       - application status HIRED/REJECTED (fully terminal)
       - application already has a Failed interview round
+      - application has a round currently In Progress — never even started for these;
+        see job_service.rerun_ats_for_job, which separately counts and surfaces them
+        to the recruiter so it's visible they'll be screened once their round ends
       - application has cleared every active round for this job
+      - already-scored (non-ATS_PENDING) application whose ats_run_version is not
+        older than the job's current ats_criteria_version — it was already scored
+        against the current criteria, re-scoring it again would be a no-op
 
-    ATS_PENDING applications are still included — application_service.run_ats_for_application
+    ATS_PENDING applications are still included regardless of version — they've never
+    been scored at all, so staleness doesn't apply; application_service.run_ats_for_application
     and rerun_ats_and_persist share the same per-application Redis lock (ats_lock.py), so if
     the original apply-time run is genuinely still in flight, the rerun task backs off
     cleanly instead of racing it; there's no true Celery-task revocation for the original
@@ -629,19 +645,27 @@ def select_applications_for_ats_rerun(job_id: str) -> tuple[list[str], int]:
     from app.services.application_service import is_excluded_from_ats_rerun
 
     with db_cursor() as (conn, cur):
-        cur.execute("SELECT id, status FROM Applications WHERE job_id = ?", job_id)
-        rows = [(str(r[0]), str(r[1])) for r in cur.fetchall()]
+        cur.execute("SELECT ats_criteria_version FROM JobPostings WHERE id = ?", job_id)
+        row = cur.fetchone()
+        criteria_version = int(row[0]) if row else 0
+
+        cur.execute("SELECT id, status, ats_run_version FROM Applications WHERE job_id = ?", job_id)
+        rows = [(str(r[0]), str(r[1]), int(r[2])) for r in cur.fetchall()]
 
         selected: list[str] = []
         skipped_pending = 0
-        for application_id, status in rows:
+        not_stale_count = 0
+        for application_id, status, ats_run_version in rows:
+            if status != "ATS_PENDING" and ats_run_version >= criteria_version:
+                not_stale_count += 1
+                continue
             if is_excluded_from_ats_rerun(cur, application_id, job_id):
                 continue
             selected.append(application_id)
             if status == "ATS_PENDING":
                 skipped_pending += 1
 
-    return selected, skipped_pending
+    return selected, skipped_pending, not_stale_count
 
 
 def rerun_ats_for_job(job_id: str, recruiter_id: str | None) -> RerunAtsResponse:
@@ -652,6 +676,15 @@ def rerun_ats_for_job(job_id: str, recruiter_id: str | None) -> RerunAtsResponse
     than one per application. Each application still gets check_ats_eligibility run fresh
     against the job's current requirements/thresholds and persisted via
     application_service.rerun_ats_and_persist, unchanged.
+
+    Returns as soon as the batch is dispatched — it never waits for run_batch, its
+    ThreadPoolExecutor fan-out, or any retry to finish. Callers poll
+    get_ats_rerun_status(job_id) separately for A/B progress.
+
+    Before dispatch, stamps every selected application_id with a fresh rerun generation
+    token (ats_lock.set_latest_rerun_generation_batch) so that if a previous rerun batch
+    for this job is still retrying one of these same applications, that stale attempt
+    detects it's been superseded and stops instead of racing this one.
     """
     from app.tasks import ats_rerun_tasks
 
@@ -662,11 +695,26 @@ def rerun_ats_for_job(job_id: str, recruiter_id: str | None) -> RerunAtsResponse
         cur.execute("SELECT COUNT(*) FROM Applications WHERE job_id = ?", job_id)
         total_applications = int(cur.fetchone()[0])
 
-    selected, skipped_pending = select_applications_for_ats_rerun(job_id)
+        # Standalone, independent of the selection loop above — purely for surfacing to
+        # the recruiter why some excluded candidates weren't queued: they're mid-interview
+        # and is_excluded_from_ats_rerun already keeps them out of `selected` entirely.
+        cur.execute(
+            """
+            SELECT COUNT(DISTINCT a.id) FROM Applications a
+            JOIN Interviews i ON i.application_id = a.id
+            WHERE a.job_id = ? AND i.status = 'In Progress'
+            """,
+            job_id,
+        )
+        in_progress_count = int(cur.fetchone()[0])
+
+    selected, skipped_pending, not_stale_count = select_applications_for_ats_rerun(job_id)
     excluded = total_applications - len(selected)
 
     if selected:
-        ats_rerun_tasks.run_batch.delay(selected, recruiter_id)
+        rerun_id = str(uuid.uuid4())
+        set_latest_rerun_generation_batch(selected, rerun_id)
+        ats_rerun_tasks.run_batch.delay(selected, recruiter_id, rerun_id)
 
     try:
         get_redis_client().set(
@@ -686,6 +734,8 @@ def rerun_ats_for_job(job_id: str, recruiter_id: str | None) -> RerunAtsResponse
         queued=len(selected),
         skipped_pending=skipped_pending,
         excluded=excluded,
+        in_progress_count=in_progress_count,
+        not_stale_count=not_stale_count,
         message=f"ATS rerun queued for {len(selected)} candidate(s).",
     )
 

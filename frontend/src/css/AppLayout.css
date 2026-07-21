@@ -25,6 +25,35 @@
   border-radius: 14px;
   padding: var(--space-4) var(--space-3);
   box-sizing: border-box;
+  transition: width 0.25s ease;
+  overflow: hidden;
+}
+
+.app-sidebar-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
+.app-sidebar-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  background: none;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-full);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: border-color 0.2s ease, color 0.2s ease;
+}
+
+.app-sidebar-toggle:hover {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
 }
 
 .app-sidebar-logo {
@@ -71,6 +100,8 @@
   border-radius: var(--radius-sm);
   transition: background-color 0.2s ease, color 0.2s ease;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .app-sidebar-link:hover {
@@ -95,6 +126,7 @@
   height: 100vh;
   display: flex;
   flex-direction: column;
+  transition: margin-left 0.25s ease, width 0.25s ease;
 }
 
 /* ── Topbar ────────────────────────────────────────────────────────────── */
@@ -297,42 +329,6 @@ body.light-theme .app-topbar-avatar-btn {
   color: var(--color-alert);
 }
 
-.app-topbar-dd-logout-confirm {
-  display: flex;
-  flex-direction: column;
-  gap: var(--space-2);
-  padding: var(--space-2);
-}
-
-.app-topbar-dd-logout-confirm-text {
-  margin: 0;
-  font-size: 12px;
-  color: var(--color-text-secondary);
-}
-
-.app-topbar-dd-logout-confirm-actions {
-  display: flex;
-  gap: var(--space-2);
-}
-
-.app-topbar-dd-logout-confirm-btn {
-  flex: 1;
-  padding: 6px 0;
-  font-size: 12px;
-  font-weight: 600;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--color-border);
-  background: none;
-  color: var(--color-text-secondary);
-  cursor: pointer;
-}
-
-.app-topbar-dd-logout-confirm-btn--danger {
-  border-color: rgba(var(--color-alert-rgb), 0.3);
-  background-color: rgba(var(--color-alert-rgb), 0.12);
-  color: var(--color-alert);
-}
-
 /* ── Content slot ──────────────────────────────────────────────────────── */
 
 .app-content {
@@ -341,6 +337,31 @@ body.light-theme .app-topbar-avatar-btn {
   overflow: hidden;
   display: flex;
   flex-direction: column;
+}
+
+/* ── Collapsible sidebar (desktop only — narrower breakpoints below already
+   force their own fixed sidebar width/layout, so collapse never applies there) ── */
+
+@media (min-width: 1024px) {
+  .app-sidebar--collapsed {
+    width: var(--sidebar-width-collapsed);
+    padding-left: var(--space-2);
+    padding-right: var(--space-2);
+  }
+
+  .app-sidebar--collapsed .app-sidebar-top {
+    flex-direction: column;
+    gap: var(--space-2);
+  }
+
+  .app-sidebar--collapsed .app-sidebar-logo {
+    padding: 0;
+  }
+
+  .app-shell--sidebar-collapsed .app-main {
+    margin-left: calc(var(--sidebar-width-collapsed) + var(--sidebar-margin) * 2);
+    width: calc(100% - var(--sidebar-width-collapsed) - var(--sidebar-margin) * 2);
+  }
 }
 
 /* ── Responsive: narrow sidebar ───────────────────────────────────────── */
@@ -353,6 +374,10 @@ body.light-theme .app-topbar-avatar-btn {
   .app-main {
     margin-left: calc(220px + var(--sidebar-margin) * 2);
     width: calc(100% - 220px - var(--sidebar-margin) * 2);
+  }
+
+  .app-sidebar-toggle {
+    display: none;
   }
 }
 

@@ -4,7 +4,7 @@ Source of truth: [README.md](../README.md#database-schema). This file mirrors
 that ERD for quick reference by both `ai/` and `backend/` — keep it in sync
 if the schema changes.
 
-19 tables across 8 domains:
+21 tables across 8 domains:
 
 | Domain | Tables |
 |---|---|
@@ -14,8 +14,9 @@ if the schema changes.
 | Jobs | `JobRoles`, `JobPostings`, `ExperienceLevels` |
 | Applications | `Applications`, `Resumes` |
 | Skills | `SkillSets`, `CandidateSkills`, `JobRequiredSkills`, `RoleSkills` |
-| Interviews | `InterviewRoundTypes`, `InterviewRounds`, `Interviews`, `InterviewQuestions` |
+| Interviews | `InterviewRoundTypes`, `InterviewRounds`, `Interviews`, `InterviewQuestions`, `DeletedInterviewRounds` |
 | Questions | `Questions` |
+| Audit | `ATSEvaluationHistory` |
 
 ## Tables
 
@@ -132,6 +133,9 @@ if the schema changes.
 | status | varchar |
 | posted_at | datetime2 |
 | expires_at | datetime2 |
+| ats_criteria_version | int NOT NULL DEFAULT 0 — bumped by 1 every time `ats_criteria`/`qualify_threshold`/`overqualify_threshold`/`auto_reject_overqualified` changes (see `job_service.update_job`). Compared against `Applications.ats_run_version` to decide whether a candidate's ATS result is stale. |
+
+> **Migration required**: `ALTER TABLE JobPostings ADD ats_criteria_version INT NOT NULL CONSTRAINT DF_JobPostings_ats_criteria_version DEFAULT 0;`
 
 ### JobRequiredSkills
 | Column | Type |
@@ -193,6 +197,7 @@ CREATE TABLE Resumes (
 | pending_ats_rerun_evaluated_at | datetime2 NULL — companion timestamp for `pending_ats_rerun_details` |
 | pending_ats_rerun_model_version | varchar(100) NULL — companion model version for `pending_ats_rerun_details` |
 | pending_ats_rerun_recruiter_id | uniqueidentifier NULL — recruiter who triggered the deferred rerun, carried through to `ATSEvaluationHistory.recruiter_id` once applied |
+| ats_run_version | int NOT NULL DEFAULT 0 — snapshot of `JobPostings.ats_criteria_version` taken at the *start* of the ATS run that produced the current `ats_details` (not read fresh at the end); a candidate is stale and due for re-scoring whenever `ats_run_version < JobPostings.ats_criteria_version` |
 
 > **Migrations required**:
 > ```sql
@@ -216,6 +221,8 @@ CREATE TABLE Resumes (
 > ALTER TABLE Applications ADD pending_ats_rerun_evaluated_at datetime2 NULL;
 > ALTER TABLE Applications ADD pending_ats_rerun_model_version varchar(100) NULL;
 > ALTER TABLE Applications ADD pending_ats_rerun_recruiter_id uniqueidentifier NULL REFERENCES RecruiterProfiles(id);
+> -- ATS staleness versioning (see JobPostings.ats_criteria_version above):
+> ALTER TABLE Applications ADD ats_run_version int NOT NULL CONSTRAINT DF_Applications_ats_run_version DEFAULT 0;
 >
 > CREATE TABLE ATSEvaluationHistory (
 >     id                 uniqueidentifier PRIMARY KEY DEFAULT NEWID(),
@@ -245,8 +252,11 @@ CREATE TABLE Resumes (
 | description | varchar |
 | failing_criteria | int NULL — pass threshold (0–100 %) set by recruiter |
 | is_active | bit |
+| time_limit_minutes | int NULL — written-test time limit for this round; falls back to `settings.INTERVIEW_DURATION_MINUTES` (default 10) when NULL |
+| recent_generated_sets | nvarchar(MAX) NULL — **unused by current code.** Was briefly the DB-backed store for per-round question/option-order dedup history; that moved to a Redis list (`round_question_queue:<interview_round_id>`, see `question_order_service.py`) before this column was ever populated in production. Column still exists (harmless, always NULL) but nothing reads or writes it — safe to drop in a future cleanup. |
 
 > **Migration required**: `ALTER TABLE InterviewRounds ADD failing_criteria INT NULL;`
+> **Migration required**: `ALTER TABLE InterviewRounds ADD time_limit_minutes INT NULL;`
 
 ### Interviews
 | Column | Type | Notes |
@@ -256,9 +266,12 @@ CREATE TABLE Resumes (
 | application_id | uniqueidentifier FK -> Applications | |
 | status | varchar | `Scheduled` / `In Progress` / `Pass` / `Failed` / `Not Needed` (auto-set on later rounds when an earlier round Fails) |
 | scheduled_at | datetime2 | |
+| started_at | datetime2 NULL | Set once, the first time status flips to 'In Progress' (COALESCE-guarded so a later refresh never overwrites it). Used to compute a refresh-safe remaining timer (`timer_seconds = limit - elapsed`) and to stop accepting new autosaved answers once the round's time limit + grace period has passed. |
 | completed_at | datetime2 | |
 | feedback | nvarchar | AI-generated text feedback about the round |
 | result | varchar(50) | Final numeric score (0–10) stored as text; NULL until round is scored |
+
+> **Migration required**: `ALTER TABLE Interviews ADD started_at DATETIME2 NULL;`
 
 ### Questions
 | Column | Type |
@@ -295,6 +308,35 @@ CREATE TABLE Resumes (
 | score | int |
 | notes | nvarchar |
 
+### DeletedInterviewRounds
+Tombstone written immediately before an `Interviews` row (and its
+`InterviewQuestions`) is deleted by a PASS→FAIL ATS rerun — see
+`application_service._delete_non_in_progress_interviews` and
+`_delete_all_interviews`. Exists because once the `Interviews` row is gone
+there is no other way to resolve a stale `interview_id` back to its
+`application_id`; `interview_service.get_interview_context` checks this table
+to distinguish "deleted after a fail" (→ HTTP 410) from "questions not yet
+generated for this round" (→ proceeds to generate, no tombstone exists).
+
+| Column | Type |
+|---|---|
+| interview_id | uniqueidentifier PK — the deleted `Interviews.id` |
+| application_id | uniqueidentifier FK -> Applications |
+| interview_round_id | uniqueidentifier FK -> InterviewRounds |
+| deleted_at | datetime2 NOT NULL DEFAULT SYSUTCDATETIME() |
+| deleted_reason | varchar(50) NOT NULL |
+
+> **Migration required**:
+> ```sql
+> CREATE TABLE DeletedInterviewRounds (
+>     interview_id       uniqueidentifier PRIMARY KEY,
+>     application_id     uniqueidentifier NOT NULL REFERENCES Applications(id),
+>     interview_round_id uniqueidentifier NOT NULL REFERENCES InterviewRounds(id),
+>     deleted_at          datetime2        NOT NULL DEFAULT SYSUTCDATETIME(),
+>     deleted_reason      varchar(50)      NOT NULL
+> );
+> ```
+
 ## Relationships
 
 - `Roles ||--o{ Users` — has
@@ -326,6 +368,9 @@ CREATE TABLE Resumes (
 - `InterviewRoundTypes ||--o{ Questions` — type
 - `JobRoles ||--o{ Questions` — role
 - `ExperienceLevels ||--o{ Questions` — level
+- `Applications ||--o{ ATSEvaluationHistory` — audit trail
+- `Applications ||--o{ DeletedInterviewRounds` — tombstones
+- `InterviewRounds ||--o{ DeletedInterviewRounds` — tombstones
 
 ## Notes for `ai/` agents
 

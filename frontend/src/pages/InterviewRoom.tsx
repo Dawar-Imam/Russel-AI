@@ -1,6 +1,6 @@
 import { Room, RoomEvent, Track } from 'livekit-client'
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { useParams } from 'react-router-dom'
+import { useNavigate, useParams } from 'react-router-dom'
 import BackButton from '../components/BackButton'
 import Button from '../components/Button'
 import Modal from '../components/Modal'
@@ -20,6 +20,7 @@ interface QuestionItem {
   question_text: string
   question_type: string
   options?: string[] | null
+  candidate_answer?: string | null
 }
 
 interface GradedAnswer {
@@ -74,6 +75,7 @@ function scoreColor(score: number): string {
 
 function InterviewRoom() {
   const { interviewId } = useParams<{ interviewId: string }>()
+  const navigate = useNavigate()
   const theme = useTheme()
   const botImage = theme === 'light' ? botImageLight : botImageDark
   const [phase, setPhase] = useState<Phase>('loading')
@@ -99,6 +101,11 @@ function InterviewRoom() {
   const questionsRef = useRef<QuestionItem[]>([])
   const isSubmittingRef = useRef(false)
   const isTerminatedRef = useRef(false)
+  // Set the instant `beforeunload` fires (refresh, close tab, external navigation) — a
+  // `visibilitychange` to 'hidden' also fires as part of that same teardown, and without
+  // this guard it would look identical to a genuine tab-switch-away and wrongly terminate
+  // the interview on a plain refresh.
+  const isUnloadingRef = useRef(false)
   const enableFailCasesRef = useRef(true)
   const phaseRef = useRef<Phase>('loading')
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
@@ -106,6 +113,7 @@ function InterviewRoom() {
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const roomRef = useRef<Room | null>(null)
   const eventSourceRef = useRef<EventSource | null>(null)
+  const saveAnswerTimersRef = useRef<Record<number, ReturnType<typeof setTimeout>>>({})
 
   // Assistant reply is buffered until the agent's audio actually starts
   // coming out of the speakers, then revealed 1s after that signal — so the
@@ -139,18 +147,51 @@ function InterviewRoom() {
   }, [messages])
 
 
-  // Cleanup LiveKit room and SSE on unmount
+  // Cleanup LiveKit room and SSE on unmount — also the catch-all leave-detector for
+  // ways of leaving that don't fire a real page unload (browser back/forward button,
+  // any other in-app navigation away from this route): those unmount this component
+  // via React Router without ever triggering the beforeunload/visibilitychange
+  // listeners below, so without this the round would just stay 'In Progress' forever.
   useEffect(() => {
     return () => {
       roomRef.current?.disconnect()
       eventSourceRef.current?.close()
       if (timerRef.current) clearInterval(timerRef.current)
       if (assistantRevealTimeoutRef.current) clearTimeout(assistantRevealTimeoutRef.current)
+      Object.values(saveAnswerTimersRef.current).forEach(clearTimeout)
       if (localStorage.getItem('russell_test_mode') === '1') {
         void fetch(`${API_BASE}/api/interviews/${interviewId}/clear-test-cache`, { method: 'POST' })
       }
+      if (
+        enableFailCasesRef.current &&
+        !isTerminatedRef.current &&
+        (phaseRef.current === 'answering' || phaseRef.current === 'voice-active')
+      ) {
+        isTerminatedRef.current = true
+        void fetch(`${API_BASE}/api/interviews/${interviewId}/report-leave`, { method: 'POST' })
+          .catch(() => { /* fire-and-forget — component is already gone */ })
+      }
     }
   }, [interviewId])
+
+  // ---------------------------------------------------------------------------
+  // Per-answer autosave — immediate for MCQ picks, debounced for free-text, so a
+  // refresh/crash/network drop never loses progress typed so far.
+  // ---------------------------------------------------------------------------
+
+  const saveAnswer = useCallback((iqId: string, value: string) => {
+    if (phaseRef.current !== 'answering') return
+    void fetch(`${API_BASE}/api/interviews/${interviewId}/save-answer`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ iq_id: iqId, candidate_answer: value }),
+    }).catch(() => { /* fire-and-forget — the next save or final submit carries the latest value */ })
+  }, [interviewId])
+
+  const saveAnswerDebounced = useCallback((index: number, iqId: string, value: string) => {
+    if (saveAnswerTimersRef.current[index]) clearTimeout(saveAnswerTimersRef.current[index])
+    saveAnswerTimersRef.current[index] = setTimeout(() => saveAnswer(iqId, value), 800)
+  }, [saveAnswer])
 
   // ---------------------------------------------------------------------------
   // Leave / cheat detection
@@ -184,9 +225,12 @@ function InterviewRoom() {
     void handleUserLeft('You ended the interview early — this round has been marked as failed.')
   }, [handleUserLeft])
 
-  // Tab switch / window blur
+  // Tab switch / window blur — ignored while the page is actually unloading (refresh,
+  // close, external navigation), since that also flips document.hidden but isn't the
+  // candidate switching away while staying in the interview.
   useEffect(() => {
     const onVisibility = () => {
+      if (isUnloadingRef.current) return
       if (!enableFailCasesRef.current) return
       if (document.hidden && (phaseRef.current === 'answering' || phaseRef.current === 'voice-active')) {
         void handleUserLeft()
@@ -196,19 +240,16 @@ function InterviewRoom() {
     return () => document.removeEventListener('visibilitychange', onVisibility)
   }, [handleUserLeft])
 
-  // Page close / refresh / navigation
+  // Page close / refresh / navigation — no longer reports a leave here: a hard refresh
+  // fires this same event, and the interview must survive a refresh untouched. Real
+  // in-app navigation away is still caught by the unmount cleanup below.
   useEffect(() => {
-    const onBeforeUnload = (e: BeforeUnloadEvent) => {
-      if (!enableFailCasesRef.current) return
-      if (phaseRef.current !== 'answering' && phaseRef.current !== 'voice-active') return
-      e.preventDefault()
-      e.returnValue = ''
-      const blob = new Blob(['{}'], { type: 'application/json' })
-      navigator.sendBeacon(`${API_BASE}/api/interviews/${interviewId}/report-leave`, blob)
+    const onBeforeUnload = () => {
+      isUnloadingRef.current = true
     }
     window.addEventListener('beforeunload', onBeforeUnload)
     return () => window.removeEventListener('beforeunload', onBeforeUnload)
-  }, [interviewId])
+  }, [])
 
   // ---------------------------------------------------------------------------
   // Written interview submit
@@ -564,6 +605,16 @@ function InterviewRoom() {
           setPhase('already-completed')
           return null
         }
+        if (res.status === 410)
+          return res.json().then((d) => {
+            const detail = (d as { detail?: { code?: string; application_id?: string } }).detail
+            // Deleted after a recruiter's ATS-rerun fail (see backend
+            // InterviewDeletedPostFailError) — redirect straight to application progress,
+            // no error state, no retry. Distinct from 409 (still active) and from a plain
+            // 404 (bad/unknown interview_id), which fall through to the generic error path.
+            if (detail?.application_id) navigate(`/application-progress/${detail.application_id}`)
+            return null
+          })
         if (!res.ok)
           return res.json().then((d) => {
             throw new Error((d as { detail?: string }).detail ?? `Error ${res.status}`)
@@ -587,7 +638,7 @@ function InterviewRoom() {
           void startVoiceInterview()
         } else {
           setQuestions(data.questions)
-          setAnswers(new Array((data.questions as QuestionItem[]).length).fill(''))
+          setAnswers((data.questions as QuestionItem[]).map((q) => q.candidate_answer ?? ''))
           setPhase('answering')
         }
       })
@@ -719,9 +770,8 @@ function InterviewRoom() {
       {/* ── Loading: generating questions ── */}
       {phase === 'loading' && (
         <div className="ir-center">
-          <BackButton />
           <div className="ir-spinner" />
-          <p className="ir-status-text">Generating your interview questions…</p>
+          <p className="ir-status-text">Fetching your Interview Questions</p>
           <p className="ir-status-sub">This may take a moment</p>
         </div>
       )}
@@ -738,9 +788,6 @@ function InterviewRoom() {
       {/* ── Answering: ORAL / voice layout ── */}
       {phase === 'voice-active' && (
         <div className="ir-answering-root">
-          <div className="ir-back-float">
-            <BackButton />
-          </div>
           <h1 className="ir-heading">Interview Room</h1>
 
           <div className="ir-oral-body">
@@ -790,7 +837,7 @@ function InterviewRoom() {
               </div>
             </div>
 
-            {/* Right — bot, timer, end button */}
+            {/* Right — bot, timer */}
             <div className="ir-bot-area">
               <img src={botImage} alt="AI Interviewer" className="ir-bot-image" />
               {audioBlocked && (
@@ -802,14 +849,17 @@ function InterviewRoom() {
                 </Button>
               )}
               {timerCircle}
-              <Button
-                variant="secondary"
-                className="ir-end-interview-btn"
-                onClick={handleEndInterviewClick}
-              >
-                End Interview
-              </Button>
             </div>
+          </div>
+
+          <div className="ir-end-interview-center">
+            <Button
+              variant="secondary"
+              className="ir-end-interview-btn"
+              onClick={handleEndInterviewClick}
+            >
+              End Interview
+            </Button>
           </div>
 
           <Modal isOpen={showEndInterviewModal} onClose={() => setShowEndInterviewModal(false)}>
@@ -836,10 +886,6 @@ function InterviewRoom() {
       {/* ── Answering: WRITTEN layout ── */}
       {phase === 'answering' && !isOral && (
         <div className="ir-answering-root">
-          <div className="ir-back-float">
-            <BackButton />
-          </div>
-
           <h1 className="ir-heading">Interview Room</h1>
 
           <div className="ir-answering-body">
@@ -864,6 +910,7 @@ function InterviewRoom() {
                                 const updated = [...answers]
                                 updated[i] = opt
                                 setAnswers(updated)
+                                saveAnswer(q.iq_id, opt)
                               }}
                             />
                             <span>{opt}</span>
@@ -880,6 +927,7 @@ function InterviewRoom() {
                           const updated = [...answers]
                           updated[i] = e.target.value
                           setAnswers(updated)
+                          saveAnswerDebounced(i, q.iq_id, e.target.value)
                         }}
                       />
                     )}
@@ -983,7 +1031,6 @@ function InterviewRoom() {
           <div className="ir-back-float">
             <BackButton />
           </div>
-
           <h1 className="ir-heading">Interview Complete</h1>
 
           <div className="ir-answering-body ir-answering-body--no-bar">

@@ -856,6 +856,17 @@
   gap: 36px;
 }
 
+/* Fixed, page-centered End Interview button (oral rounds only) */
+.ir-end-interview-center {
+  position: fixed;
+  bottom: var(--space-4);
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: center;
+  z-index: 20;
+}
+
 .ir-end-interview-btn {
   min-width: 160px;
   background-color: var(--color-surface-raised) !important;

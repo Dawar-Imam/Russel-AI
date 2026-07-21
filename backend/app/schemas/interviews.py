@@ -33,6 +33,11 @@ class AnswerItem(BaseModel):
     candidate_answer: str
 
 
+class SaveAnswerRequest(BaseModel):
+    iq_id: str
+    candidate_answer: str
+
+
 class ScoreAnswersRequest(BaseModel):
     fetch_from_db: bool = False
     answers: list[AnswerItem] = []

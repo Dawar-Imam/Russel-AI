@@ -28,6 +28,7 @@ interface SelectedRound {
   round_type_id: number
   name: string
   failing_criteria: string
+  time_limit_minutes: string
 }
 
 interface ATSCriterionState {
@@ -167,6 +168,15 @@ function RecruiterDashboard() {
   const [rerunStatusByJob, setRerunStatusByJob] = useState<Record<string, { total: number; completed: number; inProgress: boolean }>>({})
   const [rerunStarting, setRerunStarting] = useState(false)
   const [rerunError, setRerunError] = useState<string | null>(null)
+  // Snapshot from the most recent "Rerun ATS" click — how many candidates for that job
+  // have an interview In Progress right now and were skipped entirely (not queued, not
+  // even LLM-checked) because of it. Point-in-time like skipped_pending/excluded, not
+  // re-polled — it reflects what happened at dispatch, not live state.
+  const [rerunInProgressCountByJob, setRerunInProgressCountByJob] = useState<Record<string, number>>({})
+  // Same snapshot semantics as rerunInProgressCountByJob above, but for candidates
+  // skipped because they were already scored against this job's current ATS criteria —
+  // lets the UI explain a 0-queued rerun instead of it looking like nothing happened.
+  const [rerunNotStaleCountByJob, setRerunNotStaleCountByJob] = useState<Record<string, number>>({})
   const rerunPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   function pollRerunStatus(jobId: string) {
@@ -207,6 +217,8 @@ function RecruiterDashboard() {
           ...prev,
           [jobId]: { total: result.queued, completed: 0, inProgress: result.queued > 0 },
         }))
+        setRerunInProgressCountByJob(prev => ({ ...prev, [jobId]: result.in_progress_count }))
+        setRerunNotStaleCountByJob(prev => ({ ...prev, [jobId]: result.not_stale_count }))
         if (result.queued > 0) pollRerunStatus(jobId)
       })
       .catch(err => setRerunError(err instanceof Error ? err.message : 'Failed to start ATS rerun'))
@@ -507,7 +519,10 @@ function RecruiterDashboard() {
     if (!selectedRoundTypeId) return
     const rt = roundTypes.find((r) => r.id === Number(selectedRoundTypeId))
     if (!rt) return
-    setSelectedRounds((prev) => [...prev, { uid: crypto.randomUUID(), round_type_id: rt.id, name: rt.name, failing_criteria: '50' }])
+    setSelectedRounds((prev) => [
+      ...prev,
+      { uid: crypto.randomUUID(), round_type_id: rt.id, name: rt.name, failing_criteria: '50', time_limit_minutes: '' },
+    ])
     setSelectedRoundTypeId('')
   }
 
@@ -519,6 +534,14 @@ function RecruiterDashboard() {
     const num = Number(value)
     const clamped = value === '' ? '' : String(Math.min(100, Math.max(0, num)))
     setSelectedRounds((prev) => prev.map((r) => (r.uid === uid ? { ...r, failing_criteria: clamped } : r)))
+  }
+
+  // Blank = let the backend default it (45 min for non-oral rounds; oral rounds keep
+  // their existing global default) — so this only clamps to a positive integer, no cap.
+  function handleDurationChange(uid: string, value: string) {
+    const num = Number(value)
+    const clamped = value === '' ? '' : String(Math.max(1, Math.trunc(num) || 1))
+    setSelectedRounds((prev) => prev.map((r) => (r.uid === uid ? { ...r, time_limit_minutes: clamped } : r)))
   }
 
   function handleDragStart(index: number) { dragIndexRef.current = index }
@@ -577,6 +600,7 @@ function RecruiterDashboard() {
           round_type_id: r.round_type_id,
           round_order: i + 1,
           failing_criteria: r.failing_criteria !== '' ? Math.min(100, Math.max(0, Number(r.failing_criteria))) : null,
+          time_limit_minutes: r.time_limit_minutes !== '' ? Math.max(1, Number(r.time_limit_minutes)) : null,
         })),
         ats_criteria: atsEnabledCriteria.map((c) => ({ section: c.section, weight: Number(c.weight) || 0 })),
         qualify_threshold: qualifyThreshold !== '' ? Math.min(100, Math.max(0, Number(qualifyThreshold))) : undefined,
@@ -1028,13 +1052,24 @@ function RecruiterDashboard() {
                           />
                           <span className="rd-threshold-suffix">%</span>
                         </div>
+                        <div className="rd-round-threshold" title="Candidate time limit — defaults to 45 min if left blank">
+                          <input
+                            className="rd-threshold-input"
+                            type="number" min="1"
+                            placeholder="45"
+                            value={round.time_limit_minutes}
+                            onChange={(e) => handleDurationChange(round.uid, e.target.value)}
+                            onKeyDown={blockNonNumericKey}
+                          />
+                          <span className="rd-threshold-suffix">min</span>
+                        </div>
                         <button type="button" className="rd-round-remove" onClick={() => handleRemoveRound(round.uid)} aria-label="Remove">✕</button>
                       </li>
                     ))}
                   </ol>
                 )}
 
-                <p className="rd-threshold-hint">% = minimum score to pass this round</p>
+                <p className="rd-threshold-hint">% = minimum score to pass this round · min = candidate time limit (blank = 45 min default)</p>
               </div>
             </div>
 
@@ -1076,7 +1111,7 @@ function RecruiterDashboard() {
                     <button
                       type="button"
                       className="rd-stats-btn-inline"
-                      disabled={rerunStarting || rerunStatusByJob[detailJob.id]?.inProgress}
+                      disabled={rerunStarting}
                       onClick={() => handleRerunAts(detailJob.id)}
                       title="Re-run ATS screening for every eligible applicant against this job's current requirements"
                     >
@@ -1103,6 +1138,16 @@ function RecruiterDashboard() {
             {!editMode && rerunError && <p className="rd-field-error">{rerunError}</p>}
             {!editMode && !rerunStatusByJob[detailJob.id]?.inProgress && rerunStatusByJob[detailJob.id]?.total > 0 && (
               <p className="rd-rounds-empty-text">ATS rerun complete for {rerunStatusByJob[detailJob.id].total} candidate(s).</p>
+            )}
+            {!editMode && (rerunInProgressCountByJob[detailJob.id] ?? 0) > 0 && (
+              <p className="rd-rounds-empty-text">
+                {rerunInProgressCountByJob[detailJob.id]} candidate{rerunInProgressCountByJob[detailJob.id] === 1 ? '' : 's'} {rerunInProgressCountByJob[detailJob.id] === 1 ? 'has' : 'have'} an interview in progress — ATS screening will run once their interview finishes.
+              </p>
+            )}
+            {!editMode && (rerunNotStaleCountByJob[detailJob.id] ?? 0) > 0 && (
+              <p className="rd-rounds-empty-text">
+                {rerunNotStaleCountByJob[detailJob.id]} candidate{rerunNotStaleCountByJob[detailJob.id] === 1 ? '' : 's'} already screened against the current criteria — please update the job description/ATS criteria to re-screen {rerunNotStaleCountByJob[detailJob.id] === 1 ? 'them' : 'these candidates'}.
+              </p>
             )}
 
             {/* Two-column body */}
@@ -1263,15 +1308,26 @@ function RecruiterDashboard() {
                     <p className="rd-rounds-empty-text" style={{ marginTop: 8 }}>No rounds configured.</p>
                   ) : (
                     <ol className={`rd-detail-rounds${editMode ? ' rd-detail-rounds--locked' : ''}`}>
-                      {detailRounds.map((r) => (
-                        <li key={r.round_order} className="rd-detail-round-item">
-                          <span className="rd-round-badge">{r.round_order}</span>
-                          <span className="rd-round-name">{r.round_type_name}</span>
-                          {r.failing_criteria !== null && (
-                            <span className="rd-pass-pill">{r.failing_criteria}% pass</span>
-                          )}
-                        </li>
-                      ))}
+                      {detailRounds.map((r) => {
+                        const isOralRound = r.round_type_name.toLowerCase().includes('oral')
+                          || r.round_type_name.toLowerCase().includes('voice')
+                        // Written rounds with no explicit duration fall back to the backend's
+                        // 45-min default; oral rounds keep their own existing default, which
+                        // this UI doesn't hardcode.
+                        const displayMinutes = r.time_limit_minutes ?? (isOralRound ? null : 45)
+                        return (
+                          <li key={r.round_order} className="rd-detail-round-item">
+                            <span className="rd-round-badge">{r.round_order}</span>
+                            <span className="rd-round-name">{r.round_type_name}</span>
+                            {r.failing_criteria !== null && (
+                              <span className="rd-pass-pill">{r.failing_criteria}% pass</span>
+                            )}
+                            {displayMinutes !== null && (
+                              <span className="rd-pass-pill">{displayMinutes} min</span>
+                            )}
+                          </li>
+                        )
+                      })}
                     </ol>
                   )}
                 </div>

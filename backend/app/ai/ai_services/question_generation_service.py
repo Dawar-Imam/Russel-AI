@@ -61,10 +61,11 @@ async def generate_questions(
     """LLM call producing `count` interview questions for the given example
     questions, candidate CV relevance, and interview context.
 
-    `recent_mcq_orderings` — optional (question_text, options) pairs already
-    queued for this job (see mcq_redis_cache.get_queued_orderings) — is passed
-    through so the model can avoid reproducing one of those exact option
-    orderings verbatim."""
+    `recent_mcq_orderings` is currently unused by all callers — question/option
+    order dedup now happens post-generation, once, via
+    app.services.question_order_service.dedupe_order_and_options. Left in place
+    (defaults to None) so an existing caller passing hints here doesn't break;
+    the prompt simply renders "(none)" when omitted."""
 
     structured_llm = get_llm(temperature=0.7).with_structured_output(GeneratedQuestions)
 

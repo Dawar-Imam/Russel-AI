@@ -1,0 +1,79 @@
+services:
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - russel-ai
+
+  backend:
+    build:
+      context: ./backend
+    env_file:
+      - ./backend/.env
+    environment:
+      # Overrides the .env's localhost value so the container reaches Redis
+      # by its service name on the compose network.
+      CELERY_BROKER_URL: redis://redis:6379/0
+    volumes:
+      - ./backend:/app
+      - backend_venv:/app/.venv
+    ports:
+      - "8000:8000"
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+    networks:
+      - russel-ai
+
+  celery:
+    build:
+      context: ./backend
+    command: ["uv", "run", "celery", "-A", "app.celery_app", "worker", "--pool=solo", "--loglevel=info"]
+    env_file:
+      - ./backend/.env
+    environment:
+      CELERY_BROKER_URL: redis://redis:6379/0
+    volumes:
+      - ./backend:/app
+      - backend_venv:/app/.venv
+    depends_on:
+      redis:
+        condition: service_healthy
+    networks:
+      - russel-ai
+
+  frontend:
+    build:
+      context: ./frontend
+    volumes:
+      - ./frontend:/app
+      - frontend_node_modules:/app/node_modules
+    ports:
+      - "5173:5173"
+    depends_on:
+      backend:
+        condition: service_healthy
+    networks:
+      - russel-ai
+
+networks:
+  russel-ai:
+    driver: bridge
+
+volumes:
+  redis_data:
+  backend_venv:
+  frontend_node_modules:

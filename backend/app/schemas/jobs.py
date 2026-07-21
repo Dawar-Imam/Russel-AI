@@ -16,12 +16,20 @@ class InterviewRoundInput(BaseModel):
     round_order: int
     failing_criteria: int | None = None  # 0–100 percent
     description: str | None = None
+    time_limit_minutes: int | None = None  # written-test time limit; falls back to a global default when unset
 
     @field_validator('failing_criteria')
     @classmethod
     def validate_failing_criteria(cls, v: int | None) -> int | None:
         if v is not None and not (0 <= v <= 100):
             raise ValueError('failing_criteria must be between 0 and 100')
+        return v
+
+    @field_validator('time_limit_minutes')
+    @classmethod
+    def validate_time_limit_minutes(cls, v: int | None) -> int | None:
+        if v is not None and v <= 0:
+            raise ValueError('time_limit_minutes must be positive')
         return v
 
 
@@ -117,6 +125,8 @@ class RerunAtsResponse(BaseModel):
     queued: int
     skipped_pending: int
     excluded: int
+    in_progress_count: int
+    not_stale_count: int
     message: str
 
 
@@ -134,6 +144,7 @@ class JobInterviewRoundItem(BaseModel):
     round_type_name: str
     failing_criteria: int | None
     description: str | None
+    time_limit_minutes: int | None
 
 
 class ATSCriterionSummary(BaseModel):

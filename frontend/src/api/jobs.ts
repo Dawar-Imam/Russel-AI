@@ -11,6 +11,7 @@ export interface InterviewRoundInput {
   round_order: number
   failing_criteria: number | null
   description?: string
+  time_limit_minutes: number | null
 }
 
 export interface ATSCriterionInput {
@@ -23,6 +24,7 @@ export interface JobInterviewRoundItem {
   round_type_name: string
   failing_criteria: number | null
   description: string | null
+  time_limit_minutes: number | null
 }
 
 export interface ATSCriterionSummary {
@@ -184,6 +186,8 @@ export interface RerunAtsResponse {
   queued: number
   skipped_pending: number
   excluded: number
+  in_progress_count: number
+  not_stale_count: number
   message: string
 }
 

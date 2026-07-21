@@ -41,6 +41,8 @@ const RECRUITER_NAV_STATS = [
 const NO_LAYOUT_PATHS = ['/', '/auth']
 const NO_LAYOUT_PREFIXES = ['/interview-room']
 
+const SIDEBAR_COLLAPSED_KEY = 'russel-ai-sidebar-collapsed'
+
 export function shouldShowAppLayout(pathname: string, signedIn: boolean) {
   if (!signedIn) return false
   if (NO_LAYOUT_PATHS.includes(pathname)) return false
@@ -54,8 +56,10 @@ function AppLayout({ children }: { children: ReactNode }) {
   const dropdownRef = useRef<HTMLDivElement>(null)
 
   const [isOpen, setIsOpen] = useState(false)
-  const [showLogoutConfirm, setShowLogoutConfirm] = useState(false)
   const [authState, setAuthState] = useState(readAuthState)
+  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(
+    () => localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === 'true',
+  )
   const theme = useTheme()
 
   useEffect(() => {
@@ -71,7 +75,6 @@ function AppLayout({ children }: { children: ReactNode }) {
     function handleClickOutside(e: MouseEvent) {
       if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
         setIsOpen(false)
-        setShowLogoutConfirm(false)
       }
     }
     if (isOpen) document.addEventListener('mousedown', handleClickOutside)
@@ -86,8 +89,15 @@ function AppLayout({ children }: { children: ReactNode }) {
     sessionStorage.removeItem('userType')
     window.dispatchEvent(new CustomEvent('auth-change'))
     setAuthState({ isSignedIn: false, email: '', userType: null })
-    setShowLogoutConfirm(false)
     navigate('/')
+  }
+
+  function toggleSidebarCollapsed() {
+    setIsSidebarCollapsed((prev) => {
+      const next = !prev
+      localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(next))
+      return next
+    })
   }
 
   function handleViewProfile() {
@@ -108,11 +118,33 @@ function AppLayout({ children }: { children: ReactNode }) {
     : baseNavItems
 
   return (
-    <div className="app-shell">
-      <aside className="app-sidebar">
-        <div className="app-sidebar-logo" onClick={() => navigate('/')}>
-          <span className="app-sidebar-logo-primary">Russel</span>
-          <span className="app-sidebar-logo-accent">.AI</span>
+    <div
+      className={`app-shell${isSidebarCollapsed ? ' app-shell--sidebar-collapsed' : ''}`}
+    >
+      <aside className={`app-sidebar${isSidebarCollapsed ? ' app-sidebar--collapsed' : ''}`}>
+        <div className="app-sidebar-top">
+          <div className="app-sidebar-logo" onClick={() => navigate('/')}>
+            {isSidebarCollapsed ? (
+              <span className="app-sidebar-logo-primary">R</span>
+            ) : (
+              <>
+                <span className="app-sidebar-logo-primary">Russel</span>
+                <span className="app-sidebar-logo-accent">.AI</span>
+              </>
+            )}
+          </div>
+
+          <button
+            className="app-sidebar-toggle"
+            type="button"
+            aria-label={isSidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+            aria-expanded={!isSidebarCollapsed}
+            onClick={toggleSidebarCollapsed}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ transform: isSidebarCollapsed ? 'rotate(180deg)' : 'none' }}>
+              <path d="M15 18l-6-6 6-6" />
+            </svg>
+          </button>
         </div>
 
         <div className="app-sidebar-divider" />
@@ -186,23 +218,9 @@ function AppLayout({ children }: { children: ReactNode }) {
               <button className="app-topbar-dd-btn" onClick={handleViewProfile}>
                 My Profile
               </button>
-              {showLogoutConfirm ? (
-                <div className="app-topbar-dd-logout-confirm">
-                  <p className="app-topbar-dd-logout-confirm-text">Log out?</p>
-                  <div className="app-topbar-dd-logout-confirm-actions">
-                    <button className="app-topbar-dd-logout-confirm-btn app-topbar-dd-logout-confirm-btn--danger" onClick={handleLogout}>
-                      Yes
-                    </button>
-                    <button className="app-topbar-dd-logout-confirm-btn" onClick={() => setShowLogoutConfirm(false)}>
-                      Cancel
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <button className="app-topbar-dd-btn app-topbar-dd-btn--logout" onClick={() => setShowLogoutConfirm(true)}>
-                  Log Out
-                </button>
-              )}
+              <button className="app-topbar-dd-btn app-topbar-dd-btn--logout" onClick={handleLogout}>
+                Log Out
+              </button>
             </div>
           </div>
         </header>

@@ -16,13 +16,16 @@ from app.core.config import settings
 from app.schemas.interviews import (
     GenerateQuestionsRequest,
     GenerateQuestionsResponse,
+    SaveAnswerRequest,
     ScoreAnswersRequest,
     ScoreAnswersResponse,
 )
 from app.services.interview_service import (
+    InterviewDeletedPostFailError,
     clear_test_mode_cache,
     generate_interview_questions,
     mark_interview_failed_on_leave,
+    save_candidate_answer,
     score_interview_answers,
 )
 
@@ -45,11 +48,38 @@ async def generate_questions(
             return_questions=body.return_questions,
             test_mode=body.test_mode,
         )
+    except InterviewDeletedPostFailError as exc:
+        # Distinct from the generic 404 below — the frontend must redirect straight to
+        # application-progress on this one, not show an error/retry state (it can't be
+        # confused with "questions not yet generated", which never reaches this branch;
+        # see InterviewDeletedPostFailError's docstring). application_id is included
+        # because the frontend only has interview_id in scope (route param) and the
+        # redirect target (/application-progress/:applicationId) needs it.
+        raise HTTPException(
+            status_code=410,
+            detail={"code": "interview_deleted_post_fail", "application_id": exc.application_id},
+        ) from exc
     except ValueError as exc:
         msg = str(exc)
         if "already completed" in msg:
             raise HTTPException(status_code=409, detail=msg) from exc
         raise HTTPException(status_code=404, detail=msg) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post("/{interview_id}/save-answer")
+async def save_answer(interview_id: str, body: SaveAnswerRequest) -> dict:
+    """
+    Called by the frontend on every answer change (debounced for free-text, immediate
+    for MCQ picks) while a written round is in progress, so a refresh/crash/network
+    drop never loses progress. No-ops silently if the round is already terminal.
+    """
+    try:
+        save_candidate_answer(interview_id, body.iq_id, body.candidate_answer)
+        return {"status": "ok"}
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 

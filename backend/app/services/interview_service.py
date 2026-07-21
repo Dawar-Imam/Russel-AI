@@ -1,7 +1,9 @@
 import asyncio
 import json
 import logging
+import random
 import uuid
+from datetime import datetime
 
 from app.ai.ai_services.answer_scoring_service import grade_candidate_answers
 from app.ai.ai_services.cv_relevance_service import fetch_candidate_cv_relevance
@@ -29,7 +31,7 @@ from app.services.interview_validator import (
     WRITTEN_TEST_MIN_CORRECT,
     validate_interview,
 )
-from app.services.mcq_redis_cache import shuffle_mcq_options
+from app.services.question_order_service import dedupe_order_and_options, record_round_history
 from app.services.pregen_lock import (
     PREGEN_LOCK_WAIT_TIMEOUT_SECONDS as _PREGEN_LOCK_WAIT_TIMEOUT_SECONDS,
     PREGEN_LOCK_POLL_INTERVAL_SECONDS as _PREGEN_LOCK_POLL_INTERVAL_SECONDS,
@@ -39,12 +41,37 @@ from app.services.pregen_lock import (
 
 logger = logging.getLogger(__name__)
 
-TIMER_SECONDS = settings.INTERVIEW_DURATION_MINUTES * 60
 PASS_THRESHOLD = 6.0
 WRITTEN_TEST_QUESTION_COUNT = 15
 CORRECT_ANSWER_SCORE_THRESHOLD = 7
+# Default written-round duration when the recruiter didn't set InterviewRounds.time_limit_minutes.
+# Oral rounds keep using settings.INTERVIEW_DURATION_MINUTES instead (see _limit_seconds).
+WRITTEN_TEST_DEFAULT_DURATION_MINUTES = 45
+# Extra time past a round's configured limit before autosave stops accepting new
+# answers — absorbs normal request latency around the exact expiry instant so a
+# save already in flight when the timer hits 0 doesn't get dropped.
+EXPIRY_GRACE_SECONDS = 30
 
 LEAVE_FEEDBACK = "User left the interview, interview automatically closed."
+
+
+def _limit_seconds(time_limit_minutes: int | None, is_oral: bool = False) -> int:
+    if time_limit_minutes:
+        return time_limit_minutes * 60
+    if is_oral:
+        return settings.INTERVIEW_DURATION_MINUTES * 60
+    return WRITTEN_TEST_DEFAULT_DURATION_MINUTES * 60
+
+
+def _remaining_seconds(started_at: "datetime | None", limit_seconds: int) -> int:
+    """Refresh-safe timer: once a round has actually started, remaining time is
+    computed from the wall-clock elapsed since then, not reset to the full limit
+    on every generate-questions call. Assumes the app and DB server clocks are
+    close enough to compare directly (single-deployment assumption)."""
+    if started_at is None:
+        return limit_seconds
+    elapsed = (datetime.now() - started_at).total_seconds()
+    return max(0, int(limit_seconds - elapsed))
 
 
 def _poll_existing_questions(interview_id: str) -> list[QuestionItem]:
@@ -81,6 +108,30 @@ _test_mode_questions: dict[str, list[QuestionItem]] = {}
 # Context fetcher
 # ---------------------------------------------------------------------------
 
+class InterviewDeletedPostFailError(Exception):
+    """Raised by get_interview_context when interview_id doesn't resolve to a live
+    Interviews row because it was tombstoned in DeletedInterviewRounds — i.e. a
+    recruiter's ATS rerun failed this candidate after they'd already completed (or were
+    mid-) this round, and application_service._delete_non_in_progress_interviews /
+    _delete_all_interviews removed it. Distinct from a plain ValueError (bad/unknown
+    interview_id, or any other not-found reason) so the API layer can return a specific
+    410 instead of a generic 404 — see app/api/endpoints/interviews.py generate_questions().
+
+    Never confused with "questions not yet generated for this round": that case always
+    has a live Interviews row (created at ATS-pass time, status 'Scheduled', zero
+    InterviewQuestions rows) and never reaches the not-found branch below at all.
+
+    Carries application_id — the interview-room frontend only has interview_id in scope
+    (route param), but the redirect target (/application-progress/:applicationId) needs
+    the application_id, which is unrecoverable any other way once the Interviews row
+    (the only thing that used to link interview_id -> application_id) is gone.
+    """
+
+    def __init__(self, message: str, application_id: str) -> None:
+        super().__init__(message)
+        self.application_id = application_id
+
+
 def get_interview_context(interview_id: str) -> dict:
     """Fetch all context needed for question generation from the interview record."""
     with db_cursor() as (conn, cur):
@@ -92,7 +143,9 @@ def get_interview_context(interview_id: str) -> dict:
                 ir.interview_round_type_id,
                 jp.job_role_id,
                 a.candidate_id,
-                irt.name              AS interview_type
+                irt.name              AS interview_type,
+                ir.id                 AS interview_round_id,
+                ir.time_limit_minutes
             FROM Interviews i
             JOIN Applications a          ON a.id   = i.application_id
             JOIN InterviewRounds ir      ON ir.id  = i.interview_round_id
@@ -104,6 +157,13 @@ def get_interview_context(interview_id: str) -> dict:
         )
         row = cur.fetchone()
         if not row:
+            cur.execute("SELECT application_id FROM DeletedInterviewRounds WHERE interview_id = ?", interview_id)
+            tombstone = cur.fetchone()
+            if tombstone:
+                raise InterviewDeletedPostFailError(
+                    f"Interview {interview_id} was deleted after an ATS-rerun fail",
+                    application_id=str(tombstone[0]),
+                )
             raise ValueError(f"Interview {interview_id} not found")
         return {
             "application_id": str(row[0]),
@@ -112,6 +172,8 @@ def get_interview_context(interview_id: str) -> dict:
             "job_role_id": int(row[3]),
             "candidate_id": str(row[4]),
             "interview_type": str(row[5]) if row[5] else "",
+            "interview_round_id": str(row[6]),
+            "time_limit_minutes": int(row[7]) if row[7] is not None else None,
         }
 
 
@@ -163,17 +225,17 @@ def _fetch_existing_questions(cur, interview_id: str) -> list[QuestionItem]:
 def _shuffle_and_serialize_options(
     item: AIQuestionItem, job_posting_id: str
 ) -> tuple[list[str] | None, str | None]:
-    """Shuffles MCQ option order per candidate (see mcq_redis_cache.shuffle_mcq_options)
-    so different candidates for the same job don't see the same ordering, and returns
-    both the shuffled choices (for the in-memory QuestionItem handed back to the caller)
-    and the JSON blob to persist — the two must always agree, or the candidate would see
-    one order while a DB re-fetch would produce another. correct_option is stored as
+    """Serializes an MCQ's options into the JSON blob Questions.options stores.
+    `item.options` is expected to already be in its final per-candidate order —
+    question_order_service.dedupe_order_and_options shuffles order once, per round,
+    before any of these items reach here, so no shuffling happens at this
+    layer anymore. `job_posting_id` is accepted for call-site compatibility
+    with existing callers but is no longer used. correct_option is stored as
     literal text, matched by value at grading time — no index remapping needed."""
     if item.question_type != "mcq" or not item.options:
         return None, None
-    shuffled = shuffle_mcq_options(job_posting_id, item.question_text, item.options)
-    options_json = json.dumps({"choices": shuffled, "correct_option": item.correct_option})
-    return shuffled, options_json
+    options_json = json.dumps({"choices": item.options, "correct_option": item.correct_option})
+    return item.options, options_json
 
 
 def _update_generated_questions(
@@ -285,6 +347,44 @@ def _save_candidate_answers(cur, interview_id: str, answers: list[AnswerItem]) -
             """,
             a.candidate_answer, a.iq_id, interview_id,
         )
+
+
+def save_candidate_answer(interview_id: str, iq_id: str, candidate_answer: str) -> None:
+    """Immediate per-answer persistence while a candidate is still taking a written
+    round — called from the /save-answer endpoint on every autosave, so a
+    refresh/crash/network drop never loses progress. No-ops once the round is
+    terminal (Pass/Failed/Not Needed) so a stray in-flight autosave can never
+    resurrect answer data after the round is already scored. Also no-ops once the
+    round's time limit + EXPIRY_GRACE_SECONDS has elapsed — this is the actual
+    server-side stop on a candidate continuing to answer past the configured limit
+    by tampering with (or just not running) the client-side timer; the client's
+    own auto-submit is a UX nicety, not the enforcement boundary."""
+    with db_cursor() as (conn, cur):
+        cur.execute(
+            """
+            SELECT i.status, i.started_at, ir.time_limit_minutes
+            FROM Interviews i JOIN InterviewRounds ir ON ir.id = i.interview_round_id
+            WHERE i.id = ?
+            """,
+            interview_id,
+        )
+        row = cur.fetchone()
+        if not row:
+            raise ValueError(f"Interview {interview_id} not found")
+        if str(row[0]).lower() in TERMINAL_ROUND_STATUSES:
+            return
+        started_at = row[1]
+        if started_at is not None:
+            limit_seconds = _limit_seconds(row[2])
+            elapsed = (datetime.now() - started_at).total_seconds()
+            if elapsed > limit_seconds + EXPIRY_GRACE_SECONDS:
+                logger.info(
+                    "save_candidate_answer: interview_id=%s past time limit + grace, ignoring autosave",
+                    interview_id,
+                )
+                return
+        _save_candidate_answers(cur, interview_id, [AnswerItem(iq_id=iq_id, candidate_answer=candidate_answer)])
+        conn.commit()
 
 
 def _mark_subsequent_rounds_not_needed(cur, interview_id: str) -> None:
@@ -581,15 +681,20 @@ def _fetch_generation_context(interview_id: str, candidate_id: str):
         )
         cp_row = cur.fetchone()
         experience_level_id = int(cp_row[0]) if cp_row and cp_row[0] else 1
-        cur.execute("SELECT status FROM Interviews WHERE id = ?", interview_id)
+        cur.execute("SELECT status, started_at FROM Interviews WHERE id = ?", interview_id)
         current_status_row = cur.fetchone()
     return existing, experience_level_id, current_status_row
 
 
 def _mark_in_progress(interview_id: str) -> None:
-    """Blocking DB write — run via asyncio.to_thread so it doesn't block the event loop."""
+    """Blocking DB write — run via asyncio.to_thread so it doesn't block the event loop.
+    started_at is set only the first time (COALESCE-guarded) — a later refresh must
+    never push the deadline back out."""
     with db_cursor() as (conn, cur):
-        cur.execute("UPDATE Interviews SET status = 'In Progress' WHERE id = ?", interview_id)
+        cur.execute(
+            "UPDATE Interviews SET status = 'In Progress', started_at = COALESCE(started_at, GETDATE()) WHERE id = ?",
+            interview_id,
+        )
         conn.commit()
 
 
@@ -602,6 +707,7 @@ def _upsert_generated_questions(
     job_role_id: int,
     experience_level_id: int,
     job_posting_id: str,
+    interview_round_id: str,
 ) -> list[QuestionItem]:
     """Blocking DB write — run via asyncio.to_thread so it doesn't block the event loop."""
     with db_cursor() as (conn, cur):
@@ -610,6 +716,10 @@ def _upsert_generated_questions(
                 f"Interview {interview_id} is already completed ({current_status_row[0]}) "
                 "and cannot be restarted."
             )
+
+        # Randomise question order and MCQ option order against the round's last
+        # few candidates (read from Redis) before persisting.
+        new_items = dedupe_order_and_options(interview_round_id, new_items)
 
         if existing:
             items = _update_generated_questions(
@@ -627,10 +737,15 @@ def _upsert_generated_questions(
                 job_posting_id,
             )
         cur.execute(
-            "UPDATE Interviews SET status = 'In Progress' WHERE id = ?",
+            "UPDATE Interviews SET status = 'In Progress', started_at = COALESCE(started_at, GETDATE()) WHERE id = ?",
             interview_id,
         )
         conn.commit()
+    # Record this candidate's final order into the round's Redis history only after
+    # the SQL write has committed — matches the old mcq_redis_cache push-after-commit
+    # ordering, so a rolled-back write never leaves a Redis entry for questions that
+    # were never actually stored.
+    record_round_history(interview_round_id, new_items)
     return items
 
 
@@ -647,11 +762,17 @@ async def generate_interview_questions(
     application_id = ctx["application_id"]
     interview_round_type_id = ctx["interview_round_type_id"]
     job_role_id = ctx["job_role_id"]
+    interview_round_id = ctx["interview_round_id"]
+    # Same substring convention used elsewhere (question_pregeneration_service.py,
+    # InterviewRoom.tsx) — working off the raw InterviewRoundTypes.name value.
+    is_oral = "oral" in interview_type.lower() or "voice" in interview_type.lower()
+    limit_seconds = _limit_seconds(ctx["time_limit_minutes"], is_oral)
 
     # --- 2. Fetch existing questions + experience level ---
     existing, experience_level_id, current_status_row = await asyncio.to_thread(
         _fetch_generation_context, interview_id, candidate_id
     )
+    started_at = current_status_row[1] if current_status_row else None
 
     # In test mode with an already-completed interview: return cached/existing
     # questions without touching the DB at all.
@@ -660,23 +781,37 @@ async def generate_interview_questions(
         return GenerateQuestionsResponse(
             interview_id=interview_id,
             questions=items if return_questions else [],
-            timer_seconds=TIMER_SECONDS,
+            timer_seconds=limit_seconds,
             interview_type=interview_type,
             enable_fail_cases=settings.ENABLE_FAIL_CASES,
         )
 
-    # Pre-generation cache hit: `existing` non-empty AND status still 'Scheduled' is only
-    # possible via the background Celery task (written_test_tasks.trigger ->
-    # pregenerate_interview_questions) — nothing else writes InterviewQuestions before this
-    # function itself flips status to 'In Progress'. Skip the LLM call entirely, just mark
-    # the round started and hand back what's already stored. Not applied in test_mode,
-    # which never shares rows with the real pre-generation path.
-    if not test_mode and existing and current_status_row and str(current_status_row[0]) == "Scheduled":
+    # Existing-questions gate: whenever InterviewQuestions already exist for this
+    # interview_id — whether pre-generated by the background Celery task
+    # (status still 'Scheduled') or written by an earlier call to this same
+    # function (status already 'In Progress', e.g. the candidate refreshed
+    # mid-test) — never call the LLM again. Regenerating here would silently
+    # rewrite question text out from under an in-progress candidate while their
+    # old candidate_answer/score stay attached to the same InterviewQuestions
+    # rows. Not applied in test_mode, which never shares rows with the real
+    # generation path.
+    if not test_mode and existing:
+        if current_status_row and str(current_status_row[0]).lower() in TERMINAL_ROUND_STATUSES:
+            raise ValueError(
+                f"Interview {interview_id} is already completed ({current_status_row[0]}) "
+                "and cannot be restarted."
+            )
         await asyncio.to_thread(_mark_in_progress, interview_id)
+        # started_at is None the very first time a pre-generated round is opened
+        # (pregeneration never touches it) — _remaining_seconds treats that as "just
+        # starting now" and returns the full limit, same as _mark_in_progress setting
+        # started_at=GETDATE() for the first time in that same call. Every later
+        # refresh has a real started_at, so remaining time counts down correctly
+        # instead of resetting to the full limit on each reload.
         return GenerateQuestionsResponse(
             interview_id=interview_id,
             questions=existing if return_questions else [],
-            timer_seconds=TIMER_SECONDS,
+            timer_seconds=_remaining_seconds(started_at, limit_seconds),
             interview_type=interview_type,
             enable_fail_cases=settings.ENABLE_FAIL_CASES,
         )
@@ -696,7 +831,7 @@ async def generate_interview_questions(
                 return GenerateQuestionsResponse(
                     interview_id=interview_id,
                     questions=waited if return_questions else [],
-                    timer_seconds=TIMER_SECONDS,
+                    timer_seconds=limit_seconds,
                     interview_type=interview_type,
                     enable_fail_cases=settings.ENABLE_FAIL_CASES,
                 )
@@ -739,9 +874,9 @@ async def generate_interview_questions(
         if test_mode:
             # Test mode never touches Questions/InterviewQuestions — questions live only
             # in the in-memory cache, keyed by interview_id, so test runs can't drift out
-            # of sync with (or pollute) real DB rows. Options are still shuffled per the
-            # same per-job Redis cache as the real path, since test mode is still "sent
-            # to a candidate" from the UI's perspective.
+            # of sync with (or pollute) real DB rows. Options get a plain in-process
+            # shuffle only (no cross-candidate dedup, no InterviewRounds history read/write —
+            # test mode must never read or pollute real dedup history).
             items = [
                 QuestionItem(
                     iq_id=str(uuid.uuid4()),
@@ -749,7 +884,7 @@ async def generate_interview_questions(
                     question_text=q.question_text,
                     question_type=q.question_type,
                     options=(
-                        shuffle_mcq_options(job_posting_id, q.question_text, q.options)
+                        random.sample(q.options, len(q.options))
                         if q.question_type == "mcq" and q.options else q.options
                     ),
                     correct_option=q.correct_option,
@@ -776,6 +911,7 @@ async def generate_interview_questions(
                 job_role_id,
                 experience_level_id,
                 job_posting_id,
+                interview_round_id,
             )
     finally:
         if holding_pregen_lock:
@@ -784,7 +920,7 @@ async def generate_interview_questions(
     return GenerateQuestionsResponse(
         interview_id=interview_id,
         questions=items if return_questions else [],
-        timer_seconds=TIMER_SECONDS,
+        timer_seconds=limit_seconds,
         interview_type=interview_type,
         enable_fail_cases=settings.ENABLE_FAIL_CASES,
     )
@@ -807,10 +943,14 @@ async def score_interview_answers(
 
     # --- 1. Fetch questions and build list to score ---
     with db_cursor() as (conn, cur):
-        cur.execute("SELECT status FROM Interviews WHERE id = ?", interview_id)
+        cur.execute("SELECT status, application_id FROM Interviews WHERE id = ?", interview_id)
         status_row = cur.fetchone()
         if not status_row:
             raise ValueError(f"Interview {interview_id} not found")
+        # Captured now (not looked up again after commit) — if this call applies a deferred
+        # PASS->FAIL rerun below, the Interviews row itself gets deleted, so there'd be
+        # nothing left to look up by interview_id afterward.
+        application_id = str(status_row[1])
 
         # In normal mode, block re-submitting new answers to a completed interview.
         # Display-only scoring (fetch_from_db=True — e.g. the voice agent already
@@ -898,6 +1038,7 @@ async def score_interview_answers(
     if not test_mode:
         # --- 4. Persist scores (normal mode only) ---
         next_round_to_pregenerate: str | None = None
+        round_completed_now = vr.applied_rule != "idempotency_guard"
         with db_cursor() as (conn, cur):
             if vr.applied_rule == "idempotency_guard":
                 # Status/feedback are already final (voice agent already concluded
@@ -921,6 +1062,46 @@ async def score_interview_answers(
             # unresolved cycle (see app/services/question_pregeneration_service.py).
             from app.tasks import written_test_tasks
             written_test_tasks.trigger.delay(next_round_to_pregenerate)
+
+        # ATS staleness completion hook (Feature 1): only after commit, never inside the
+        # transaction above — _persist_ats_rerun_result opens its own db_cursor() connection,
+        # so calling it synchronously from within this still-open transaction risks a
+        # self-lock. Dispatched the same way the manual "Rerun ATS" button does (Celery
+        # batch task + a fresh generation token), so it can never race that path — whichever
+        # dispatch is newer wins via ats_lock.is_latest_rerun_generation. round_completed_now
+        # is False on the idempotency_guard branch above (round already concluded earlier via
+        # the voice agent path, which already had its own chance to trigger this) and also
+        # correctly skips the case where _save_scores_and_complete applied a deferred
+        # PASS->FAIL rerun and returned early — that path already wrote a fresh ats_run_version
+        # itself (apply_pending_ats_rerun), so this candidate won't read as stale below anyway.
+        if round_completed_now:
+            # Local import — application_service.py imports CORRECT_ANSWER_SCORE_THRESHOLD
+            # from this module at top level, so a top-level import here would be circular.
+            from app.services.application_service import is_excluded_from_ats_rerun
+
+            with db_cursor() as (conn, cur):
+                cur.execute(
+                    """
+                    SELECT a.job_id, a.status, a.ats_run_version, jp.ats_criteria_version
+                    FROM Applications a JOIN JobPostings jp ON jp.id = a.job_id
+                    WHERE a.id = ?
+                    """,
+                    application_id,
+                )
+                row = cur.fetchone()
+                is_stale = bool(row) and str(row[1]) != "ATS_PENDING" and int(row[2]) < int(row[3])
+                is_excluded = (
+                    is_stale
+                    and is_excluded_from_ats_rerun(cur, application_id, str(row[0]))
+                )
+
+            if is_stale and not is_excluded:
+                from app.services.ats_lock import set_latest_rerun_generation_batch
+                from app.tasks import ats_rerun_tasks
+
+                rerun_id = str(uuid.uuid4())
+                set_latest_rerun_generation_batch([application_id], rerun_id)
+                ats_rerun_tasks.run_batch.delay([application_id], None, rerun_id)
 
     return ScoreAnswersResponse(
         overall_score=vr.final_score,
