@@ -188,6 +188,7 @@ export interface RerunAtsResponse {
   excluded: number
   in_progress_count: number
   not_stale_count: number
+  total_applications: number
   message: string
 }
 

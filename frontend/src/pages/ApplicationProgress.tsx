@@ -44,6 +44,7 @@ interface StagesData {
   experience_level_name: string | null
   company: string | null
   ats_rerun_notice: ATSRerunNotice | null
+  ats_rerun_in_progress: boolean
 }
 
 const ATS_CATEGORY_LABELS: Record<
@@ -354,6 +355,19 @@ function ApplicationProgress() {
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [applicationId])
+
+  // Polling fallback for the "ATS rescreening underway" popup: the WebSocket above only
+  // ever tells us when a rerun *completes* (ats_completed), not when one starts — so if a
+  // recruiter triggers a rerun while the candidate is already sitting on this page, there's
+  // no push event to react to until it's already done. Poll interview-stages periodically
+  // instead so ats_rerun_in_progress flipping true gets picked up while it's happening, not
+  // just after. Stops once the process is terminal (nothing left to change).
+  useEffect(() => {
+    if (!applicationId || isTerminal) return
+    const interval = setInterval(fetchStages, 5000)
+    return () => clearInterval(interval)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [applicationId, isTerminal])
 
   // Set default selected breadcrumb once data loads
   useEffect(() => {
@@ -835,6 +849,15 @@ function ApplicationProgress() {
 
   return (
     <main className="app-progress-page">
+      <Modal isOpen={!!data?.ats_rerun_in_progress} onClose={() => {}}>
+        <div className="ap-rerun-notice">
+          <p className="ap-detail-msg-title">ATS rescreening is underway</p>
+          <p className="ap-detail-msg-body">
+            The job's requirements were updated, so we're re-checking your application against
+            them. This page will refresh automatically once it's done.
+          </p>
+        </div>
+      </Modal>
       <Modal isOpen={rerunNotice !== null} onClose={closeRerunNotice}>
         {rerunNotice && (
           <div className="ap-rerun-notice">
@@ -860,7 +883,7 @@ function ApplicationProgress() {
               </span>
               <span className="test-mode-toggle-label">Test Mode</span>
             </button>
-            {data && !isTerminal && !allRoundsCompleted && data.ats_status !== 'fail' && !atsError && (
+            {data && !isTerminal && !allRoundsCompleted && data.ats_status !== 'fail' && !atsError && !data.ats_rerun_in_progress && (
               <Button
                 variant="primary"
                 className="app-progress-cta"

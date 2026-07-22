@@ -27,6 +27,7 @@ has committed (mirrors the old push_generated_mcqs-after-commit ordering).
 import json
 import logging
 import random
+from concurrent.futures import ThreadPoolExecutor
 from typing import TYPE_CHECKING
 
 import redis
@@ -80,18 +81,11 @@ def _mcq_options_collide(question_text: str, options: list[str], history: list[d
     )
 
 
-def dedupe_order_and_options(
-    interview_round_id: str, items: list["AIQuestionItem"]
-) -> list["AIQuestionItem"]:
-    """Randomises `items`' order and each MCQ's option order until neither
-    collides with one of the round's last MAX_HISTORY_ENTRIES candidates
-    (read from Redis). Does not itself write anything — call
-    record_round_history() once the caller's SQL write has committed.
-
-    Mutates and returns `items` (option lists are shuffled in place).
-    """
-    history = _load_history(interview_round_id)
-
+def _shuffle_question_order(
+    interview_round_id: str, items: list["AIQuestionItem"], history: list[dict]
+) -> None:
+    """Reorders `items` in place. Split out of dedupe_order_and_options so it can run
+    concurrently with _shuffle_mcq_options (see there)."""
     for attempt in range(MAX_ORDER_SHUFFLE_ATTEMPTS):
         question_texts = [item.question_text for item in items]
         if not _question_order_collides(question_texts, history):
@@ -104,6 +98,15 @@ def dedupe_order_and_options(
             MAX_ORDER_SHUFFLE_ATTEMPTS, interview_round_id,
         )
 
+
+def _shuffle_mcq_options(
+    interview_round_id: str, items: list["AIQuestionItem"], history: list[dict]
+) -> None:
+    """Shuffles each MCQ item's own .options in place. Takes its own copy of `items`
+    (see dedupe_order_and_options' call site) so iterating here is never disturbed by
+    _shuffle_question_order concurrently reordering the original list — the two never
+    touch the same piece of shared state (list order vs. an item's own attribute), so no
+    lock is needed."""
     for item in items:
         if item.question_type != "mcq" or not item.options or len(item.options) < 2:
             continue
@@ -117,6 +120,31 @@ def dedupe_order_and_options(
                 "question_text=%r in interview_round_id=%s, proceeding with last shuffle",
                 MAX_OPTION_SHUFFLE_ATTEMPTS, item.question_text, interview_round_id,
             )
+
+
+def dedupe_order_and_options(
+    interview_round_id: str, items: list["AIQuestionItem"]
+) -> list["AIQuestionItem"]:
+    """Randomises `items`' order and each MCQ's option order until neither
+    collides with one of the round's last MAX_HISTORY_ENTRIES candidates
+    (read from Redis). Does not itself write anything — call
+    record_round_history() once the caller's SQL write has committed.
+
+    Question-order shuffling and MCQ-option shuffling are independent (one reorders the
+    list container, the other mutates each item's own .options), so they run
+    concurrently on two threads — _shuffle_mcq_options is handed its own shallow copy of
+    `items` so its iteration can't be disturbed by the other thread reordering the
+    original list mid-loop.
+
+    Mutates and returns `items` (order and option lists are shuffled in place).
+    """
+    history = _load_history(interview_round_id)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        order_future = executor.submit(_shuffle_question_order, interview_round_id, items, history)
+        options_future = executor.submit(_shuffle_mcq_options, interview_round_id, items[:], history)
+        order_future.result()
+        options_future.result()
 
     return items
 

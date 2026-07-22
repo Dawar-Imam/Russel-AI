@@ -40,6 +40,9 @@ interface Results {
   total_questions: number
   passed_questions: number
   passing_threshold: number
+  // Set instead of real scores when the application went stale mid-interview — an ATS
+  // rerun was dispatched and this round's answers were never graded.
+  redirect_application_id?: string | null
 }
 
 interface ConversationMessage {
@@ -288,6 +291,10 @@ function InterviewRoom() {
         throw new Error((d as { detail?: string }).detail ?? `Server error ${res.status}`)
       }
       const data: Results = await res.json()
+      if (data.redirect_application_id) {
+        navigate(`/application-progress/${data.redirect_application_id}`)
+        return
+      }
       setResults(data)
       setPhase('results')
     } catch (err) {
@@ -295,7 +302,7 @@ function InterviewRoom() {
       setError(err instanceof Error ? err.message : 'Submission failed')
       setPhase('error')
     }
-  }, [interviewId])
+  }, [interviewId, navigate])
 
   // ---------------------------------------------------------------------------
   // Voice interview helpers

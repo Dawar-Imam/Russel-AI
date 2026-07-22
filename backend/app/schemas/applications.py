@@ -106,6 +106,14 @@ class InterviewStagesResponse(BaseModel):
     experience_level_name: str | None = None
     company: str | None = None
     ats_rerun_notice: ATSRerunNotice | None = None
+    # True while an ATS rerun is pending/running for this application — derived live from
+    # the same staleness comparison used to select/dispatch reruns elsewhere (ats_run_version
+    # behind the job's current ats_criteria_version), not a stored flag. Flips back to False
+    # the instant the rerun's persistence write commits (ats_run_version catches up), which is
+    # also the moment the existing ats_completed WebSocket event fires — so the frontend can
+    # drive a "rescreening underway" state purely off this field + its normal re-fetch on that
+    # event, no polling needed.
+    ats_rerun_in_progress: bool = False
 
 
 class InterviewQuestionItem(BaseModel):

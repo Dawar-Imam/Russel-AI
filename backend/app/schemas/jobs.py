@@ -127,6 +127,7 @@ class RerunAtsResponse(BaseModel):
     excluded: int
     in_progress_count: int
     not_stale_count: int
+    total_applications: int
     message: str
 
 

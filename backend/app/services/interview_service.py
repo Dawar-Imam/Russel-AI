@@ -111,11 +111,12 @@ _test_mode_questions: dict[str, list[QuestionItem]] = {}
 class InterviewDeletedPostFailError(Exception):
     """Raised by get_interview_context when interview_id doesn't resolve to a live
     Interviews row because it was tombstoned in DeletedInterviewRounds — i.e. a
-    recruiter's ATS rerun failed this candidate after they'd already completed (or were
-    mid-) this round, and application_service._delete_non_in_progress_interviews /
-    _delete_all_interviews removed it. Distinct from a plain ValueError (bad/unknown
-    interview_id, or any other not-found reason) so the API layer can return a specific
-    410 instead of a generic 404 — see app/api/endpoints/interviews.py generate_questions().
+    recruiter's ATS rerun reset this candidate's pipeline (application_service.
+    _delete_all_interviews removed it, unconditionally — a rerun never runs against a
+    round still In Progress in the first place, that's excluded upstream). Distinct from
+    a plain ValueError (bad/unknown interview_id, or any other not-found reason) so the
+    API layer can return a specific 410 instead of a generic 404 — see
+    app/api/endpoints/interviews.py generate_questions().
 
     Never confused with "questions not yet generated for this round": that case always
     has a live Interviews row (created at ATS-pass time, status 'Scheduled', zero
@@ -503,18 +504,6 @@ def _save_scores_and_complete(
         """,
         interview_result, overall_score, ai_feedback, interview_id,
     )
-    # A recruiter's PASS->FAIL ATS rerun may have landed while this round was still In
-    # Progress — it was deferred rather than applied so this live session was never
-    # disturbed. Now that the round has just been finalized (Pass or Failed either way,
-    # the deferred FAIL always wins), apply it: wipes every Interviews row for this
-    # application, so anything this function is about to do below (mark subsequent rounds
-    # not needed, mark hired, pre-generate the next round) would operate on rows that are
-    # about to be deleted anyway — check first and short-circuit.
-    from app.services.application_service import apply_pending_ats_rerun
-    cur.execute("SELECT application_id FROM Interviews WHERE id = ?", interview_id)
-    app_row = cur.fetchone()
-    if app_row and apply_pending_ats_rerun(cur, str(app_row[0])):
-        return None
 
     if interview_result == "Failed":
         _mark_subsequent_rounds_not_needed(cur, interview_id)
@@ -947,9 +936,8 @@ async def score_interview_answers(
         status_row = cur.fetchone()
         if not status_row:
             raise ValueError(f"Interview {interview_id} not found")
-        # Captured now (not looked up again after commit) — if this call applies a deferred
-        # PASS->FAIL rerun below, the Interviews row itself gets deleted, so there'd be
-        # nothing left to look up by interview_id afterward.
+        # Captured now, not looked up again later — used by the staleness redirect check
+        # just below.
         application_id = str(status_row[1])
 
         # In normal mode, block re-submitting new answers to a completed interview.
@@ -959,6 +947,58 @@ async def score_interview_answers(
         # already-final status.
         if not test_mode and not fetch_from_db and str(status_row[0]).lower() in TERMINAL_ROUND_STATUSES:
             raise ValueError("This interview has already been completed and cannot be rescored.")
+
+        # Stale-application redirect: same comparison job_service.select_applications_for_
+        # ats_rerun and the post-completion hook further below already use (ats_run_version
+        # behind the job's current ats_criteria_version, ATS_PENDING exempted) — checked
+        # here too, before grading, so a candidate mid-interview whose job criteria changed
+        # doesn't get scored against a stale round that's about to be wiped by the rerun
+        # anyway. Gated the same way the terminal-round check above is (a genuine new
+        # submission only, not test_mode or a display-only fetch_from_db replay).
+        if not test_mode and not fetch_from_db:
+            cur.execute(
+                """
+                SELECT a.job_id, a.status, a.ats_run_version, jp.ats_criteria_version
+                FROM Applications a JOIN JobPostings jp ON jp.id = a.job_id
+                WHERE a.id = ?
+                """,
+                application_id,
+            )
+            staleness_row = cur.fetchone()
+            is_stale = (
+                staleness_row is not None
+                and str(staleness_row[1]) != "ATS_PENDING"
+                and int(staleness_row[2]) < int(staleness_row[3])
+            )
+            if is_stale:
+                # This round is never graded (no LLM call — it's about to be wiped by the
+                # rerun anyway), but it must not be left 'In Progress': the dispatched
+                # rerun's own is_excluded_from_ats_rerun check (application_service.py)
+                # hard-excludes any application with an 'In Progress' interview, which
+                # would otherwise make the rerun we're about to dispatch immediately
+                # no-op (EXCLUDED, no publish_ats_completed, candidate stuck on
+                # application-progress forever). Mirrors what _save_scores_and_complete
+                # would set on a real Failed verdict — this row is tombstoned/deleted
+                # moments later by _delete_all_interviews regardless of outcome.
+                cur.execute(
+                    "UPDATE Interviews SET status = 'Failed', completed_at = GETDATE() WHERE id = ?",
+                    interview_id,
+                )
+                conn.commit()
+
+                from app.services.ats_lock import set_latest_rerun_generation_batch
+                from app.tasks import ats_rerun_tasks
+
+                rerun_id = str(uuid.uuid4())
+                set_latest_rerun_generation_batch([application_id], rerun_id)
+                ats_rerun_tasks.run_batch.delay([application_id], None, rerun_id)
+                return ScoreAnswersResponse(
+                    overall_score=0,
+                    total_graded=0,
+                    graded_answers=[],
+                    result="",
+                    redirect_application_id=application_id,
+                )
 
         stored = cached if cached else _fetch_existing_questions(cur, interview_id)
         if not stored:
@@ -1070,10 +1110,11 @@ async def score_interview_answers(
         # batch task + a fresh generation token), so it can never race that path — whichever
         # dispatch is newer wins via ats_lock.is_latest_rerun_generation. round_completed_now
         # is False on the idempotency_guard branch above (round already concluded earlier via
-        # the voice agent path, which already had its own chance to trigger this) and also
-        # correctly skips the case where _save_scores_and_complete applied a deferred
-        # PASS->FAIL rerun and returned early — that path already wrote a fresh ats_run_version
-        # itself (apply_pending_ats_rerun), so this candidate won't read as stale below anyway.
+        # the voice agent path, which already had its own chance to trigger this). This is a
+        # second, later check than the pre-grading staleness redirect near the top of this
+        # function — that one catches staleness before scoring even starts; this one catches
+        # the narrow case where criteria changed in the brief window between that check and
+        # this round's completion.
         if round_completed_now:
             # Local import — application_service.py imports CORRECT_ANSWER_SCORE_THRESHOLD
             # from this module at top level, so a top-level import here would be circular.

@@ -624,13 +624,14 @@ def select_applications_for_ats_rerun(job_id: str) -> tuple[list[str], int, int]
 
     Exclusion criteria (re-checked per-application at execution time in
     application_service.rerun_ats_and_persist, since this snapshot can go stale before
-    each Celery task actually runs):
-      - application status HIRED/REJECTED (fully terminal)
-      - application already has a Failed interview round
+    each Celery task actually runs) — deliberately narrow: a rerun is allowed to fully
+    re-decide a HIRED/REJECTED application, one with an already-Failed round, or one that
+    already cleared every round ("full overwrite, no special-casing" — see
+    application_service._persist_ats_rerun_result, which resets these like a fresh
+    applicant on a status-flipping verdict). Only:
       - application has a round currently In Progress — never even started for these;
         see job_service.rerun_ats_for_job, which separately counts and surfaces them
         to the recruiter so it's visible they'll be screened once their round ends
-      - application has cleared every active round for this job
       - already-scored (non-ATS_PENDING) application whose ats_run_version is not
         older than the job's current ats_criteria_version — it was already scored
         against the current criteria, re-scoring it again would be a no-op
@@ -736,12 +737,30 @@ def rerun_ats_for_job(job_id: str, recruiter_id: str | None) -> RerunAtsResponse
         excluded=excluded,
         in_progress_count=in_progress_count,
         not_stale_count=not_stale_count,
-        message=f"ATS rerun queued for {len(selected)} candidate(s).",
+        total_applications=total_applications,
+        message=(
+            "No applicants for this job yet."
+            if total_applications == 0
+            else f"ATS rerun queued for {len(selected)} candidate(s)."
+        ),
     )
 
 
 def get_ats_rerun_status(job_id: str) -> RerunAtsStatusResponse:
-    """Polled by the recruiter dashboard while a rerun batch is in flight."""
+    """Polled by the recruiter dashboard while a rerun batch is in flight.
+
+    An application counts as "settled" (done, one way or another) either because its
+    ats_evaluated_at was bumped past dispatch time (a real rerun persisted), or because
+    it's become excluded since dispatch (application_service.is_excluded_from_ats_rerun —
+    e.g. its interview went In Progress in the window between selection and this
+    application's turn in the batch's ThreadPoolExecutor). Without the latter check, such
+    an application's ats_evaluated_at never moves — rerun_ats_and_persist returns EXCLUDED
+    and writes nothing — so `completed` would permanently stay below `total` and this
+    endpoint would report in_progress=True forever even though the Celery batch itself
+    has long since finished.
+    """
+    from app.services.application_service import is_excluded_from_ats_rerun
+
     try:
         raw = get_redis_client().get(ats_rerun_batch_key(job_id))
     except Exception:
@@ -759,18 +778,21 @@ def get_ats_rerun_status(job_id: str) -> RerunAtsStatusResponse:
     with db_cursor() as (conn, cur):
         placeholders = ",".join("?" for _ in application_ids)
         cur.execute(
-            f"SELECT ats_evaluated_at FROM Applications WHERE id IN ({placeholders})",
+            f"SELECT id, ats_evaluated_at FROM Applications WHERE id IN ({placeholders})",
             *application_ids,
         )
         rows = cur.fetchall()
 
-    completed = 0
-    for r in rows:
-        if r[0] is None:
-            continue
-        val = r[0] if r[0].tzinfo else r[0].replace(tzinfo=timezone.utc)
-        if val >= dispatched_at:
-            completed += 1
+        completed = 0
+        for r in rows:
+            application_id, evaluated_at = str(r[0]), r[1]
+            if evaluated_at is not None:
+                val = evaluated_at if evaluated_at.tzinfo else evaluated_at.replace(tzinfo=timezone.utc)
+                if val >= dispatched_at:
+                    completed += 1
+                    continue
+            if is_excluded_from_ats_rerun(cur, application_id, job_id):
+                completed += 1
 
     total = len(application_ids)
     return RerunAtsStatusResponse(total_queued=total, completed=completed, in_progress=completed < total)

@@ -193,10 +193,6 @@ CREATE TABLE Resumes (
 | ats_model_version | varchar(100) NULL — LLM model identifier (`settings.OPENAI_MODEL`) used for that run |
 | ats_rerun_count | int NOT NULL DEFAULT 0 — number of times a recruiter has explicitly re-run ATS for this application |
 | ats_rerun_unseen | bit NOT NULL DEFAULT 0 — set true whenever a rerun result becomes visible to the candidate; cleared once the candidate's Application Progress page has shown/acked it |
-| pending_ats_rerun_details | nvarchar(MAX) NULL — a computed-but-not-yet-applied rerun ATS result, held here when a PASS→FAIL rerun landed while an `Interviews` round was `In Progress` (see `application_service.apply_pending_ats_rerun`) |
-| pending_ats_rerun_evaluated_at | datetime2 NULL — companion timestamp for `pending_ats_rerun_details` |
-| pending_ats_rerun_model_version | varchar(100) NULL — companion model version for `pending_ats_rerun_details` |
-| pending_ats_rerun_recruiter_id | uniqueidentifier NULL — recruiter who triggered the deferred rerun, carried through to `ATSEvaluationHistory.recruiter_id` once applied |
 | ats_run_version | int NOT NULL DEFAULT 0 — snapshot of `JobPostings.ats_criteria_version` taken at the *start* of the ATS run that produced the current `ats_details` (not read fresh at the end); a candidate is stale and due for re-scoring whenever `ats_run_version < JobPostings.ats_criteria_version` |
 
 > **Migrations required**:
@@ -217,12 +213,19 @@ CREATE TABLE Resumes (
 > -- Recruiter-triggered ATS rerun (see application_service.py / job_service.py / ats_rerun_tasks.py):
 > ALTER TABLE Applications ADD ats_rerun_count int NOT NULL CONSTRAINT DF_Applications_ats_rerun_count DEFAULT 0;
 > ALTER TABLE Applications ADD ats_rerun_unseen bit NOT NULL CONSTRAINT DF_Applications_ats_rerun_unseen DEFAULT 0;
-> ALTER TABLE Applications ADD pending_ats_rerun_details nvarchar(MAX) NULL;
-> ALTER TABLE Applications ADD pending_ats_rerun_evaluated_at datetime2 NULL;
-> ALTER TABLE Applications ADD pending_ats_rerun_model_version varchar(100) NULL;
-> ALTER TABLE Applications ADD pending_ats_rerun_recruiter_id uniqueidentifier NULL REFERENCES RecruiterProfiles(id);
 > -- ATS staleness versioning (see JobPostings.ats_criteria_version above):
 > ALTER TABLE Applications ADD ats_run_version int NOT NULL CONSTRAINT DF_Applications_ats_run_version DEFAULT 0;
+> -- Deferred-rerun mechanism (pending_ats_rerun_details/_evaluated_at/_model_version/
+> -- _recruiter_id, added then dropped in the same rerun-feature arc): a recruiter's
+> -- PASS->FAIL rerun landing while a round was In Progress used to be held here and
+> -- applied once that round concluded. Superseded by a flat rule instead: In Progress is
+> -- now a hard exclusion (a rerun never starts for a live session in the first place), so
+> -- there is nothing left to defer or apply later.
+> ALTER TABLE Applications DROP CONSTRAINT FK__Applicati__pendi__67DE6983;
+> ALTER TABLE Applications DROP COLUMN pending_ats_rerun_details;
+> ALTER TABLE Applications DROP COLUMN pending_ats_rerun_evaluated_at;
+> ALTER TABLE Applications DROP COLUMN pending_ats_rerun_model_version;
+> ALTER TABLE Applications DROP COLUMN pending_ats_rerun_recruiter_id;
 >
 > CREATE TABLE ATSEvaluationHistory (
 >     id                 uniqueidentifier PRIMARY KEY DEFAULT NEWID(),
@@ -310,13 +313,14 @@ CREATE TABLE Resumes (
 
 ### DeletedInterviewRounds
 Tombstone written immediately before an `Interviews` row (and its
-`InterviewQuestions`) is deleted by a PASS→FAIL ATS rerun — see
-`application_service._delete_non_in_progress_interviews` and
-`_delete_all_interviews`. Exists because once the `Interviews` row is gone
-there is no other way to resolve a stale `interview_id` back to its
-`application_id`; `interview_service.get_interview_context` checks this table
-to distinguish "deleted after a fail" (→ HTTP 410) from "questions not yet
-generated for this round" (→ proceeds to generate, no tombstone exists).
+`InterviewQuestions`) is deleted by an ATS rerun — see
+`application_service._delete_all_interviews` (`deleted_reason='ats_rerun_reset'`),
+called unconditionally for every eligible rerun regardless of the new verdict.
+Exists because once the `Interviews` row is gone there is no other way to
+resolve a stale `interview_id` back to its `application_id`;
+`interview_service.get_interview_context` checks this table to distinguish
+"deleted by a rerun" (→ HTTP 410) from "questions not yet generated for this
+round" (→ proceeds to generate, no tombstone exists).
 
 | Column | Type |
 |---|---|

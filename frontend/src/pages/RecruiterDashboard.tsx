@@ -177,6 +177,11 @@ function RecruiterDashboard() {
   // skipped because they were already scored against this job's current ATS criteria —
   // lets the UI explain a 0-queued rerun instead of it looking like nothing happened.
   const [rerunNotStaleCountByJob, setRerunNotStaleCountByJob] = useState<Record<string, number>>({})
+  // Same snapshot semantics — true when "Rerun ATS" was clicked for a job with zero
+  // applications at all, so the recruiter sees an explicit reason instead of the button
+  // silently doing nothing (queued/excluded/in_progress/not_stale are all 0 in this case,
+  // indistinguishable from each other without this flag).
+  const [rerunNoApplicantsByJob, setRerunNoApplicantsByJob] = useState<Record<string, boolean>>({})
   const rerunPollRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   function pollRerunStatus(jobId: string) {
@@ -219,6 +224,7 @@ function RecruiterDashboard() {
         }))
         setRerunInProgressCountByJob(prev => ({ ...prev, [jobId]: result.in_progress_count }))
         setRerunNotStaleCountByJob(prev => ({ ...prev, [jobId]: result.not_stale_count }))
+        setRerunNoApplicantsByJob(prev => ({ ...prev, [jobId]: result.total_applications === 0 }))
         if (result.queued > 0) pollRerunStatus(jobId)
       })
       .catch(err => setRerunError(err instanceof Error ? err.message : 'Failed to start ATS rerun'))
@@ -627,6 +633,21 @@ function RecruiterDashboard() {
       .then(setDetailRounds)
       .catch(() => {})
       .finally(() => setDetailRoundsLoading(false))
+
+    // Resume rerun-status tracking for this job regardless of how we got here — a
+    // page refresh or dialog close/reopen while a batch is still running otherwise
+    // orphans it: pollRerunStatus only ever starts as a side effect of clicking
+    // "Rerun ATS" in handleRerunAts, so without this the completion message would
+    // never appear even though the backend genuinely finished the batch.
+    fetchAtsRerunStatus(job.id)
+      .then(status => {
+        setRerunStatusByJob(prev => ({
+          ...prev,
+          [job.id]: { total: status.total_queued, completed: status.completed, inProgress: status.in_progress },
+        }))
+        if (status.in_progress) pollRerunStatus(job.id)
+      })
+      .catch(() => {})
   }
 
   function handleCloseDetail() {
@@ -1148,6 +1169,9 @@ function RecruiterDashboard() {
               <p className="rd-rounds-empty-text">
                 {rerunNotStaleCountByJob[detailJob.id]} candidate{rerunNotStaleCountByJob[detailJob.id] === 1 ? '' : 's'} already screened against the current criteria — please update the job description/ATS criteria to re-screen {rerunNotStaleCountByJob[detailJob.id] === 1 ? 'them' : 'these candidates'}.
               </p>
+            )}
+            {!editMode && rerunNoApplicantsByJob[detailJob.id] && (
+              <p className="rd-rounds-empty-text">No applicants for this job yet.</p>
             )}
 
             {/* Two-column body */}

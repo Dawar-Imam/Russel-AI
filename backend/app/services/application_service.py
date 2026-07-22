@@ -23,10 +23,6 @@ ACTIVE_STATUSES = ("Scheduled", "In Progress")
 _ATS_PASSED_STATUSES = ("ATS_PASS", "IN_PROGRESS", "HIRED")
 _ATS_FAILED_STATUSES = ("ATS_FAIL", "REJECTED")
 
-# Applications in these statuses are never candidates for a recruiter-triggered ATS rerun
-# (see job_service.select_applications_for_ats_rerun) — the process is fully terminal.
-_TERMINAL_APPLICATION_STATUSES = ("HIRED", "REJECTED")
-
 _VERDICT_LABELS = {
     "ATS_PASS": "Passed",
     "ATS_FAIL": "Failed",
@@ -89,17 +85,21 @@ class RerunOutcome(str, Enum):
 def is_excluded_from_ats_rerun(cur, application_id: str, job_id: str) -> bool:
     """Recheck rerun eligibility at execution time — selection-time criteria (see
     job_service.select_applications_for_ats_rerun) can go stale between when a batch is
-    dispatched and when this application's Celery task actually runs (e.g. a round failed,
-    a round went In Progress, or the candidate cleared every round, in the interim)."""
+    dispatched and when this application's Celery task actually runs (e.g. a round went
+    In Progress in the interim).
+
+    Deliberately does NOT exclude HIRED/REJECTED, an already-Failed round, or having
+    cleared every round — a rerun is allowed to fully re-decide these ("full overwrite,
+    no special-casing" — see _persist_ats_rerun_result, which resets them like a fresh
+    applicant: interview rows deleted+tombstoned, status flips on the new verdict, and a
+    FAIL/REJECTED->PASS rerun creates fresh Interviews rows and fires the same
+    question-pregeneration trigger a first-time ATS pass would). The only remaining
+    exclusions are In Progress (never disturb a live session) and staleness (checked by
+    the caller, not here — see select_applications_for_ats_rerun).
+    """
     cur.execute("SELECT status FROM Applications WHERE id = ?", application_id)
     row = cur.fetchone()
     if not row:
-        return True
-    if str(row[0]) in _TERMINAL_APPLICATION_STATUSES:
-        return True
-
-    cur.execute("SELECT 1 FROM Interviews WHERE application_id = ? AND status = 'Failed'", application_id)
-    if cur.fetchone():
         return True
 
     # Never run (not even the LLM check) for a candidate currently mid-interview — a
@@ -109,23 +109,6 @@ def is_excluded_from_ats_rerun(cur, application_id: str, job_id: str) -> bool:
     if cur.fetchone():
         return True
 
-    cur.execute(
-        "SELECT COUNT(*) FROM InterviewRounds WHERE job_posting_id = ? AND is_active = 1",
-        job_id,
-    )
-    total_rounds = int(cur.fetchone()[0])
-    if total_rounds > 0:
-        cur.execute(
-            """
-            SELECT COUNT(DISTINCT i.interview_round_id)
-            FROM Interviews i
-            JOIN InterviewRounds ir ON ir.id = i.interview_round_id
-            WHERE i.application_id = ? AND ir.job_posting_id = ? AND i.status = 'Pass'
-            """,
-            application_id, job_id,
-        )
-        if int(cur.fetchone()[0]) == total_rounds:
-            return True
     return False
 
 
@@ -148,45 +131,15 @@ def _insert_ats_history(
     )
 
 
-def _delete_non_in_progress_interviews(cur, application_id: str, deleted_reason: str) -> bool:
-    """Delete every Interviews row (+ its InterviewQuestions) for this application that is
-    NOT currently 'In Progress'. Returns True if an 'In Progress' row still remains — the
-    caller must defer applying the rerun result until that round concludes rather than
-    yank it out from under a live candidate session.
+def _delete_all_interviews(cur, application_id: str, deleted_reason: str) -> None:
+    """Delete every Interviews row (+ its InterviewQuestions) for this application —
+    unconditional; In Progress is a hard exclusion upstream (is_excluded_from_ats_rerun),
+    so a rerun never reaches this call while a round is live.
 
     Tombstones each deleted Interviews.id into DeletedInterviewRounds *before* deleting it —
     once the row is gone there is no other way to resolve that interview_id back to its
     application_id (see interview_service.get_interview_context, which checks this table to
-    tell "deleted after a fail" apart from "questions not yet generated")."""
-    cur.execute(
-        "SELECT 1 FROM Interviews WHERE application_id = ? AND status = 'In Progress'",
-        application_id,
-    )
-    still_in_progress = cur.fetchone() is not None
-
-    cur.execute(
-        "SELECT id, interview_round_id FROM Interviews WHERE application_id = ? AND status != 'In Progress'",
-        application_id,
-    )
-    stale = [(str(r[0]), str(r[1])) for r in cur.fetchall()]
-    for iv_id, interview_round_id in stale:
-        cur.execute(
-            """
-            INSERT INTO DeletedInterviewRounds (interview_id, application_id, interview_round_id, deleted_reason)
-            VALUES (?, ?, ?, ?)
-            """,
-            iv_id, application_id, interview_round_id, deleted_reason,
-        )
-        cur.execute("DELETE FROM InterviewQuestions WHERE interview_id = ?", iv_id)
-        cur.execute("DELETE FROM Interviews WHERE id = ?", iv_id)
-
-    return still_in_progress
-
-
-def _delete_all_interviews(cur, application_id: str, deleted_reason: str) -> None:
-    """Same tombstone-before-delete contract as _delete_non_in_progress_interviews above,
-    just unconditional (used once a deferred PASS->FAIL is being applied and no round is
-    In Progress anymore, so every remaining Interviews row is stale)."""
+    tell "deleted after a rerun" apart from "questions not yet generated")."""
     cur.execute("SELECT id, interview_round_id FROM Interviews WHERE application_id = ?", application_id)
     rows = [(str(r[0]), str(r[1])) for r in cur.fetchall()]
     for iv_id, interview_round_id in rows:
@@ -199,75 +152,6 @@ def _delete_all_interviews(cur, application_id: str, deleted_reason: str) -> Non
         )
         cur.execute("DELETE FROM InterviewQuestions WHERE interview_id = ?", iv_id)
         cur.execute("DELETE FROM Interviews WHERE id = ?", iv_id)
-
-
-def apply_pending_ats_rerun(cur, application_id: str) -> bool:
-    """Called right after an interview round is finalized (interview_service.
-    _save_scores_and_complete) and defensively at the top of get_interview_stages(): if a
-    recruiter's PASS->FAIL rerun landed while a round was still 'In Progress', the fail was
-    deferred (see _persist_ats_rerun_result) rather than applied immediately so the
-    candidate's live session was never disturbed. Once that round has concluded — Pass or
-    Failed either way, the deferred FAIL always wins — apply it now. No-ops (returns False)
-    if nothing is pending, or if some round is still In Progress.
-
-    Caller commits; this function only executes statements on the given cursor.
-    """
-    cur.execute(
-        """
-        SELECT pending_ats_rerun_details, pending_ats_rerun_evaluated_at,
-               pending_ats_rerun_model_version, pending_ats_rerun_recruiter_id
-        FROM Applications WHERE id = ?
-        """,
-        application_id,
-    )
-    row = cur.fetchone()
-    if not row or not row[0]:
-        return False
-
-    cur.execute(
-        "SELECT 1 FROM Interviews WHERE application_id = ? AND status = 'In Progress'",
-        application_id,
-    )
-    if cur.fetchone():
-        return False
-
-    pending_details, pending_evaluated_at, pending_model_version, pending_recruiter_id = row
-
-    cur.execute(
-        "SELECT status, ats_details, ats_evaluated_at, ats_model_version, job_id FROM Applications WHERE id = ?",
-        application_id,
-    )
-    prev = cur.fetchone()
-    _insert_ats_history(cur, application_id, str(prev[0]), prev[1], prev[2], prev[3], pending_recruiter_id)
-
-    _delete_all_interviews(cur, application_id, deleted_reason="pass_to_fail_deferred")
-
-    # NOTE: unlike the immediate-apply branches in _persist_ats_rerun_result, there is no
-    # stored run-start snapshot to fall back on here — the LLM check that produced
-    # pending_ats_rerun_details ran against whatever ats_criteria_version was current back
-    # when the rerun was dispatched, but that value was never persisted anywhere pending
-    # application applies. Reading ats_criteria_version fresh here (at apply time, which
-    # could be arbitrarily later) is an accepted approximation: if criteria changed again
-    # while this fail sat pending, this marks the candidate as scored against the newer
-    # version even though the actual LLM check predates it — self-corrects on the next
-    # criteria edit, so it under- rather than over-flags staleness. Flagged, not solved.
-    cur.execute("SELECT ats_criteria_version FROM JobPostings WHERE id = ?", str(prev[4]))
-    version_row = cur.fetchone()
-    criteria_version = int(version_row[0]) if version_row else 0
-
-    cur.execute(
-        """
-        UPDATE Applications
-        SET status = 'ATS_FAIL', ats_details = ?, ats_evaluated_at = ?, ats_model_version = ?,
-            ats_rerun_count = ats_rerun_count + 1, ats_rerun_unseen = 1, ats_run_version = ?,
-            pending_ats_rerun_details = NULL, pending_ats_rerun_evaluated_at = NULL,
-            pending_ats_rerun_model_version = NULL, pending_ats_rerun_recruiter_id = NULL
-        WHERE id = ?
-        """,
-        pending_details, pending_evaluated_at, pending_model_version, criteria_version, application_id,
-    )
-    logger.info("ATS rerun: applied deferred PASS->FAIL result for application_id=%s", application_id)
-    return True
 
 
 def _fetch_application_for_ats_rerun(application_id: str):
@@ -309,85 +193,49 @@ def _persist_ats_rerun_result(
     model_version: str,
     new_verdict_pass: bool,
     criteria_version: int,
-) -> tuple[str | None, bool]:
+) -> str | None:
     """Blocking DB write — run via asyncio.to_thread so it doesn't block the event loop.
 
-    Returns (target_interview_id_to_pregenerate_or_None, deferred) — `deferred` is True when
-    a PASS->FAIL rerun was computed but held back because a round is still In Progress.
+    Flat, no status-category special-casing: every eligible candidate (In Progress is
+    already excluded upstream, so this never runs against a live session) resets like a
+    fresh applicant regardless of prior status (HIRED/REJECTED included) — wipe every
+    existing Interviews row, write the literal new verdict, and only recreate interviews
+    (+ trigger question pre-generation) if the new verdict is PASS.
 
-    `criteria_version` (snapshotted at run-start, see _fetch_ats_criteria_version) is only
-    written to ats_run_version on the three branches below that write ats_details in the
-    same statement. The deferred PASS->FAIL branch does NOT write it — that pending result
-    isn't applied yet, so ats_run_version stays whatever it was until apply_pending_ats_rerun
-    actually applies it (which re-reads the version fresh at that point; see its docstring for
-    the accepted trade-off there).
+    Returns the next round's Interviews.id to pre-generate questions for (PASS only, if a
+    next round exists) — the caller fires the Celery trigger for it. None on FAIL.
     """
     target_interview_id: str | None = None
-    deferred = False
-    was_pass = old_status in _ATS_PASSED_STATUSES
 
     with db_cursor() as (conn, cur):
         # Re-check exclusion right before writing — time has passed since selection/fetch.
         if is_excluded_from_ats_rerun(cur, application_id, job_id):
             logger.info("ATS rerun: application_id=%s became excluded before write — skipping", application_id)
-            return None, False
+            return None
 
         _insert_ats_history(cur, application_id, old_status, old_ats_details, old_evaluated_at, old_model_version, recruiter_id)
 
-        if was_pass and not new_verdict_pass:
-            # PASS -> FAIL
-            still_in_progress = _delete_non_in_progress_interviews(cur, application_id, deleted_reason="pass_to_fail_immediate")
-            if still_in_progress:
-                cur.execute(
-                    """
-                    UPDATE Applications
-                    SET pending_ats_rerun_details = ?, pending_ats_rerun_evaluated_at = ?,
-                        pending_ats_rerun_model_version = ?, pending_ats_rerun_recruiter_id = ?
-                    WHERE id = ?
-                    """,
-                    details_json, evaluated_at, model_version, recruiter_id, application_id,
-                )
-                deferred = True
-            else:
-                cur.execute(
-                    """
-                    UPDATE Applications
-                    SET status = 'ATS_FAIL', ats_details = ?, ats_evaluated_at = ?, ats_model_version = ?,
-                        ats_rerun_count = ats_rerun_count + 1, ats_rerun_unseen = 1, ats_run_version = ?
-                    WHERE id = ?
-                    """,
-                    details_json, evaluated_at, model_version, criteria_version, application_id,
-                )
-        elif not was_pass and new_verdict_pass:
-            # FAIL/PENDING/ERROR -> PASS: same "normal execution" as a first-time pass.
-            cur.execute(
-                """
-                UPDATE Applications
-                SET status = 'ATS_PASS', ats_details = ?, ats_evaluated_at = ?, ats_model_version = ?,
-                    ats_rerun_count = ats_rerun_count + 1, ats_rerun_unseen = 1, ats_run_version = ?
-                WHERE id = ?
-                """,
-                details_json, evaluated_at, model_version, criteria_version, application_id,
-            )
+        _delete_all_interviews(cur, application_id, deleted_reason="ats_rerun_reset")
+
+        new_status = "ATS_PASS" if new_verdict_pass else "ATS_FAIL"
+        cur.execute(
+            """
+            UPDATE Applications
+            SET status = ?, ats_details = ?, ats_evaluated_at = ?, ats_model_version = ?,
+                ats_rerun_count = ats_rerun_count + 1, ats_rerun_unseen = 1, ats_run_version = ?
+            WHERE id = ?
+            """,
+            new_status, details_json, evaluated_at, model_version, criteria_version, application_id,
+        )
+
+        if new_verdict_pass:
             _create_interviews_for_application(cur, application_id, job_id)
             from app.services.interview_service import find_next_scheduled_round
             target_interview_id = find_next_scheduled_round(cur, application_id, min_round_order=0)
-        else:
-            # PASS -> PASS or FAIL -> FAIL: overwrite ats_details only, no status/interview change.
-            new_status = "ATS_PASS" if new_verdict_pass else "ATS_FAIL"
-            cur.execute(
-                """
-                UPDATE Applications
-                SET ats_details = ?, ats_evaluated_at = ?, ats_model_version = ?,
-                    ats_rerun_count = ats_rerun_count + 1, ats_rerun_unseen = 1, ats_run_version = ?
-                WHERE id = ? AND status = ?
-                """,
-                details_json, evaluated_at, model_version, criteria_version, application_id, new_status,
-            )
 
         conn.commit()
 
-    return target_interview_id, deferred
+    return target_interview_id
 
 
 async def rerun_ats_and_persist(application_id: str, recruiter_id: str | None = None) -> RerunOutcome:
@@ -449,7 +297,7 @@ async def rerun_ats_and_persist(application_id: str, recruiter_id: str | None = 
         evaluated_at = datetime.now(timezone.utc)
         details_json = result.model_dump_json()
 
-        target_interview_id, deferred = await asyncio.get_running_loop().run_in_executor(
+        target_interview_id = await asyncio.get_running_loop().run_in_executor(
             _ats_rerun_executor,
             _persist_ats_rerun_result,
             application_id, job_id, recruiter_id,
@@ -473,20 +321,19 @@ async def rerun_ats_and_persist(application_id: str, recruiter_id: str | None = 
                     target_interview_id,
                 )
 
-        if not deferred:
-            await publish_ats_completed(
-                application_id,
-                {
-                    "event": "ats_completed",
-                    "application_id": application_id,
-                    "status": "ATS_PASS" if result.final_verdict == "PASS" else "ATS_FAIL",
-                    "verdict": result.verdict,
-                    "final_verdict": result.final_verdict,
-                    "verdict_summary": result.verdict_summary,
-                    "weightage": result.weightage.model_dump() if result.weightage else None,
-                    "is_rerun": True,
-                },
-            )
+        await publish_ats_completed(
+            application_id,
+            {
+                "event": "ats_completed",
+                "application_id": application_id,
+                "status": "ATS_PASS" if result.final_verdict == "PASS" else "ATS_FAIL",
+                "verdict": result.verdict,
+                "final_verdict": result.final_verdict,
+                "verdict_summary": result.verdict_summary,
+                "weightage": result.weightage.model_dump() if result.weightage else None,
+                "is_rerun": True,
+            },
+        )
 
         return RerunOutcome.SUCCESS
     finally:
@@ -633,18 +480,12 @@ def _create_interviews_for_application(cur, application_id: str, job_posting_id:
 
 def get_interview_stages(application_id: str) -> InterviewStagesResponse:
     with db_cursor() as (conn, cur):
-        # Defensive re-check: apply any rerun result that was deferred while a round was
-        # In Progress and has since concluded (see apply_pending_ats_rerun) — guarantees a
-        # candidate never sees a stale PASS after a recruiter's rerun has actually failed
-        # them, even if the interview_service.py write-path hook was somehow missed.
-        if apply_pending_ats_rerun(cur, application_id):
-            conn.commit()
-
         # Resolve job_posting_id and ATS info from application (join for job meta)
         cur.execute(
             """
             SELECT a.job_id, a.status, a.ats_details,
-                   jr.title, el.name, c.name
+                   jr.title, el.name, c.name,
+                   a.ats_run_version, jp.ats_criteria_version
             FROM Applications a
             JOIN JobPostings jp ON jp.id = a.job_id
             JOIN JobRoles jr ON jr.id = jp.job_role_id
@@ -663,6 +504,10 @@ def get_interview_stages(application_id: str) -> InterviewStagesResponse:
         job_role_title: str | None = row[3]
         experience_level_name: str | None = row[4]
         company: str | None = row[5]
+        # Same staleness comparison used by select_applications_for_ats_rerun and the
+        # score_interview_answers redirect check — true exactly while a rerun for this
+        # application is pending/running.
+        ats_rerun_in_progress = app_status != "ATS_PENDING" and int(row[6]) < int(row[7])
 
         # Derive ats_status from application status
         if app_status in _ATS_PASSED_STATUSES:
@@ -759,6 +604,7 @@ def get_interview_stages(application_id: str) -> InterviewStagesResponse:
             experience_level_name=experience_level_name,
             company=company,
             ats_rerun_notice=ats_rerun_notice,
+            ats_rerun_in_progress=ats_rerun_in_progress,
         )
 
 

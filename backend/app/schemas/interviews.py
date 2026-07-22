@@ -67,3 +67,8 @@ class ScoreAnswersResponse(BaseModel):
     total_questions: int = 0
     passed_questions: int = 0
     passing_threshold: int = 0
+    # Set instead of every field above when the application was stale (see
+    # interview_service.score_interview_answers) — grading was skipped entirely and a
+    # rerun was dispatched; the frontend should redirect to this application's progress
+    # page rather than render scores.
+    redirect_application_id: str | None = None
