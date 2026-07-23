@@ -4,9 +4,7 @@ import { useNavigate, useParams } from 'react-router-dom'
 import BackButton from '../components/BackButton'
 import Button from '../components/Button'
 import Modal from '../components/Modal'
-import botImageDark from '../utils/dark/bot1.png'
-import botImageLight from '../utils/white/bot1.png'
-import { useTheme } from '../utils/useTheme'
+import ParticipantCard from '../components/ParticipantCard'
 import '../css/InterviewRoom.css'
 
 const API_BASE = (import.meta.env.VITE_API_URL as string | undefined) ?? 'http://localhost:8000'
@@ -70,6 +68,21 @@ function fmtTime(secs: number): string {
   return `${m}:${s}`
 }
 
+async function fetchVoiceInterviewToken(
+  interviewId: string,
+  testMode: boolean,
+): Promise<{ url: string; token: string }> {
+  const res = await fetch(
+    `${API_BASE}/api/interviews/${interviewId}/voice-interview?test_mode=${testMode}`,
+    { method: 'POST' },
+  )
+  if (!res.ok) {
+    const d = await res.json().catch(() => ({}))
+    throw new Error((d as { detail?: string }).detail ?? `Server error ${res.status}`)
+  }
+  return res.json() as Promise<{ url: string; token: string }>
+}
+
 function scoreColor(score: number): string {
   if (score >= 8) return 'var(--color-primary)'
   if (score >= 5) return 'var(--color-primary-dark)'
@@ -79,8 +92,6 @@ function scoreColor(score: number): string {
 function InterviewRoom() {
   const { interviewId } = useParams<{ interviewId: string }>()
   const navigate = useNavigate()
-  const theme = useTheme()
-  const botImage = theme === 'light' ? botImageLight : botImageDark
   const [phase, setPhase] = useState<Phase>('loading')
   const [questions, setQuestions] = useState<QuestionItem[]>([])
   const [answers, setAnswers] = useState<string[]>([])
@@ -95,6 +106,10 @@ function InterviewRoom() {
   const [audioBlocked, setAudioBlocked] = useState(false)
   const [userSpeaking, setUserSpeaking] = useState(false)
   const [assistantSpeaking, setAssistantSpeaking] = useState(false)
+  // Remote participants currently in the LiveKit room (the AI interviewer, and any future
+  // additional participant e.g. a recruiter) — kept in sync via ParticipantConnected/
+  // ParticipantDisconnected so cards appear/disappear automatically without extra logic.
+  const [remoteParticipants, setRemoteParticipants] = useState<{ sid: string; name: string }[]>([])
 
   const [enableFailCases, setEnableFailCases] = useState(true)
   const [terminatedReason, setTerminatedReason] = useState<string | null>(null)
@@ -339,19 +354,26 @@ function InterviewRoom() {
     try {
       // Start voice interview — backend creates room and launches agent
       const testMode = localStorage.getItem('russell_test_mode') === '1'
-      const res = await fetch(
-        `${API_BASE}/api/interviews/${interviewId}/voice-interview?test_mode=${testMode}`,
-        { method: 'POST' },
-      )
-      if (!res.ok) {
-        const d = await res.json().catch(() => ({}))
-        throw new Error((d as { detail?: string }).detail ?? `Server error ${res.status}`)
-      }
-      const { url, token } = (await res.json()) as { url: string; token: string }
+      const { url, token } = await fetchVoiceInterviewToken(interviewId!, testMode)
 
       // Connect to LiveKit room
       const lkRoom = new Room()
       roomRef.current = lkRoom
+
+      // Participant roster — the AI interviewer joins as a separate remote participant;
+      // tracking connect/disconnect here (rather than assuming exactly one remote
+      // participant) means the card grid rearranges itself automatically if anyone
+      // joins/leaves, with no per-participant special-casing.
+      // NOTE: the agent already joined the room server-side before this client ever
+      // connects, so ParticipantConnected will never fire for it here (that event only
+      // fires for participants who join *after* us) — its card has to come from
+      // room.remoteParticipants, read only once connect() below has actually resolved.
+      lkRoom.on(RoomEvent.ParticipantConnected, (p) => {
+        setRemoteParticipants((prev) => [...prev, { sid: p.sid, name: p.name || p.identity }])
+      })
+      lkRoom.on(RoomEvent.ParticipantDisconnected, (p) => {
+        setRemoteParticipants((prev) => prev.filter((r) => r.sid !== p.sid))
+      })
 
       // Attach agent audio tracks to the DOM so the browser can play them
       lkRoom.on(RoomEvent.TrackSubscribed, (track) => {
@@ -579,6 +601,12 @@ function InterviewRoom() {
       })
 
       await lkRoom.connect(url, token)
+      // The AI interviewer is already in the room by this point (backend joins it before
+      // handing us this token) — read it from remoteParticipants now that we're actually
+      // connected, rather than relying on ParticipantConnected (which won't fire for it).
+      setRemoteParticipants(
+        Array.from(lkRoom.remoteParticipants.values()).map((p) => ({ sid: p.sid, name: p.name || p.identity })),
+      )
       await lkRoom.localParticipant.setMicrophoneEnabled(true, {
         echoCancellation: true,
         noiseSuppression: true,
@@ -844,29 +872,36 @@ function InterviewRoom() {
               </div>
             </div>
 
-            {/* Right — bot, timer */}
-            <div className="ir-bot-area">
-              <img src={botImage} alt="AI Interviewer" className="ir-bot-image" />
-              {audioBlocked && (
-                <Button
-                  variant="primary"
-                  onClick={() => { void roomRef.current?.startAudio() }}
-                >
-                  Enable Audio
-                </Button>
-              )}
-              {timerCircle}
-            </div>
-          </div>
+            {/* Right — participant stage (top) + timer/controls (bottom) */}
+            <div className="ir-right-panel">
+              <div className="ir-stage">
+                <div className="ir-participant-grid">
+                  <ParticipantCard name="You" isLocal isSpeaking={userSpeaking} />
+                  {remoteParticipants.map((p) => (
+                    <ParticipantCard key={p.sid} name={p.name} isSpeaking={assistantSpeaking} />
+                  ))}
+                </div>
+              </div>
 
-          <div className="ir-end-interview-center">
-            <Button
-              variant="secondary"
-              className="ir-end-interview-btn"
-              onClick={handleEndInterviewClick}
-            >
-              End Interview
-            </Button>
+              <div className="ir-right-bottom">
+                {audioBlocked && (
+                  <Button
+                    variant="primary"
+                    onClick={() => { void roomRef.current?.startAudio() }}
+                  >
+                    Enable Audio
+                  </Button>
+                )}
+                {timerCircle}
+                <Button
+                  variant="secondary"
+                  className="ir-end-interview-btn"
+                  onClick={handleEndInterviewClick}
+                >
+                  End Interview
+                </Button>
+              </div>
+            </div>
           </div>
 
           <Modal isOpen={showEndInterviewModal} onClose={() => setShowEndInterviewModal(false)}>

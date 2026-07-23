@@ -838,14 +838,14 @@ async def _call_ats_llm(
     job_posting_id: str,
     application_id: str | None,
 ) -> _ATSLLMOutput:
-    """Invoke the ATS LLM and validate its output.
+    """Invoke the ATS LLM and validate its output against the strict schema.
 
-    Raises ATSValidationError on schema mismatch — malformed output must never reach the
-    caller as a duck-typed near-miss.
+    Retries up to 5 times on schema validation failure. Raises ATSValidationError
+    if all attempts fail — malformed output must never reach the caller/persist layer.
     """
     structured_llm = get_llm().with_structured_output(_ATSLLMOutput)
 
-    for attempt in range(3):
+    for attempt in range(5):
         try:
             llm_result = await _invoke_ats_llm(
                 structured_llm,
@@ -861,36 +861,17 @@ async def _call_ats_llm(
                     }
                 },
             )
-        except ValidationError as exc:
-            logger.error(
-                "ATS: LLM output failed schema validation for candidate=%s job=%s: %s", candidate_id, job_posting_id, exc
-            )
-            raise ATSValidationError(f"ATS LLM output failed validation: {exc}") from exc
-        except Exception as exc:
-            logger.error("ATS: LLM eligibility check failed for candidate=%s job=%s: %s", candidate_id, job_posting_id, exc)
-            raise
-
-        # Explicit strict-validation gate: with_structured_output already coerces into _ATSLLMOutput
-        # under the hood, but depending on provider/mode it can hand back a bare dict instead of
-        # raising on a schema mismatch — re-validate explicitly so malformed output never slips
-        # through as a duck-typed object that happens to have the right attributes.
-        if isinstance(llm_result, _ATSLLMOutput):
-            return llm_result
-
-        try:
             return _ATSLLMOutput.model_validate(llm_result)
         except ValidationError as exc:
-            if attempt < 2:
+            if attempt < 4:
                 logger.warning(
-                    "ATS: LLM output failed schema validation on attempt %d/3 for candidate=%s job=%s: %s",
-                    attempt + 1,
-                    candidate_id,
-                    job_posting_id,
-                    exc,
+                    "ATS: LLM output failed schema validation on attempt %d/5 for candidate=%s job=%s: %s",
+                    attempt + 1, candidate_id, job_posting_id, exc,
                 )
                 continue
             logger.error(
-                "ATS: LLM output failed schema validation for candidate=%s job=%s: %s", candidate_id, job_posting_id, exc
+                "ATS: LLM output failed schema validation for candidate=%s job=%s: %s",
+                candidate_id, job_posting_id, exc,
             )
             raise ATSValidationError(f"ATS LLM output failed validation: {exc}") from exc
 

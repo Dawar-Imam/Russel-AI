@@ -693,21 +693,18 @@
 .ir-oral-body {
   flex: 1;
   display: flex;
-  align-items: center;
+  align-items: stretch;
   justify-content: center;
+  gap: 16px;
   min-height: 0;
   overflow: hidden;
   padding: 16px;
-  position: relative;
 }
 
-/* Left panel — conversation transcript (overlaid, doesn't affect centering) */
+/* Left panel — conversation transcript */
 .ir-conversation-panel {
-  position: absolute;
-  left: 16px;
-  top: 16px;
-  bottom: 16px;
   width: 400px;
+  flex-shrink: 0;
   background: rgba(var(--glass-highlight-rgb), 0.03);
   backdrop-filter: blur(20px);
   -webkit-backdrop-filter: blur(20px);
@@ -847,24 +844,50 @@
   50%       { opacity: 0; }
 }
 
-/* Center — bot image + timer + end button */
-.ir-bot-area {
+/* Right — participant stage (top, grows) + timer/controls (bottom, fixed height) */
+.ir-right-panel {
+  flex: 1;
   display: flex;
   flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 36px;
+  min-width: 0;
+  gap: 16px;
 }
 
-/* Fixed, page-centered End Interview button (oral rounds only) */
-.ir-end-interview-center {
-  position: fixed;
-  bottom: var(--space-4);
-  left: 0;
-  right: 0;
+/* Bounding box for the participant stage — same glassmorphism treatment as the
+   transcript panel on the left, so cards sit inside a defined container instead
+   of floating over the page background. */
+.ir-stage {
+  flex: 1;
+  min-height: 0;
+  background: rgba(var(--glass-highlight-rgb), 0.03);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(var(--color-primary-rgb), 0.2);
+  border-radius: 16px;
+  padding: var(--space-6);
   display: flex;
+  overflow: hidden;
+}
+
+.ir-participant-grid {
+  flex: 1;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  grid-auto-rows: minmax(160px, 1fr);
+  align-items: center;
+  justify-items: center;
+  gap: var(--space-6);
+  width: 100%;
+  min-height: 0;
+}
+
+.ir-right-bottom {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
   justify-content: center;
-  z-index: 20;
+  gap: var(--space-6);
+  padding: var(--space-4) 0;
 }
 
 .ir-end-interview-btn {
@@ -880,20 +903,16 @@
   color: var(--color-primary) !important;
 }
 
-.ir-bot-image {
-  width: 210px;
-  height: 210px;
-  object-fit: contain;
-  animation: ir-float 3.2s ease-in-out infinite;
-  filter: drop-shadow(0 12px 40px rgba(var(--color-primary-rgb), 0.22));
-}
-
-@keyframes ir-float {
-  0%, 100% { transform: translateY(0); }
-  50%       { transform: translateY(-18px); }
-}
-
 @media (max-width: 680px) {
+  .ir-oral-body {
+    flex-direction: column;
+  }
+
+  .ir-conversation-panel {
+    width: 100%;
+    height: 240px;
+  }
+
   .ir-answering-body {
     padding: 0 var(--space-4) 200px;
   }
