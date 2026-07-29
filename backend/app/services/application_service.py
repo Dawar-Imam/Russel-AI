@@ -13,7 +13,7 @@ from app.database import db_cursor
 from app.schemas.applications import ATSCheckResponse, ATSRerunNotice, ApplyResponse, InterviewQuestionItem, InterviewRoundInfo, InterviewStagesResponse, MyApplicationItem
 from app.services.ats_lock import acquire_ats_lock, release_ats_lock
 from app.services.events import publish_ats_completed
-from app.services.interview_service import CORRECT_ANSWER_SCORE_THRESHOLD, _parse_options
+from app.services.interview_service import CORRECT_ANSWER_SCORE_THRESHOLD, _parse_options, create_next_round_if_needed
 
 logger = logging.getLogger(__name__)
 
@@ -444,38 +444,18 @@ def apply_to_job(
 
 
 def _create_interviews_for_application(cur, application_id: str, job_posting_id: str) -> None:
-    """Create an Interview row for each active round of the job, if one doesn't already exist.
+    """Create only the FIRST active round's Interview row for this application, if one
+    doesn't already exist. Only call this once ATS has passed the application —
+    interviews must not exist for applications that are ATS_PENDING or ATS_FAIL.
 
-    Only call this once ATS has passed the application — interviews must not exist
-    for applications that are ATS_PENDING or ATS_FAIL.
+    Later rounds are deliberately NOT pre-created here — each one is created lazily,
+    right when the candidate passes the round before it (see
+    interview_service.create_next_round_if_needed, called from
+    interview_service._save_scores_and_complete). Pre-creating every round upfront
+    used to mean a candidate who never got past round 1 already had rows (and a
+    misleadingly early `scheduled_at`) sitting for rounds they'd never reach.
     """
-    cur.execute(
-        """
-        SELECT id FROM InterviewRounds
-        WHERE job_posting_id = ? AND is_active = 1
-        ORDER BY round_order
-        """,
-        job_posting_id,
-    )
-    rounds = [str(r[0]) for r in cur.fetchall()]
-
-    for round_id in rounds:
-        cur.execute(
-            "SELECT id FROM Interviews WHERE interview_round_id = ? AND application_id = ?",
-            round_id,
-            application_id,
-        )
-        if not cur.fetchone():
-            cur.execute(
-                """
-                INSERT INTO Interviews
-                    (id, interview_round_id, application_id, status, scheduled_at, completed_at, feedback, result)
-                VALUES (?, ?, ?, 'Scheduled', GETDATE(), NULL, NULL, NULL)
-                """,
-                str(uuid.uuid4()),
-                round_id,
-                application_id,
-            )
+    create_next_round_if_needed(cur, application_id, job_posting_id, min_round_order=0)
 
 
 def get_interview_stages(application_id: str) -> InterviewStagesResponse:
@@ -529,6 +509,7 @@ def get_interview_stages(application_id: str) -> InterviewStagesResponse:
                 i.feedback,
                 i.result,
                 i.scheduled_at,
+                i.scheduled_timezone,
                 i.completed_at,
                 (SELECT AVG(CAST(iq2.score AS FLOAT))
                  FROM InterviewQuestions iq2
@@ -565,10 +546,11 @@ def get_interview_stages(application_id: str) -> InterviewStagesResponse:
             feedback: str | None = r[5]
             result: str | None = r[6]
             scheduled_at: str | None = r[7].isoformat() if r[7] else None
-            completed_at: str | None = r[8].isoformat() if r[8] else None
-            avg_score: float | None = float(r[9]) if r[9] is not None else None
-            questions_total: int | None = int(r[10]) if r[10] else None
-            questions_correct: int | None = int(r[11]) if questions_total else None
+            scheduled_timezone: str | None = r[8]
+            completed_at: str | None = r[9].isoformat() if r[9] else None
+            avg_score: float | None = float(r[10]) if r[10] is not None else None
+            questions_total: int | None = int(r[11]) if r[11] else None
+            questions_correct: int | None = int(r[12]) if questions_total else None
 
             rounds.append(
                 InterviewRoundInfo(
@@ -580,6 +562,7 @@ def get_interview_stages(application_id: str) -> InterviewStagesResponse:
                     feedback=feedback,
                     result=result,
                     scheduled_at=scheduled_at,
+                    scheduled_timezone=scheduled_timezone,
                     completed_at=completed_at,
                     avg_score=avg_score,
                     questions_total=questions_total,

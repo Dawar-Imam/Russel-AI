@@ -22,6 +22,7 @@ class GenerateQuestionsRequest(BaseModel):
 
 class GenerateQuestionsResponse(BaseModel):
     interview_id: str
+    application_id: str = ""
     questions: list[QuestionItem]
     timer_seconds: int
     interview_type: str = ""

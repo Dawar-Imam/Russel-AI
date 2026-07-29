@@ -1,3 +1,5 @@
+import asyncio
+import logging
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Query
@@ -5,6 +7,7 @@ from fastapi import APIRouter, HTTPException, Query
 from app.schemas.jobs import (
     VALID_JOB_TYPES,
     CandidatePanelResponse,
+    DeleteInterviewResponse,
     EvaluationQuestionItem,
     InterviewRoundTypeItem,
     JobInterviewRoundItem,
@@ -18,6 +21,10 @@ from app.schemas.jobs import (
     RerunAtsStatusResponse,
     RoundCandidateItem,
 )
+from app.services import interview_service, scheduling_service
+from app.services.events import publish_job_update
+from app.services.google_calendar_service import cancel_event
+from app.services.interview_service import InterviewNotDeletableError
 from app.services.job_service import (
     get_ats_rerun_status,
     get_candidate_panel,
@@ -33,6 +40,8 @@ from app.services.job_service import (
     rerun_ats_for_job,
     update_job,
 )
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -53,6 +62,43 @@ def get_interview_round_types() -> list[InterviewRoundTypeItem]:
         return list_interview_round_types()
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.delete("/interviews/{interview_id}", response_model=DeleteInterviewResponse)
+def delete_scheduled_interview(interview_id: str, recruiter_id: str = Query(...)) -> DeleteInterviewResponse:
+    """Recruiter-initiated cancel of a scheduled-but-not-yet-started interview round —
+    the Job Stats page's "Delete" action next to a scheduled candidate. Mirrors the
+    webhook's own cancelled-event handling (_handle_cancelled_event in
+    google_calendar.py): revoke the pending Celery ETA task, best-effort remove the
+    Calendar event, then clear the Interviews row's schedule (it is NOT deleted — see
+    interview_service.delete_interview_round)."""
+    ctx = interview_service.get_schedule_context(interview_id)
+    if ctx is None:
+        raise HTTPException(status_code=404, detail=f"Interview {interview_id} not found")
+    if ctx["recruiter_id"] != recruiter_id:
+        raise HTTPException(status_code=403, detail="You don't own this interview's job posting")
+
+    try:
+        scheduling_service.revoke_pending_schedule_task(ctx["schedule_task_id"])
+        if ctx["google_event_id"]:
+            cancel_event(recruiter_id, ctx["google_event_id"])
+        interview_service.delete_interview_round(interview_id)
+    except InterviewNotDeletableError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    try:
+        asyncio.run(publish_job_update(
+            ctx["job_posting_id"],
+            {"event": "interview_unscheduled", "interview_id": interview_id},
+        ))
+    except Exception:
+        logger.exception("jobs: failed to publish interview_unscheduled job_update for job_id=%s", ctx["job_posting_id"])
+
+    return DeleteInterviewResponse(status="deleted", interview_id=interview_id)
 
 
 @router.get("/mine", response_model=list[JobListItem])

@@ -336,6 +336,36 @@ Run:
 cd backend && uv sync && uv run uvicorn app.main:app --reload
 ```
 
+#### Local development: exposing the Calendar webhook (ngrok)
+
+Google's Calendar push notifications (`watch_calendar` in
+`app/services/google_calendar_service.py`) POST to `GOOGLE_WEBHOOK_URL` directly from
+Google's servers — `http://localhost:8000` isn't reachable from there, so local dev
+needs a public HTTPS tunnel in front of the backend. This project uses
+[ngrok](https://ngrok.com/download).
+
+1. One-time: sign up at ngrok.com, then authenticate the CLI:
+   ```bash
+   ngrok config add-authtoken <your-authtoken>
+   ```
+2. With the backend running (`uvicorn` on port 8000), start the tunnel in a separate terminal:
+   ```bash
+   ngrok http 8000
+   ```
+3. Copy the `https://...ngrok-free.app` forwarding URL ngrok prints, and set in
+   `backend/.env`:
+   ```
+   GOOGLE_WEBHOOK_URL=https://<ngrok-url>/api/google-calendar/webhook
+   ```
+4. Restart the backend — `Settings()` reads `.env` once at process startup, and
+   `--reload` only watches `.py` files, so it won't pick up the new value on its own.
+5. Reconnect Google Calendar (the recruiter signup screen's "Connect Google Calendar",
+   or the Job Stats page banner) so `watch_calendar` re-registers against the new URL.
+
+The ngrok URL changes every time you restart the free-tier tunnel — repeat steps 3–5
+whenever that happens. Everything downstream (webhook route, event matching, DB
+updates) is unchanged; only the tunnel in front of it is.
+
 ### Frontend (Vite + React + TypeScript)
 
 - `src/components/Header.tsx`, `src/pages/Home.tsx` – sample component/page

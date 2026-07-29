@@ -2,8 +2,8 @@ import re
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
-from app.schemas.auth import CandidateProfileResponse, CreateJobRoleRequest, CreateSkillRequest, JobRoleItem, JobRoleSearchResponse, RecruiterProfileResponse, RecruiterSigninResponse, RecruiterSignupRequest, RecruiterSignupResponse, SigninRequest, SigninResponse, SignupMetadataResponse, SignupResponse, SkillItem, SkillSearchResponse
-from app.services.auth_service import get_candidate_profile, get_or_create_job_role, get_or_create_skill, get_recruiter_profile, get_signup_metadata, search_job_roles, search_skills_for_role, signin_candidate, signin_recruiter, signup_candidate, signup_recruiter
+from app.schemas.auth import CandidateProfileResponse, CreateJobRoleRequest, CreateSkillRequest, JobRoleItem, JobRoleSearchResponse, OtpActionResponse, RecruiterProfileResponse, RecruiterSigninResponse, RecruiterSignupRequest, RecruiterSignupResponse, ResendOtpRequest, SigninRequest, SigninResponse, SignupMetadataResponse, SignupResponse, SkillItem, SkillSearchResponse, VerifyOtpRequest
+from app.services.auth_service import NotVerifiedError, get_candidate_profile, get_or_create_job_role, get_or_create_skill, get_recruiter_profile, get_signup_metadata, resend_otp, search_job_roles, search_skills_for_role, signin_candidate, signin_recruiter, signup_candidate, signup_recruiter, verify_otp
 
 router = APIRouter()
 
@@ -120,8 +120,32 @@ async def signup(
 def signin(body: SigninRequest) -> SigninResponse:
     try:
         return signin_candidate(email=body.email, password=body.password)
+    except NotVerifiedError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post("/verify-otp", response_model=OtpActionResponse)
+def verify_otp_route(body: VerifyOtpRequest) -> OtpActionResponse:
+    try:
+        verify_otp(user_id=body.user_id, otp_code=body.otp_code)
+        return OtpActionResponse(message="Email verified successfully.")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post("/resend-otp", response_model=OtpActionResponse)
+def resend_otp_route(body: ResendOtpRequest) -> OtpActionResponse:
+    try:
+        resend_otp(user_id=body.user_id)
+        return OtpActionResponse(message="Verification code resent.")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -147,6 +171,8 @@ def recruiter_signup(body: RecruiterSignupRequest) -> RecruiterSignupResponse:
 def recruiter_signin(body: SigninRequest) -> RecruiterSigninResponse:
     try:
         return signin_recruiter(email=body.email, password=body.password)
+    except NotVerifiedError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
     except Exception as exc:

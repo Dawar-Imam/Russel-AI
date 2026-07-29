@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import {
+  deleteScheduledInterview,
   fetchCandidatePanel,
   fetchInterviewQA,
   fetchJobStats,
@@ -11,6 +12,19 @@ import {
   type RoundCandidateItem,
 } from '../api/jobs'
 import '../css/JobPostStats.css'
+
+const API_BASE = (import.meta.env.VITE_API_URL as string | undefined) ?? 'http://localhost:8000'
+const WS_BASE = API_BASE.replace(/^http/, 'ws')
+
+const RECRUITER_ID = sessionStorage.getItem('recruiterId') ?? ''
+
+// Same substring convention used across the backend (question_pregeneration_service.py,
+// scheduling_service._require_oral_round) — scheduling only applies to oral/voice
+// rounds, never written-test rounds.
+function isOralRoundType(roundTypeName: string): boolean {
+  const lowered = roundTypeName.toLowerCase()
+  return lowered.includes('oral') || lowered.includes('voice')
+}
 
 function ivStatusClass(status: string): string {
   const s = status.toLowerCase()
@@ -65,6 +79,16 @@ function JobPostStats() {
   const [qaCache, setQaCache] = useState<Record<string, EvaluationQuestionItem[]>>({})
   const [qaLoading, setQaLoading] = useState<string | null>(null)
 
+  // Deleting a scheduled (not-yet-started) interview.
+  const [deletingInterviewId, setDeletingInterviewId] = useState<string | null>(null)
+
+  // Kept in sync with selectedRound so the WS handler below (which only depends on
+  // jobId, to avoid reconnecting on every round click) can read the current round.
+  const selectedRoundRef = useRef<number | null>(null)
+  const wsRef = useRef<WebSocket | null>(null)
+  const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const reconnectAttemptsRef = useRef(0)
+
   useEffect(() => {
     if (!jobId) return
     setStatsLoading(true)
@@ -72,6 +96,68 @@ function JobPostStats() {
       .then(setStats)
       .catch((err: unknown) => setStatsError(err instanceof Error ? err.message : 'Failed to load'))
       .finally(() => setStatsLoading(false))
+  }, [jobId])
+
+  useEffect(() => {
+    selectedRoundRef.current = selectedRound
+  }, [selectedRound])
+
+  function refetchSelectedRound() {
+    const roundOrder = selectedRoundRef.current
+    if (roundOrder === null || !jobId) return
+    fetchRoundCandidates(jobId, roundOrder)
+      .then(setCandidates)
+      .catch(() => {})
+  }
+
+  // Live updates: reconnecting WebSocket (same pattern as ApplicationProgress.tsx's
+  // candidate-side one) that re-fetches the currently open round's candidates when
+  // the backend announces a Calendar-driven schedule/unschedule for this job.
+  useEffect(() => {
+    if (!jobId) return
+    let cancelled = false
+
+    function connect() {
+      if (cancelled) return
+      const ws = new WebSocket(`${WS_BASE}/ws/jobs/${jobId}`)
+      wsRef.current = ws
+
+      ws.onopen = () => {
+        reconnectAttemptsRef.current = 0
+      }
+
+      ws.onmessage = (event) => {
+        try {
+          const payload = JSON.parse(event.data)
+          if (payload?.event === 'interview_scheduled' || payload?.event === 'interview_unscheduled') {
+            refetchSelectedRound()
+          }
+        } catch {
+          // Ignore malformed payloads — the REST fetch remains the source of truth.
+        }
+      }
+
+      ws.onerror = () => {
+        ws.close()
+      }
+
+      ws.onclose = () => {
+        if (cancelled) return
+        const attempt = reconnectAttemptsRef.current
+        reconnectAttemptsRef.current = attempt + 1
+        const delay = Math.min(1000 * 2 ** attempt, 15000)
+        reconnectTimerRef.current = setTimeout(connect, delay)
+      }
+    }
+
+    connect()
+
+    return () => {
+      cancelled = true
+      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current)
+      wsRef.current?.close()
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jobId])
 
   function handleSelectRound(roundOrder: number) {
@@ -86,6 +172,46 @@ function JobPostStats() {
       .then(setCandidates)
       .catch(() => setCandidates([]))
       .finally(() => setCandidatesLoading(false))
+  }
+
+  // Recruiter creates the interview event by hand in their own Google Calendar — this
+  // just opens a prefilled event-creation link in a new tab, using whatever Google
+  // account is already signed in in their browser. No RusselAI OAuth consent is
+  // needed for this (that flow now only runs once, at recruiter signup — see Auth.tsx —
+  // to register the webhook watch, and must never gate this button). The candidate's
+  // interview-room join link in the description is the only signal the Calendar
+  // webhook handler (backend/app/api/endpoints/google_calendar.py) uses to match the
+  // event the recruiter eventually creates back to this interview.
+  function handleScheduleClick(candidate: RoundCandidateItem) {
+    const joinUrl = `${window.location.origin}/interview-room/${candidate.interview_id}`
+    const params = new URLSearchParams({
+      action: 'TEMPLATE',
+      text: `Interview - ${candidate.name}`,
+      details: `Join your interview here: ${joinUrl}`,
+      add: candidate.email,
+    })
+    window.open(`https://calendar.google.com/calendar/render?${params.toString()}`, '_blank')
+  }
+
+  function handleDeleteInterview(candidate: RoundCandidateItem) {
+    if (!RECRUITER_ID) return
+    if (!window.confirm(`Remove the scheduled time for ${candidate.name}'s interview? They can be rescheduled afterward.`)) return
+    setDeletingInterviewId(candidate.interview_id)
+    deleteScheduledInterview(candidate.interview_id, RECRUITER_ID)
+      .then(() => {
+        // Backend only clears the schedule (scheduled_at/google_event_id/etc) — the
+        // candidate/application record itself is untouched, so update this row in
+        // place instead of removing it from the list.
+        setCandidates((prev) =>
+          prev.map((c) =>
+            c.interview_id === candidate.interview_id
+              ? { ...c, scheduled_at: null, scheduled_timezone: null }
+              : c,
+          ),
+        )
+      })
+      .catch((err: unknown) => window.alert(err instanceof Error ? err.message : 'Failed to delete interview'))
+      .finally(() => setDeletingInterviewId(null))
   }
 
   function handleOpenCandidate(candidate: RoundCandidateItem) {
@@ -216,6 +342,12 @@ function JobPostStats() {
 
                         {isSelected && (
                           <div className="jps-candidates-area">
+                            {!isOralRoundType(round.round_type_name) && (
+                              <p className="jps-state-sm jps-no-schedule-note">
+                                Scheduling isn't available for written-test rounds — candidates start these on their own.
+                              </p>
+                            )}
+
                             {candidatesLoading ? (
                               <p className="jps-state-sm">Loading candidates…</p>
                             ) : candidates.length === 0 ? (
@@ -226,6 +358,38 @@ function JobPostStats() {
                                   <li key={c.interview_id} className="jps-candidate-row" onClick={() => handleOpenCandidate(c)}>
                                     <div className="jps-cand-avatar">{c.name.charAt(0).toUpperCase()}</div>
                                     <span className="jps-cand-name">{c.name}</span>
+                                    {c.status.toLowerCase() === 'scheduled' && c.scheduled_at && (
+                                      <span className="jps-cand-scheduled-at">
+                                        {new Date(c.scheduled_at).toLocaleString(undefined, {
+                                          month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
+                                        })}
+                                      </span>
+                                    )}
+                                    {c.status.toLowerCase() === 'scheduled' && isOralRoundType(round.round_type_name) && (
+                                      <button
+                                        type="button"
+                                        className="jps-schedule-btn"
+                                        onClick={(e) => {
+                                          e.stopPropagation()
+                                          handleScheduleClick(c)
+                                        }}
+                                      >
+                                        {c.scheduled_at ? 'Reschedule via Calendar' : 'Schedule via Calendar'}
+                                      </button>
+                                    )}
+                                    {c.status.toLowerCase() === 'scheduled' && c.scheduled_at && new Date(c.scheduled_at) > new Date() && (
+                                      <button
+                                        type="button"
+                                        className="jps-delete-btn"
+                                        disabled={deletingInterviewId === c.interview_id}
+                                        onClick={(e) => {
+                                          e.stopPropagation()
+                                          handleDeleteInterview(c)
+                                        }}
+                                      >
+                                        {deletingInterviewId === c.interview_id ? 'Deleting…' : 'Delete'}
+                                      </button>
+                                    )}
                                     <span className={`jps-iv-badge ${ivStatusClass(c.status)}`}>{c.status}</span>
                                   </li>
                                 ))}

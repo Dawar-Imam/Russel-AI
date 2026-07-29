@@ -67,6 +67,7 @@ export interface JobStatsRound {
   round_type_name: string
   failing_criteria: number | null
   applicants_count: number
+  interview_round_id: string
 }
 
 export interface JobStatsResponse {
@@ -85,7 +86,10 @@ export interface RoundCandidateItem {
   application_id: string
   interview_id: string
   name: string
+  email: string
   status: string
+  scheduled_at: string | null  // local wall-clock time, ISO — never UTC
+  scheduled_timezone: string | null
 }
 
 export interface CandidateSkillItem {
@@ -306,4 +310,15 @@ export async function fetchAtsRerunStatus(jobId: string): Promise<RerunAtsStatus
   const res = await fetch(`${BASE_URL}/api/jobs/${encodeURIComponent(jobId)}/rerun-ats/status`)
   if (!res.ok) throw new Error('Failed to load ATS rerun status')
   return res.json() as Promise<RerunAtsStatusResponse>
+}
+
+export async function deleteScheduledInterview(interviewId: string, recruiterId: string): Promise<void> {
+  const res = await fetch(
+    `${BASE_URL}/api/jobs/interviews/${encodeURIComponent(interviewId)}?recruiter_id=${encodeURIComponent(recruiterId)}`,
+    { method: 'DELETE' },
+  )
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { detail?: string }
+    throw new Error(body.detail ?? 'Failed to delete interview')
+  }
 }

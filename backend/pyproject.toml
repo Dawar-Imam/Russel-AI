@@ -26,6 +26,9 @@ dependencies = [
     "celery>=5.4.0",
     "redis>=5.0.0",
     "langsmith>=0.1.0",
+    "google-auth>=2.35.0",
+    "google-auth-oauthlib>=1.2.0",
+    "google-api-python-client>=2.149.0",
 ]
 
 [tool.uv]

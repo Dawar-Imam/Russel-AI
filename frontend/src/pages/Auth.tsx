@@ -9,11 +9,14 @@ import logoLight from '../utils/white/logo.png'
 import { useTheme } from '../utils/useTheme'
 import {
   createSkill,
+  fetchGoogleCalendarConnectUrl,
   fetchSignupMetadata,
   signupCandidate,
   signinCandidate,
   signupRecruiter,
   signinRecruiter,
+  verifyOtp,
+  resendOtp,
   type JobRole,
   type Skill,
 } from '../api/auth'
@@ -36,6 +39,10 @@ function Auth() {
   const theme = useTheme()
   const logo = theme === 'light' ? logoLight : logoDark
   const pendingJobId = (location.state as { pendingJobId?: string } | null)?.pendingJobId
+  // Set by CandidateRoute (App.tsx) when a signed-out visitor is bounced here from a
+  // candidate-only deep link (e.g. a Calendar invite's interview-room join link) —
+  // sends them straight back there after a successful candidate sign-in.
+  const returnTo = (location.state as { returnTo?: string } | null)?.returnTo
   const [accountType, setAccountType] = useState<AccountType>('candidate')
   const [mode, setMode] = useState<AuthMode>('signin')
 
@@ -77,6 +84,28 @@ function Auth() {
   const [attemptedSubmit, setAttemptedSubmit] = useState(false)
   const [submitError, setSubmitError] = useState<string | null>(null)
   const [submitSuccess, setSubmitSuccess] = useState(false)
+
+  // OTP verification step — shown right after signup, before "Account created"
+  const [otpUserId, setOtpUserId] = useState<string | null>(null)
+  const [otpCode, setOtpCode] = useState('')
+  const [otpError, setOtpError] = useState<string | null>(null)
+  const [otpSubmitting, setOtpSubmitting] = useState(false)
+  const [otpResending, setOtpResending] = useState(false)
+  const [otpResent, setOtpResent] = useState(false)
+
+  // Recruiter signup only — recruiter_id from the signup response, carried through OTP
+  // verification so the post-verify screen can offer "Connect Google Calendar" before
+  // sending the recruiter to sign in (see Google Calendar OAuth connect flow below).
+  const [pendingRecruiterId, setPendingRecruiterId] = useState<string | null>(null)
+  const [showConnectCalendar, setShowConnectCalendar] = useState(false)
+  const [connectingCalendar, setConnectingCalendar] = useState(false)
+
+  // Google redirects back here (?google_calendar=connected|error) after the recruiter
+  // completes (or abandons) the OAuth consent screen — read once on mount.
+  const [calendarConnectResult] = useState<'connected' | 'error' | null>(() => {
+    const value = new URLSearchParams(location.search).get('google_calendar')
+    return value === 'connected' || value === 'error' ? value : null
+  })
 
   const suggestedSkills =
     selectedRoleId !== ''
@@ -169,7 +198,7 @@ function Auth() {
           sessionStorage.setItem('candidateId', result.candidate_id)
           sessionStorage.setItem('candidateEmail', signinEmail)
           sessionStorage.setItem('userType', 'candidate')
-          navigate('/my-applications', { state: { candidateId: result.candidate_id } })
+          navigate(returnTo || '/my-applications', { state: { candidateId: result.candidate_id } })
         } else {
           const result = await signinRecruiter(signinEmail, signinPassword)
           sessionStorage.setItem('recruiterId', result.recruiter_id)
@@ -201,7 +230,7 @@ function Auth() {
     try {
       if (accountType === 'candidate') {
         if (selectedRoleId === '') return
-        await signupCandidate({
+        const result = await signupCandidate({
           firstName,
           lastName,
           email: signupEmail,
@@ -211,8 +240,9 @@ function Auth() {
           experienceYears: parseFloat(experience),
           cv: cvFile,
         })
+        setOtpUserId(result.user_id)
       } else {
-        await signupRecruiter({
+        const result = await signupRecruiter({
           firstName,
           lastName,
           email: signupEmail,
@@ -220,8 +250,9 @@ function Auth() {
           companyName,
           designation,
         })
+        setPendingRecruiterId(result.recruiter_id)
+        setOtpUserId(result.user_id)
       }
-      setSubmitSuccess(true)
     } catch (err: unknown) {
       if (accountType === 'candidate' && cvFile && err instanceof TypeError) {
         // Browser-level upload abort (e.g. Chrome's net::ERR_UPLOAD_FILE_CHANGED) —
@@ -237,6 +268,129 @@ function Auth() {
     } finally {
       setSubmitting(false)
     }
+  }
+
+  async function handleVerifyOtp(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    if (!otpUserId || !otpCode.trim()) return
+    setOtpSubmitting(true)
+    setOtpError(null)
+    try {
+      await verifyOtp(otpUserId, otpCode.trim())
+      setOtpUserId(null)
+      if (accountType === 'recruiter' && pendingRecruiterId) {
+        setShowConnectCalendar(true)
+      } else {
+        setSubmitSuccess(true)
+      }
+    } catch (err: unknown) {
+      setOtpError(err instanceof Error ? err.message : 'Verification failed')
+    } finally {
+      setOtpSubmitting(false)
+    }
+  }
+
+  function handleConnectCalendar() {
+    if (!pendingRecruiterId) return
+    setConnectingCalendar(true)
+    fetchGoogleCalendarConnectUrl(pendingRecruiterId)
+      .then(({ authorization_url }) => { window.location.href = authorization_url })
+      .catch(() => setConnectingCalendar(false))
+  }
+
+  function handleSkipConnectCalendar() {
+    setShowConnectCalendar(false)
+    setPendingRecruiterId(null)
+    setSubmitSuccess(true)
+  }
+
+  async function handleResendOtp() {
+    if (!otpUserId) return
+    setOtpResending(true)
+    setOtpError(null)
+    setOtpResent(false)
+    try {
+      await resendOtp(otpUserId)
+      setOtpResent(true)
+    } catch (err: unknown) {
+      setOtpError(err instanceof Error ? err.message : 'Failed to resend code')
+    } finally {
+      setOtpResending(false)
+    }
+  }
+
+  if (otpUserId) {
+    return (
+      <main className="auth-page">
+        <div className="auth-card">
+          <Link to="/" className="auth-brand">
+            <span className="auth-brand-title">
+              <span className="auth-brand-primary">Russel</span>
+              <span className="auth-brand-accent">.AI</span>
+            </span>
+            <img src={logo} alt="Russel.AI logo" className="auth-logo" />
+          </Link>
+          <p className="auth-success-message">Account created! Enter the verification code we emailed you.</p>
+          <form className="auth-form" onSubmit={handleVerifyOtp} noValidate>
+            <label className="field">
+              <span className="field-label">
+                Verification Code<span className="required-star"> *</span>
+              </span>
+              <Input
+                type="text"
+                inputMode="numeric"
+                placeholder="6-digit code"
+                value={otpCode}
+                onChange={(e) => setOtpCode(e.target.value)}
+              />
+            </label>
+            {otpError && <p className="auth-submit-error">{otpError}</p>}
+            {otpResent && !otpError && <p className="auth-success-message">A new code has been sent.</p>}
+            <Button type="submit" variant="primary" className="auth-submit" disabled={otpSubmitting || !otpCode.trim()}>
+              {otpSubmitting ? 'Verifying…' : 'Verify Email'}
+            </Button>
+            <Button
+              type="button"
+              variant="secondary"
+              className="auth-submit"
+              disabled={otpResending}
+              onClick={() => void handleResendOtp()}
+            >
+              {otpResending ? 'Resending…' : 'Resend Code'}
+            </Button>
+          </form>
+        </div>
+      </main>
+    )
+  }
+
+  if (showConnectCalendar) {
+    return (
+      <main className="auth-page">
+        <div className="auth-card">
+          <Link to="/" className="auth-brand">
+            <span className="auth-brand-title">
+              <span className="auth-brand-primary">Russel</span>
+              <span className="auth-brand-accent">.AI</span>
+            </span>
+            <img src={logo} alt="Russel.AI logo" className="auth-logo" />
+          </Link>
+          <p className="auth-success-message">Email verified! Connect Google Calendar to schedule interviews.</p>
+          <Button
+            type="button"
+            variant="primary"
+            className="auth-submit"
+            disabled={connectingCalendar}
+            onClick={handleConnectCalendar}
+          >
+            {connectingCalendar ? 'Redirecting…' : 'Connect Google Calendar'}
+          </Button>
+          <Button type="button" variant="secondary" className="auth-submit" onClick={handleSkipConnectCalendar}>
+            Skip for now
+          </Button>
+        </div>
+      </main>
+    )
   }
 
   if (submitSuccess) {
@@ -326,6 +480,13 @@ function Auth() {
             Sign Up
           </button>
         </div>
+
+        {calendarConnectResult === 'connected' && (
+          <p className="auth-success-message">Google Calendar connected — sign in to get started.</p>
+        )}
+        {calendarConnectResult === 'error' && (
+          <p className="auth-submit-error">Google Calendar didn't connect — interview scheduling sync won't be available until it is.</p>
+        )}
 
         <form className="auth-form" onSubmit={handleSubmit} noValidate>
           {mode === 'signin' ? (

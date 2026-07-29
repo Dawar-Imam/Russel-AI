@@ -18,6 +18,14 @@ import '../css/ApplicationProgress.css'
 const API_BASE = (import.meta.env.VITE_API_URL as string | undefined) ?? 'http://localhost:8000'
 const WS_BASE = API_BASE.replace(/^http/, 'ws')
 
+// Same substring convention used across the backend (question_pregeneration_service.py,
+// interview_service.py) for classifying a raw InterviewRoundTypes.name — e.g. "Oral
+// Technical" — as oral/voice vs written, rather than an exact-match enum.
+function isOralRoundTitle(title: string): boolean {
+  const lowered = title.toLowerCase()
+  return lowered.includes('oral') || lowered.includes('voice')
+}
+
 interface RoundInfo {
   interview_round_id: string
   interview_id: string | null
@@ -26,7 +34,8 @@ interface RoundInfo {
   status: string | null
   feedback: string | null
   result: number | null
-  scheduled_at: string | null
+  scheduled_at: string | null  // local wall-clock time, ISO — never UTC
+  scheduled_timezone: string | null
   completed_at: string | null
   avg_score: number | null
   questions_correct: number | null
@@ -211,7 +220,12 @@ function ApplicationProgress() {
   const wsRef = useRef<WebSocket | null>(null)
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const reconnectAttemptsRef = useRef(0)
+  // Guards "Enter Interview Room" / "Start Written Test" against a double-click firing
+  // a second navigate() before the first one unmounts this page — a ref (not state) so
+  // the very next click synchronously sees it set, with no render round-trip in between.
+  const joiningRef = useRef(false)
   const [rerunNotice, setRerunNotice] = useState<ATSRerunNotice | null>(null)
+  const [joining, setJoining] = useState(false)
 
   function fetchStages() {
     if (!applicationId) return
@@ -272,9 +286,22 @@ function ApplicationProgress() {
   }
 
   const currentRound = data?.rounds.find(r => r.interview_round_id === data.current_round_id)
+  // scheduled_at is a naive local wall-clock string (never UTC) — parsed as-is, which
+  // is correct as long as the candidate's own browser clock is in the same timezone
+  // the recruiter scheduled in (scheduled_timezone, shown alongside it for clarity).
+  const scheduledLocalDate = currentRound?.scheduled_at ? new Date(currentRound.scheduled_at) : null
+  const interviewTimeReached = scheduledLocalDate ? Date.now() >= scheduledLocalDate.getTime() : false
   const allRoundsCompleted =
     data != null && data.ats_status === 'pass' &&
     (!data.current_round_id || currentRound?.status === 'Completed')
+
+  function handleEnterRound() {
+    if (joiningRef.current) return  // already navigating — ignore the extra click(s)
+    if (!currentRound?.interview_id) return
+    joiningRef.current = true
+    setJoining(true)
+    navigate(`/interview-room/${currentRound.interview_id}`)
+  }
 
   const failedRound = data?.rounds.find(r => (r.status ?? '').toLowerCase() === 'failed')
   const isTerminal = data != null && data.ats_status === 'pass' &&
@@ -310,7 +337,8 @@ function ApplicationProgress() {
   }
 
   // Live updates: reconnecting WebSocket that re-fetches stages when the backend
-  // announces ATS completion, instead of waiting on a page refresh/poll.
+  // announces ATS completion or a Calendar-scheduled interview time, instead of
+  // waiting on a page refresh/poll.
   useEffect(() => {
     if (!applicationId) return
     let cancelled = false
@@ -327,7 +355,7 @@ function ApplicationProgress() {
       ws.onmessage = event => {
         try {
           const payload = JSON.parse(event.data)
-          if (payload?.event === 'ats_completed') fetchStages()
+          if (payload?.event === 'ats_completed' || payload?.event === 'interview_scheduled') fetchStages()
         } catch {
           // Ignore malformed payloads — the REST fetch above remains the source of truth.
         }
@@ -835,10 +863,23 @@ function ApplicationProgress() {
     }
 
     if (!isRoundCompleted(round)) {
+      const roundScheduledDate = round.scheduled_at ? new Date(round.scheduled_at) : null
       return (
         <div className="ap-detail-msg">
           <p className="ap-detail-msg-title">{round.title}</p>
           <p className="ap-detail-msg-body">This round hasn't started yet.</p>
+          {isOralRoundTitle(round.title) && (
+            roundScheduledDate ? (
+              <p className="ap-detail-msg-schedule">
+                Scheduled for {roundScheduledDate.toLocaleDateString(undefined, { month: 'long', day: 'numeric', year: 'numeric' })}
+                {' at '}
+                {roundScheduledDate.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' })}
+                {round.scheduled_timezone ? ` (${round.scheduled_timezone})` : ''}
+              </p>
+            ) : (
+              <p className="ap-detail-msg-schedule">Waiting to be scheduled by the recruiter.</p>
+            )
+          )}
         </div>
       )
     }
@@ -884,18 +925,23 @@ function ApplicationProgress() {
               <span className="test-mode-toggle-label">Test Mode</span>
             </button>
             {data && !isTerminal && !allRoundsCompleted && data.ats_status !== 'fail' && !atsError && !data.ats_rerun_in_progress && (
-              <Button
-                variant="primary"
-                className="app-progress-cta"
-                onClick={() => {
-                  if (currentRound?.interview_id) {
-                    navigate(`/interview-room/${currentRound.interview_id}`)
-                  }
-                }}
-                disabled={!data.current_round_id || data.ats_status === 'pending'}
-              >
-                {data.ats_status === 'pending' ? 'ATS Screening…' : 'Go To Interview Room'}
-              </Button>
+              data.ats_status === 'pending' || !data.current_round_id || !currentRound ? (
+                <Button variant="primary" className="app-progress-cta" disabled>
+                  ATS Screening…
+                </Button>
+              ) : !isOralRoundTitle(currentRound.title) ? (
+                // Written rounds are never scheduled — available as soon as they're current.
+                <Button variant="primary" className="app-progress-cta" onClick={handleEnterRound} disabled={joining}>
+                  {joining ? 'Starting…' : 'Start Written Test'}
+                </Button>
+              ) : interviewTimeReached ? (
+                <Button variant="primary" className="app-progress-cta" onClick={handleEnterRound} disabled={joining}>
+                  {joining ? 'Joining…' : 'Enter Interview Room'}
+                </Button>
+              ) : null
+              // Oral round, scheduled time not reached yet: no CTA here — the schedule
+              // itself is shown inside the round's own status panel below, not a
+              // separate notice.
             )}
           </div>
         </div>

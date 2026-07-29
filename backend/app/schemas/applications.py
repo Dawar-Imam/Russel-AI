@@ -75,7 +75,8 @@ class InterviewRoundInfo(BaseModel):
     status: str | None
     feedback: str | None = None
     result: float | None = None
-    scheduled_at: str | None = None
+    scheduled_at: str | None = None  # local wall-clock time, ISO — never UTC
+    scheduled_timezone: str | None = None
     completed_at: str | None = None
     avg_score: float | None = None
     # Written-test scoring: count of questions scored >= the written-test

@@ -72,8 +72,12 @@ async function fetchVoiceInterviewToken(
   interviewId: string,
   testMode: boolean,
 ): Promise<{ url: string; token: string }> {
+  // /join covers both cases: a scheduled interview whose AI agent already pre-joined
+  // the room (mints a token for that existing room), and an on-demand/unscheduled
+  // round (falls back to creating everything fresh, same as the old /voice-interview
+  // call did) — so this one endpoint works for both flows.
   const res = await fetch(
-    `${API_BASE}/api/interviews/${interviewId}/voice-interview?test_mode=${testMode}`,
+    `${API_BASE}/api/interviews/${interviewId}/join?test_mode=${testMode}`,
     { method: 'POST' },
   )
   if (!res.ok) {
@@ -112,6 +116,7 @@ function InterviewRoom() {
   const [remoteParticipants, setRemoteParticipants] = useState<{ sid: string; name: string }[]>([])
 
   const [enableFailCases, setEnableFailCases] = useState(true)
+  const [applicationId, setApplicationId] = useState<string | null>(null)
   const [terminatedReason, setTerminatedReason] = useState<string | null>(null)
   const [autoSubmitted, setAutoSubmitted] = useState(false)
 
@@ -636,10 +641,13 @@ function InterviewRoom() {
       signal: controller.signal,
     })
       .then((res) => {
-        if (res.status === 409) {
-          setPhase('already-completed')
-          return null
-        }
+        if (res.status === 409)
+          return res.json().then((d) => {
+            const detail = (d as { detail?: { application_id?: string } }).detail
+            if (detail?.application_id) setApplicationId(detail.application_id)
+            setPhase('already-completed')
+            return null
+          })
         if (res.status === 410)
           return res.json().then((d) => {
             const detail = (d as { detail?: { code?: string; application_id?: string } }).detail
@@ -658,6 +666,7 @@ function InterviewRoom() {
       })
       .then((data) => {
         if (data === null || controller.signal.aborted) return
+        if (data.application_id) setApplicationId(data.application_id as string)
         const type = (data.interview_type ?? '') as string
         setInterviewType(type)
         const oral =
@@ -1040,7 +1049,7 @@ function InterviewRoom() {
       {/* ── Terminated (cheating / leave detection) ── */}
       {phase === 'terminated' && (
         <div className="ir-center">
-          <BackButton />
+          <BackButton to={applicationId ? `/application-progress/${applicationId}` : undefined} />
           <p className="ir-error-text" style={{ color: 'var(--color-alert)' }}>Interview Terminated</p>
           <p className="ir-status-sub" style={{ marginTop: '8px' }}>
             {terminatedReason ?? 'This interview has been closed.'}
@@ -1051,7 +1060,7 @@ function InterviewRoom() {
       {/* ── Already completed (interview was closed before this page load) ── */}
       {phase === 'already-completed' && (
         <div className="ir-center">
-          <BackButton />
+          <BackButton to={applicationId ? `/application-progress/${applicationId}` : undefined} />
           <p className="ir-status-text">Interview Session Ended</p>
           <p className="ir-status-sub">
             This interview has already been completed. Return to your applications to view your results.

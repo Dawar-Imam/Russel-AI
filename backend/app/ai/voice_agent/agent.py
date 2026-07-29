@@ -6,7 +6,7 @@ import time
 from collections.abc import AsyncGenerator
 
 from livekit import rtc
-from livekit.agents import Agent, AgentSession, function_tool, llm, stt as agents_stt
+from livekit.agents import Agent, AgentSession, function_tool, llm, stt as agents_stt, tts as agents_tts
 from livekit.agents.utils import http_context
 from livekit.agents.voice.room_io import AudioInputOptions, RoomOptions
 from livekit.plugins import deepgram, elevenlabs, noise_cancellation, openai, silero
@@ -142,6 +142,7 @@ class InterviewerAgent(Agent):
         Stops forwarding immediately once the candidate interrupts."""
         self._interrupted.clear()
         generation = self._generation  # snapshot: this tts_node call belongs to this attempt
+        _logger.info("TTS: synthesis request started (ElevenLabs primary, OpenAI fallback armed)")
 
         async def _gated_text():
             async for segment in text:
@@ -260,6 +261,63 @@ def _build_stt_engine(vad):
 
 
 # ---------------------------------------------------------------------------
+# TTS engine selection — ElevenLabs is primary (natural, low-latency voice).
+# Wrapped in LiveKit's FallbackAdapter so any ElevenLabs failure (API error,
+# timeout, quota exhaustion, invalid/empty response, or any other exception
+# raised during synthesis) automatically and silently switches to OpenAI TTS
+# (gpt-4o-mini-tts) for that utterance — the agent keeps speaking instead of
+# the interview stalling or crashing. ElevenLabs is retried on the next
+# utterance (FallbackAdapter's built-in recovery check) so a transient outage
+# doesn't permanently pin the session to the fallback engine.
+# ---------------------------------------------------------------------------
+
+def _build_tts_engine() -> agents_tts.FallbackAdapter:
+    primary = elevenlabs.TTS(
+        model="eleven_flash_v2_5",
+        voice_id=settings.ELEVENLABS_VOICE_ID,
+        api_key=settings.ELEVENLABS_API_KEY,
+        voice_settings=VoiceSettings(
+            speed=1.1,
+            stability=0.4,
+            similarity_boost=0.75,
+        ),
+    )
+    fallback = openai.TTS(model="gpt-4o-mini-tts", api_key=settings.OPENAI_API_KEY)
+
+    def _log_success(engine_name: str):
+        def _handler(m) -> None:
+            _logger.info(
+                "TTS %s: synthesis succeeded (status=ok, ttfb=%.2fs, duration=%.2fs, chars=%d)",
+                engine_name, m.ttfb, m.duration, m.characters_count,
+            )
+        return _handler
+
+    primary.on("metrics_collected", _log_success("ElevenLabs"))
+    fallback.on("metrics_collected", _log_success("OpenAI"))
+
+    adapter = agents_tts.FallbackAdapter([primary, fallback])
+
+    def _on_availability_changed(ev) -> None:
+        if ev.tts is primary:
+            if ev.available:
+                _logger.warning("TTS ElevenLabs: recovered — switching back to primary engine")
+            else:
+                _logger.warning(
+                    "TTS ElevenLabs: request failed (error/timeout/invalid response/quota) — "
+                    "fallback triggered, switching to OpenAI TTS (gpt-4o-mini-tts)"
+                )
+        elif ev.tts is fallback and not ev.available:
+            _logger.error(
+                "TTS OpenAI fallback: also failed — no TTS engine currently available"
+            )
+
+    adapter.on("tts_availability_changed", _on_availability_changed)
+
+    _logger.info("TTS engine: ElevenLabs (primary) with automatic OpenAI gpt-4o-mini-tts fallback")
+    return adapter
+
+
+# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
@@ -373,16 +431,7 @@ async def run_voice_agent(
             vad=vad,
             stt=_build_stt_engine(vad),
             llm=openai.LLM(model="gpt-4o-mini", api_key=settings.OPENAI_API_KEY),
-            tts=elevenlabs.TTS(
-                model="eleven_flash_v2_5",
-                voice_id=settings.ELEVENLABS_VOICE_ID,
-                api_key=settings.ELEVENLABS_API_KEY,
-                voice_settings=VoiceSettings(
-                    speed=1.1,
-                    stability=0.4,
-                    similarity_boost=0.75,
-                ),
-            ),
+            tts=_build_tts_engine(),
             # turn_handling=TurnHandlingOptions(
             #     turn_detection=inference.TurnDetector(),
             # ),

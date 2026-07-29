@@ -122,6 +122,32 @@ export async function signupCandidate(data: {
   return body as SignupResponse
 }
 
+export interface OtpActionResponse {
+  message: string
+}
+
+export async function verifyOtp(userId: string, otpCode: string): Promise<OtpActionResponse> {
+  const res = await fetch(`${BASE_URL}/api/auth/verify-otp`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ user_id: userId, otp_code: otpCode }),
+  })
+  const body = (await res.json()) as { detail?: string } & Partial<OtpActionResponse>
+  if (!res.ok) throw new Error(body.detail ?? 'Verification failed')
+  return body as OtpActionResponse
+}
+
+export async function resendOtp(userId: string): Promise<OtpActionResponse> {
+  const res = await fetch(`${BASE_URL}/api/auth/resend-otp`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ user_id: userId }),
+  })
+  const body = (await res.json()) as { detail?: string } & Partial<OtpActionResponse>
+  if (!res.ok) throw new Error(body.detail ?? 'Failed to resend code')
+  return body as OtpActionResponse
+}
+
 export async function signinCandidate(email: string, password: string): Promise<SigninResponse> {
   const res = await fetch(`${BASE_URL}/api/auth/signin`, {
     method: 'POST',
@@ -168,6 +194,12 @@ export async function signupRecruiter(data: {
   const body = (await res.json()) as { detail?: string } & Partial<RecruiterSignupResponse>
   if (!res.ok) throw new Error(body.detail ?? 'Signup failed')
   return body as RecruiterSignupResponse
+}
+
+export async function fetchGoogleCalendarConnectUrl(recruiterId: string): Promise<{ authorization_url: string }> {
+  const res = await fetch(`${BASE_URL}/api/google-calendar/connect?recruiter_id=${encodeURIComponent(recruiterId)}`)
+  if (!res.ok) throw new Error('Failed to start Google Calendar connection')
+  return res.json() as Promise<{ authorization_url: string }>
 }
 
 export async function signinRecruiter(email: string, password: string): Promise<RecruiterSigninResponse> {

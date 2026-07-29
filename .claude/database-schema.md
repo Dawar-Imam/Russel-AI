@@ -74,7 +74,7 @@ if the schema changes.
 | Column | Type |
 |---|---|
 | id | uniqueidentifier PK |
-| email | varchar |
+| email | varchar — unique per `role_id`, NOT globally unique (see `UQ_Users_Email_Role` below): the same email can have one Candidate account and one Recruiter account, but never two of the same role. |
 | password_hash | varchar |
 | first_name | varchar |
 | last_name | varchar |
@@ -84,6 +84,40 @@ if the schema changes.
 | is_verified | bit |
 | created_at | datetime2 |
 | updated_at | datetime2 |
+
+> **Migration required** (allow one email across both a candidate and a recruiter
+> account — `auth_service.py`'s signup/signin queries now scope by role via a
+> `CandidateProfiles`/`RecruiterProfiles` join, not by email alone):
+> ```sql
+> ALTER TABLE Users DROP CONSTRAINT UQ_Users_Email;
+> ALTER TABLE Users ADD CONSTRAINT UQ_Users_Email_Role UNIQUE (email, role_id);
+> ```
+
+### OtpVerifications
+One active row per user pending email verification — `auth_service.py` deletes
+any prior row for that user before inserting a new one on signup/resend, so
+there is never more than one live OTP per user. `otp_hash` follows the same
+PBKDF2 hashing scheme as `Users.password_hash` (see `auth_service._hash_otp`);
+the raw code is only ever in the email sent to the candidate/recruiter.
+
+| Column | Type |
+|---|---|
+| id | uniqueidentifier PK |
+| user_id | uniqueidentifier FK -> Users |
+| otp_hash | varchar(255) |
+| expires_at | datetime2 NOT NULL — 10 minutes from creation |
+| created_at | datetime2 NOT NULL DEFAULT SYSUTCDATETIME() |
+
+> **Migration required** (OTP email verification):
+> ```sql
+> CREATE TABLE OtpVerifications (
+>     id uniqueidentifier PRIMARY KEY,
+>     user_id uniqueidentifier NOT NULL REFERENCES Users(id),
+>     otp_hash varchar(255) NOT NULL,
+>     expires_at datetime2 NOT NULL,
+>     created_at datetime2 NOT NULL DEFAULT SYSUTCDATETIME()
+> );
+> ```
 
 ### CandidateProfiles
 | Column | Type |
@@ -117,6 +151,23 @@ if the schema changes.
 | designation | varchar |
 | company_verified | bit |
 | joined_at | datetime2 |
+| google_refresh_token | nvarchar(MAX) NULL — OAuth refresh token for this recruiter's connected Google Calendar; NULL if never connected. See `google_calendar_service.py`. |
+| google_calendar_connected | bit NOT NULL DEFAULT 0 |
+| google_watch_channel_id | varchar(255) NULL — id of this recruiter's active Calendar push-notification channel (see `google_calendar_service.watch_calendar`); NULL if never registered. |
+| google_watch_resource_id | varchar(255) NULL — Google's `resourceId` for the same channel, required to identify/stop it later. |
+| google_watch_expires_at | datetime2 NULL — when the watch channel expires (Google caps this at ~7 days); no automatic renewal exists yet, so a lapsed channel silently stops delivering webhooks until the recruiter reconnects. |
+
+> **Migration required** (recruiter scheduling feature):
+> ```sql
+> ALTER TABLE RecruiterProfiles ADD google_refresh_token nvarchar(MAX) NULL;
+> ALTER TABLE RecruiterProfiles ADD google_calendar_connected bit NOT NULL CONSTRAINT DF_RecruiterProfiles_google_calendar_connected DEFAULT 0;
+> ```
+> **Migration required** (Calendar webhook scheduling refactor):
+> ```sql
+> ALTER TABLE RecruiterProfiles ADD google_watch_channel_id varchar(255) NULL;
+> ALTER TABLE RecruiterProfiles ADD google_watch_resource_id varchar(255) NULL;
+> ALTER TABLE RecruiterProfiles ADD google_watch_expires_at datetime2 NULL;
+> ```
 
 ### JobPostings
 | Column | Type |
@@ -257,9 +308,18 @@ CREATE TABLE Resumes (
 | is_active | bit |
 | time_limit_minutes | int NULL — written-test time limit for this round; falls back to `settings.INTERVIEW_DURATION_MINUTES` (default 10) when NULL |
 | recent_generated_sets | nvarchar(MAX) NULL — **unused by current code.** Was briefly the DB-backed store for per-round question/option-order dedup history; that moved to a Redis list (`round_question_queue:<interview_round_id>`, see `question_order_service.py`) before this column was ever populated in production. Column still exists (harmless, always NULL) but nothing reads or writes it — safe to drop in a future cleanup. |
+| auto_schedule_enabled | bit NOT NULL DEFAULT 0 — **deprecated, no longer read or written.** Was: recruiter opt-in for auto-scheduling a round when the previous one is passed. Removed when scheduling moved to the recruiter manually creating the Google Calendar event themselves (see `Interviews.google_event_id`/webhook sync in `google_calendar.py`) — there is no more backend-driven "auto-create" step to configure. Column left in place (always reads as whatever it last was, harmless); safe to drop in a future cleanup. |
+| auto_schedule_unit | varchar(10) NULL — deprecated alongside `auto_schedule_enabled` above. |
+| auto_schedule_value | int NULL — deprecated alongside `auto_schedule_enabled` above. |
 
 > **Migration required**: `ALTER TABLE InterviewRounds ADD failing_criteria INT NULL;`
 > **Migration required**: `ALTER TABLE InterviewRounds ADD time_limit_minutes INT NULL;`
+> **Migration required** (recruiter scheduling feature):
+> ```sql
+> ALTER TABLE InterviewRounds ADD auto_schedule_enabled bit NOT NULL CONSTRAINT DF_InterviewRounds_auto_schedule_enabled DEFAULT 0;
+> ALTER TABLE InterviewRounds ADD auto_schedule_unit varchar(10) NULL;
+> ALTER TABLE InterviewRounds ADD auto_schedule_value int NULL;
+> ```
 
 ### Interviews
 | Column | Type | Notes |
@@ -268,13 +328,27 @@ CREATE TABLE Resumes (
 | interview_round_id | uniqueidentifier FK -> InterviewRounds | |
 | application_id | uniqueidentifier FK -> Applications | |
 | status | varchar | `Scheduled` / `In Progress` / `Pass` / `Failed` / `Not Needed` (auto-set on later rounds when an earlier round Fails) |
-| scheduled_at | datetime2 | |
+| scheduled_at | datetime2 NULL | **Local wall-clock time only — never UTC, never converted.** NULL until a recruiter manually schedules this round or auto-schedule fires (previously defaulted to `GETDATE()` at row creation; see `application_service._create_interviews_for_application`). Interpreted together with `scheduled_timezone` below. |
+| scheduled_timezone | varchar(50) NULL | IANA zone name (e.g. `Asia/Karachi`) the recruiter picked `scheduled_at` in. Only used at scheduling time to compute the Celery task's execution instant (`scheduling_service._to_utc_eta`) — never written back to the DB as UTC. |
 | started_at | datetime2 NULL | Set once, the first time status flips to 'In Progress' (COALESCE-guarded so a later refresh never overwrites it). Used to compute a refresh-safe remaining timer (`timer_seconds = limit - elapsed`) and to stop accepting new autosaved answers once the round's time limit + grace period has passed. |
 | completed_at | datetime2 | |
 | feedback | nvarchar | AI-generated text feedback about the round |
 | result | varchar(50) | Final numeric score (0–10) stored as text; NULL until round is scored |
+| google_event_id | varchar(255) NULL | Google Calendar event id for this interview. Set by the `/api/google-calendar/webhook` handler once it matches an event the recruiter created manually in their own Calendar (matched via the join-link URL — see `google_calendar.py`), not by the backend creating the event itself. |
+| livekit_room_name | varchar(100) NULL | Set once the AI agent has pre-joined a scheduled interview's LiveKit room (see `room_connection.start_scheduled_interview`); lets the candidate's later `/interviews/{id}/join` call mint a token for the *existing* room instead of creating a new one. NULL for on-demand (unscheduled) interviews, which keep working exactly as before. |
+| schedule_task_id | varchar(155) NULL | Celery task id of the pending `run_scheduled_interview_task` ETA task for this interview — stored so a reschedule can revoke the stale task before dispatching a new one (see `scheduling_service.revoke_pending_schedule_task`). |
+| livekit_token_expires_at | datetime2 NULL | Local wall-clock time (same convention as `scheduled_at`/`scheduled_timezone`) computed once the webhook matches the Calendar event: `scheduled_at + round duration + 5 min buffer`. Whenever an agent/candidate LiveKit token is actually minted (`room_connection.py`), the remaining time until this timestamp becomes that token's TTL (`scheduling_service.compute_token_ttl_seconds`), instead of the SDK's default 6-hour token lifetime. NULL for on-demand (unscheduled) interviews. |
 
 > **Migration required**: `ALTER TABLE Interviews ADD started_at DATETIME2 NULL;`
+> **Migration required** (recruiter scheduling feature):
+> ```sql
+> ALTER TABLE Interviews ADD scheduled_timezone varchar(50) NULL;
+> ALTER TABLE Interviews ADD google_event_id varchar(255) NULL;
+> ALTER TABLE Interviews ADD livekit_room_name varchar(100) NULL;
+> ALTER TABLE Interviews ADD schedule_task_id varchar(155) NULL;
+> ALTER TABLE Interviews ALTER COLUMN scheduled_at datetime2 NULL;  -- was implicitly NOT NULL (always GETDATE()'d on insert)
+> ALTER TABLE Interviews ADD livekit_token_expires_at datetime2 NULL;
+> ```
 
 ### Questions
 | Column | Type |
@@ -321,6 +395,13 @@ resolve a stale `interview_id` back to its `application_id`;
 `interview_service.get_interview_context` checks this table to distinguish
 "deleted by a rerun" (→ HTTP 410) from "questions not yet generated for this
 round" (→ proceeds to generate, no tombstone exists).
+
+Note: `interview_service.delete_interview_round` (the recruiter's "Delete" action on
+a scheduled interview, and the webhook's cancelled-event handling in
+`google_calendar.py`) does **not** use this table — it only clears the scheduling
+columns on the existing `Interviews` row (scheduled_at/scheduled_timezone/
+google_event_id/schedule_task_id/livekit_room_name/livekit_token_expires_at back to
+NULL), putting the round back to "not yet scheduled" rather than deleting it.
 
 | Column | Type |
 |---|---|

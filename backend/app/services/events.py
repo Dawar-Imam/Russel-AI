@@ -46,6 +46,17 @@ _ats_completed_subscribers: list[AtsCompletedHandler] = []
 _ATS_COMPLETED_CHANNEL = "ats_completed_channel"
 _LISTENER_RECONNECT_DELAY_SECONDS = 5
 
+# Recruiter-side counterpart of the bus above, keyed by job_id instead of
+# application_id — same Redis pub/sub reasoning applies (the Calendar webhook runs in
+# the same FastAPI process here, but delete_scheduled_interview and any future
+# Celery-side publisher need the same cross-process delivery), so this mirrors the
+# ats_completed bus structurally rather than trying to generalize both into one, to
+# avoid touching the already-working ATS pipeline.
+JobUpdateHandler = Callable[[str, dict], Awaitable[None]]
+_job_update_subscribers: list[JobUpdateHandler] = []
+
+_JOB_UPDATE_CHANNEL = "job_update_channel"
+
 
 def subscribe_ats_completed(handler: AtsCompletedHandler) -> None:
     _ats_completed_subscribers.append(handler)
@@ -101,3 +112,56 @@ def start_ats_completed_listener(loop: asyncio.AbstractEventLoop) -> None:
                 time.sleep(_LISTENER_RECONNECT_DELAY_SECONDS)
 
     threading.Thread(target=_run, name="ats-completed-listener", daemon=True).start()
+
+
+def subscribe_job_update(handler: JobUpdateHandler) -> None:
+    _job_update_subscribers.append(handler)
+
+
+async def publish_job_update(job_id: str, payload: dict) -> None:
+    try:
+        get_redis_client().publish(
+            _JOB_UPDATE_CHANNEL,
+            json.dumps({"job_id": job_id, "payload": payload}),
+        )
+    except Exception:
+        logger.exception("events: failed to publish job_update for job_id=%s", job_id)
+
+
+async def _deliver_to_job_update_subscribers(job_id: str, payload: dict) -> None:
+    for handler in _job_update_subscribers:
+        try:
+            await handler(job_id, payload)
+        except Exception:
+            logger.exception("events: job_update subscriber failed for job_id=%s", job_id)
+
+
+def start_job_update_listener(loop: asyncio.AbstractEventLoop) -> None:
+    """Recruiter-side counterpart of start_ats_completed_listener above — same
+    call-once-at-startup contract, see app/main.py."""
+
+    def _run() -> None:
+        redis_client = get_redis_client()
+        while True:
+            try:
+                pubsub = redis_client.pubsub()
+                pubsub.subscribe(_JOB_UPDATE_CHANNEL)
+                for message in pubsub.listen():
+                    if message["type"] != "message":
+                        continue
+                    try:
+                        data = json.loads(message["data"])
+                        asyncio.run_coroutine_threadsafe(
+                            _deliver_to_job_update_subscribers(data["job_id"], data["payload"]),
+                            loop,
+                        )
+                    except Exception:
+                        logger.exception("events: failed to process a job_update message")
+            except Exception:
+                logger.exception(
+                    "events: job_update listener crashed — reconnecting in %ds",
+                    _LISTENER_RECONNECT_DELAY_SECONDS,
+                )
+                time.sleep(_LISTENER_RECONNECT_DELAY_SECONDS)
+
+    threading.Thread(target=_run, name="job-update-listener", daemon=True).start()

@@ -307,12 +307,13 @@ def get_job_stats(job_id: str) -> JobStatsResponse:
         cur.execute(
             """
             SELECT ir.round_order, irt.name, ir.failing_criteria,
-                   COUNT(DISTINCT i.application_id) AS cnt
+                   COUNT(DISTINCT i.application_id) AS cnt,
+                   ir.id
             FROM InterviewRounds ir
             JOIN InterviewRoundTypes irt ON irt.id = ir.interview_round_type_id
             LEFT JOIN Interviews i ON i.interview_round_id = ir.id
             WHERE ir.job_posting_id = ? AND ir.is_active = 1
-            GROUP BY ir.round_order, irt.name, ir.failing_criteria
+            GROUP BY ir.round_order, irt.name, ir.failing_criteria, ir.id
             ORDER BY ir.round_order
             """,
             job_id,
@@ -323,6 +324,7 @@ def get_job_stats(job_id: str) -> JobStatsResponse:
                 round_type_name=str(r[1]),
                 failing_criteria=int(r[2]) if r[2] is not None else None,
                 applicants_count=int(r[3]),
+                interview_round_id=str(r[4]),
             )
             for r in cur.fetchall()
         ]
@@ -374,8 +376,8 @@ def get_round_candidates(job_id: str, round_order: int) -> list[RoundCandidateIt
         cur.execute(
             """
             SELECT cp.id, a.id, i.id,
-                   u.first_name + ' ' + u.last_name,
-                   i.status
+                   u.first_name + ' ' + u.last_name, u.email,
+                   i.status, i.scheduled_at, i.scheduled_timezone
             FROM InterviewRounds ir
             JOIN Interviews i ON i.interview_round_id = ir.id
             JOIN Applications a ON a.id = i.application_id
@@ -393,7 +395,10 @@ def get_round_candidates(job_id: str, round_order: int) -> list[RoundCandidateIt
                 application_id=str(r[1]),
                 interview_id=str(r[2]),
                 name=str(r[3]),
-                status=str(r[4]),
+                email=str(r[4]),
+                status=str(r[5]),
+                scheduled_at=r[6].isoformat() if r[6] else None,
+                scheduled_timezone=r[7],
             )
             for r in cur.fetchall()
         ]

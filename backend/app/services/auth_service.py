@@ -2,11 +2,21 @@ import hashlib
 import hmac
 import secrets
 import uuid
+from datetime import datetime, timedelta
 from pathlib import Path
 
+from app.core.mailer import send_email
 from app.database import db_cursor, escape_like
 from app.schemas.auth import TAXONOMY_NAME_RE, CandidateProfileResponse, ExperienceLevelItem, JobRoleItem, RecruiterProfileResponse, RecruiterSigninResponse, RecruiterSignupResponse, SigninResponse, SignupMetadataResponse, SignupResponse, SkillItem
 from app.services.cv_parser_service import parse_and_store_cv, store_resume_record
+
+_OTP_TTL_MINUTES = 10
+
+
+class NotVerifiedError(ValueError):
+    """Raised on signin when the account's email OTP verification hasn't been
+    completed yet — kept distinct from a plain bad-credentials ValueError so the
+    endpoint can return 403 (account exists, just not usable yet) instead of 401."""
 
 
 def _hash_password(password: str) -> str:
@@ -21,6 +31,73 @@ def _verify_password(password: str, stored_hash: str) -> bool:
     salt, dk_hex = parts[2], parts[3]
     dk = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), 260_000)
     return hmac.compare_digest(dk.hex(), dk_hex)
+
+
+# OTP codes are hashed with the exact same PBKDF2 scheme as passwords — they're both
+# just short secrets whose hash needs to be checked, not stored in the clear.
+_hash_otp = _hash_password
+_verify_otp = _verify_password
+
+
+def _generate_otp() -> str:
+    return "".join(secrets.choice("0123456789") for _ in range(6))
+
+
+def _create_and_send_otp(user_id: str, email: str, first_name: str) -> None:
+    """(Re)issues a signup OTP: drops any previous still-pending code for this user
+    (so only the latest one is ever valid — used by both signup and resend) and
+    emails the new one."""
+    otp = _generate_otp()
+    with db_cursor() as (conn, cur):
+        cur.execute("DELETE FROM OtpVerifications WHERE user_id = ?", user_id)
+        cur.execute(
+            "INSERT INTO OtpVerifications (id, user_id, otp_hash, expires_at) VALUES (?, ?, ?, ?)",
+            str(uuid.uuid4()),
+            user_id,
+            _hash_otp(otp),
+            datetime.utcnow() + timedelta(minutes=_OTP_TTL_MINUTES),
+        )
+        conn.commit()
+
+    send_email(
+        to=email,
+        subject="Verify your Russel.AI account",
+        body=(
+            f"Hi {first_name},\n\n"
+            f"Your verification code is: {otp}\n\n"
+            f"This code expires in {_OTP_TTL_MINUTES} minutes."
+        ),
+    )
+
+
+def verify_otp(user_id: str, otp_code: str) -> None:
+    with db_cursor() as (conn, cur):
+        cur.execute(
+            "SELECT id, otp_hash, expires_at FROM OtpVerifications WHERE user_id = ?",
+            user_id,
+        )
+        row = cur.fetchone()
+        if not row or not _verify_otp(otp_code, str(row[1])):
+            raise ValueError("Invalid verification code.")
+        if datetime.utcnow() > row[2]:
+            raise ValueError("Verification code has expired — request a new one.")
+
+        cur.execute("UPDATE Users SET is_verified = 1 WHERE id = ?", user_id)
+        cur.execute("DELETE FROM OtpVerifications WHERE id = ?", str(row[0]))
+        conn.commit()
+
+
+def resend_otp(user_id: str) -> None:
+    with db_cursor() as (conn, cur):
+        cur.execute("SELECT email, first_name, is_verified FROM Users WHERE id = ?", user_id)
+        row = cur.fetchone()
+        if not row:
+            raise ValueError("Account not found.")
+        if row[2]:
+            raise ValueError("This account is already verified.")
+        email, first_name = str(row[0]), str(row[1])
+
+    _create_and_send_otp(user_id, email, first_name)
 
 
 def get_signup_metadata() -> SignupMetadataResponse:
@@ -182,13 +259,15 @@ def signup_candidate(
     cv_filename: str | None,
 ) -> SignupResponse:
     with db_cursor() as (conn, cur):
-        cur.execute("SELECT id FROM Users WHERE email = ?", email)
-        if cur.fetchone():
-            raise ValueError("An account with this email already exists.")
-
         cur.execute("SELECT id FROM Roles WHERE name = 'Candidate'")
         row = cur.fetchone()
         candidate_role_id = int(row[0]) if row else 3
+
+        # Email is unique per role, not globally — the same email may already have a
+        # Recruiter account, which is fine; only a second Candidate account is blocked.
+        cur.execute("SELECT id FROM Users WHERE email = ? AND role_id = ?", email, candidate_role_id)
+        if cur.fetchone():
+            raise ValueError("A candidate account with this email already exists.")
 
         experience_level_id = _get_experience_level_id(conn, experience_years)
 
@@ -206,14 +285,10 @@ def signup_candidate(
         resume_url = result["file_url"]
 
     with db_cursor() as (conn, cur):
-        # Re-check email uniqueness in case of race condition
-        cur.execute("SELECT id FROM Users WHERE email = ?", email)
+        # Re-check uniqueness (scoped to this role) in case of race condition
+        cur.execute("SELECT id FROM Users WHERE email = ? AND role_id = ?", email, candidate_role_id)
         if cur.fetchone():
-            raise ValueError("An account with this email already exists.")
-
-        cur.execute("SELECT id FROM Roles WHERE name = 'Candidate'")
-        row = cur.fetchone()
-        candidate_role_id = int(row[0]) if row else 3
+            raise ValueError("A candidate account with this email already exists.")
 
         experience_level_id = _get_experience_level_id(conn, experience_years)
 
@@ -284,27 +359,36 @@ def signup_candidate(
             cv_data.get("parsed_text"),
         )
 
+    _create_and_send_otp(user_id, email, first_name)
+
     return SignupResponse(
         user_id=user_id,
         candidate_id=candidate_id,
-        message="Account created successfully.",
+        message="Account created successfully. Check your email for a verification code.",
     )
 
 
 def signin_candidate(email: str, password: str) -> SigninResponse:
     with db_cursor() as (conn, cur):
-        cur.execute("SELECT id, password_hash FROM Users WHERE email = ? AND is_active = 1", email)
+        # Joined to CandidateProfiles (not a plain Users lookup) so the correct row is
+        # picked even when the same email also has a separate Recruiter account.
+        cur.execute(
+            """
+            SELECT u.id, u.password_hash, u.is_verified, cp.id
+            FROM Users u
+            JOIN CandidateProfiles cp ON cp.user_id = u.id
+            WHERE u.email = ? AND u.is_active = 1
+            """,
+            email,
+        )
         row = cur.fetchone()
         if not row or not _verify_password(password, str(row[1])):
             raise ValueError("Invalid email or password.")
-        user_id = str(row[0])
-        cur.execute("SELECT id FROM CandidateProfiles WHERE user_id = ?", user_id)
-        cp_row = cur.fetchone()
-        if not cp_row:
-            raise ValueError("No candidate profile found for this account.")
+        if not row[2]:
+            raise NotVerifiedError("Please verify your email before signing in.")
         return SigninResponse(
-            user_id=user_id,
-            candidate_id=str(cp_row[0]),
+            user_id=str(row[0]),
+            candidate_id=str(row[3]),
             message="Signed in successfully.",
         )
 
@@ -318,13 +402,15 @@ def signup_recruiter(
     designation: str,
 ) -> RecruiterSignupResponse:
     with db_cursor() as (conn, cur):
-        cur.execute("SELECT id FROM Users WHERE email = ?", email)
-        if cur.fetchone():
-            raise ValueError("An account with this email already exists.")
-
         cur.execute("SELECT id FROM Roles WHERE name = 'Recruiter'")
         row = cur.fetchone()
         recruiter_role_id = int(row[0]) if row else 2
+
+        # Email is unique per role, not globally — the same email may already have a
+        # Candidate account, which is fine; only a second Recruiter account is blocked.
+        cur.execute("SELECT id FROM Users WHERE email = ? AND role_id = ?", email, recruiter_role_id)
+        if cur.fetchone():
+            raise ValueError("A recruiter account with this email already exists.")
 
         user_id = str(uuid.uuid4())
         cur.execute(
@@ -366,11 +452,14 @@ def signup_recruiter(
         )
 
         conn.commit()
-        return RecruiterSignupResponse(
-            user_id=user_id,
-            recruiter_id=recruiter_id,
-            message="Account created successfully.",
-        )
+
+    _create_and_send_otp(user_id, email, first_name)
+
+    return RecruiterSignupResponse(
+        user_id=user_id,
+        recruiter_id=recruiter_id,
+        message="Account created successfully. Check your email for a verification code.",
+    )
 
 
 def get_candidate_profile(candidate_id: str) -> CandidateProfileResponse:
@@ -536,17 +625,24 @@ def update_candidate_cv(candidate_id: str, cv_content: bytes, cv_filename: str |
 
 def signin_recruiter(email: str, password: str) -> RecruiterSigninResponse:
     with db_cursor() as (conn, cur):
-        cur.execute("SELECT id, password_hash FROM Users WHERE email = ? AND is_active = 1", email)
+        # Joined to RecruiterProfiles (not a plain Users lookup) so the correct row is
+        # picked even when the same email also has a separate Candidate account.
+        cur.execute(
+            """
+            SELECT u.id, u.password_hash, u.is_verified, rp.id
+            FROM Users u
+            JOIN RecruiterProfiles rp ON rp.user_id = u.id
+            WHERE u.email = ? AND u.is_active = 1
+            """,
+            email,
+        )
         row = cur.fetchone()
         if not row or not _verify_password(password, str(row[1])):
             raise ValueError("Invalid email or password.")
-        user_id = str(row[0])
-        cur.execute("SELECT id FROM RecruiterProfiles WHERE user_id = ?", user_id)
-        rp_row = cur.fetchone()
-        if not rp_row:
-            raise ValueError("No recruiter profile found for this account.")
+        if not row[2]:
+            raise NotVerifiedError("Please verify your email before signing in.")
         return RecruiterSigninResponse(
-            user_id=user_id,
-            recruiter_id=str(rp_row[0]),
+            user_id=str(row[0]),
+            recruiter_id=str(row[3]),
             message="Signed in successfully.",
         )

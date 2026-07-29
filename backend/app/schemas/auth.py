@@ -72,6 +72,19 @@ class SignupResponse(BaseModel):
     message: str
 
 
+class VerifyOtpRequest(BaseModel):
+    user_id: str
+    otp_code: str
+
+
+class ResendOtpRequest(BaseModel):
+    user_id: str
+
+
+class OtpActionResponse(BaseModel):
+    message: str
+
+
 class SigninRequest(BaseModel):
     email: str
     password: str

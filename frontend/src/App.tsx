@@ -23,7 +23,12 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 }
 
 function CandidateRoute({ children }: { children: React.ReactNode }) {
-  if (!isSignedIn()) return <Navigate to="/" replace />
+  const location = useLocation()
+  // Unlike ProtectedRoute, a signed-out visit here (e.g. a Calendar invite's
+  // interview-room link opened in a fresh/logged-out browser) sends them to sign in
+  // instead of the homepage, and remembers where they were headed so Auth.tsx can
+  // send them straight back after a successful candidate sign-in.
+  if (!isSignedIn()) return <Navigate to="/auth" state={{ returnTo: location.pathname }} replace />
   if (sessionStorage.getItem('userType') === 'recruiter') return <Navigate to="/recruiter-dashboard" replace />
   return <>{children}</>
 }

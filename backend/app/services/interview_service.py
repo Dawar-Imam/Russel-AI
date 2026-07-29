@@ -133,6 +133,19 @@ class InterviewDeletedPostFailError(Exception):
         self.application_id = application_id
 
 
+class InterviewAlreadyCompletedError(Exception):
+    """Raised by generate_interview_questions when the round is already terminal
+    (SCORED_STATUSES/TERMINAL_ROUND_STATUSES) — e.g. the candidate reopens a stale
+    interview-room tab/link after already finishing or being auto-failed. Carries
+    application_id for the same reason as InterviewDeletedPostFailError above: the
+    "already completed" screen's Back button needs /application-progress/:applicationId,
+    and interview_id alone can't get there client-side."""
+
+    def __init__(self, message: str, application_id: str) -> None:
+        super().__init__(message)
+        self.application_id = application_id
+
+
 def get_interview_context(interview_id: str) -> dict:
     """Fetch all context needed for question generation from the interview record."""
     with db_cursor() as (conn, cur):
@@ -463,6 +476,50 @@ def find_next_scheduled_round(cur, application_id: str, min_round_order: int = 0
     return str(row[0]) if row else None
 
 
+def create_next_round_if_needed(cur, application_id: str, job_posting_id: str, min_round_order: int) -> str | None:
+    """Creates the next active round's Interviews row for this application, if one
+    doesn't already exist, and returns its id (None if there's no next active round).
+
+    Round rows are no longer all created upfront at ATS-pass time — each round's row
+    is created lazily, right when the candidate becomes eligible for it: round 1 when
+    ATS passes (application_service._create_interviews_for_application, min_round_order=0),
+    and round N+1 only once round N is actually scored Pass (_save_scores_and_complete
+    below, min_round_order=<round N's order>). This is the single shared "create the
+    next round" operation both of those call — never pre-creates rounds further ahead.
+    """
+    cur.execute(
+        """
+        SELECT TOP 1 id FROM InterviewRounds
+        WHERE job_posting_id = ? AND is_active = 1 AND round_order > ?
+        ORDER BY round_order
+        """,
+        job_posting_id, min_round_order,
+    )
+    round_row = cur.fetchone()
+    if not round_row:
+        return None
+    next_round_id = str(round_row[0])
+
+    cur.execute(
+        "SELECT id FROM Interviews WHERE interview_round_id = ? AND application_id = ?",
+        next_round_id, application_id,
+    )
+    existing = cur.fetchone()
+    if existing:
+        return str(existing[0])
+
+    new_interview_id = str(uuid.uuid4())
+    cur.execute(
+        """
+        INSERT INTO Interviews
+            (id, interview_round_id, application_id, status, scheduled_at, completed_at, feedback, result)
+        VALUES (?, ?, ?, 'Scheduled', NULL, NULL, NULL, NULL)
+        """,
+        new_interview_id, next_round_id, application_id,
+    )
+    return new_interview_id
+
+
 def _save_question_scores(cur, iq_ids: list[str], graded_answers) -> None:
     """Persist per-question AI scores/notes only — used when the interview's
     final status/feedback is already locked in (e.g. the voice agent already
@@ -512,16 +569,17 @@ def _save_scores_and_complete(
         _maybe_mark_hired(cur, interview_id)
         cur.execute(
             """
-            SELECT i.application_id, ir.round_order
+            SELECT i.application_id, ir.round_order, a.job_id
             FROM Interviews i
             JOIN InterviewRounds ir ON ir.id = i.interview_round_id
+            JOIN Applications a     ON a.id = i.application_id
             WHERE i.id = ?
             """,
             interview_id,
         )
         row = cur.fetchone()
         if row:
-            return find_next_scheduled_round(cur, str(row[0]), min_round_order=int(row[1]))
+            return create_next_round_if_needed(cur, str(row[0]), str(row[2]), min_round_order=int(row[1]))
     return None
 
 
@@ -616,6 +674,164 @@ def _fetch_current_status(cur, interview_id: str) -> str:
     cur.execute("SELECT status FROM Interviews WHERE id = ?", interview_id)
     row = cur.fetchone()
     return str(row[0]) if row else "In Progress"
+
+
+def get_schedule_context(interview_id: str) -> dict | None:
+    """Everything the Calendar webhook handler (google_calendar.py) and
+    interview_scheduling_tasks.py need to identify and run a round's interview:
+    round/job identity and the recruiter who owns the job. None if interview_id
+    doesn't resolve to a live Interviews row."""
+    with db_cursor() as (conn, cur):
+        cur.execute(
+            """
+            SELECT
+                i.application_id, i.status, i.scheduled_at, i.scheduled_timezone,
+                i.google_event_id, i.schedule_task_id, i.livekit_room_name,
+                i.livekit_token_expires_at,
+                ir.id AS interview_round_id, ir.round_order, ir.time_limit_minutes,
+                irt.name AS round_type_name,
+                jp.id AS job_posting_id, jp.recruiter_id,
+                ru.email AS recruiter_email,
+                cu.email AS candidate_email,
+                cu.first_name + ' ' + cu.last_name AS candidate_name,
+                jr.title AS job_role_title
+            FROM Interviews i
+            JOIN InterviewRounds ir      ON ir.id = i.interview_round_id
+            JOIN InterviewRoundTypes irt ON irt.id = ir.interview_round_type_id
+            JOIN Applications a          ON a.id = i.application_id
+            JOIN JobPostings jp          ON jp.id = a.job_id
+            JOIN JobRoles jr             ON jr.id = jp.job_role_id
+            JOIN RecruiterProfiles rp    ON rp.id = jp.recruiter_id
+            JOIN Users ru                ON ru.id = rp.user_id
+            JOIN CandidateProfiles cp    ON cp.id = a.candidate_id
+            JOIN Users cu                ON cu.id = cp.user_id
+            WHERE i.id = ?
+            """,
+            interview_id,
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        return {
+            "application_id": str(row[0]),
+            "status": str(row[1]),
+            "scheduled_at": row[2],
+            "scheduled_timezone": row[3],
+            "google_event_id": row[4],
+            "schedule_task_id": row[5],
+            "livekit_room_name": row[6],
+            "livekit_token_expires_at": row[7],
+            "interview_round_id": str(row[8]),
+            "round_order": int(row[9]),
+            "time_limit_minutes": int(row[10]) if row[10] is not None else None,
+            "round_type_name": str(row[11]),
+            "job_posting_id": str(row[12]),
+            "recruiter_id": str(row[13]),
+            "recruiter_email": str(row[14]),
+            "candidate_email": str(row[15]),
+            "candidate_name": str(row[16]),
+            "job_role_title": str(row[17]),
+        }
+
+
+def get_interview_by_google_event_id(recruiter_id: str, event_id: str) -> str | None:
+    """Resolves a Calendar event id back to the interview it's attached to, scoped to
+    the recruiter who owns the watch channel — used by the webhook's cancelled-event
+    handling, where the event body no longer carries a description to match against
+    (Google strips it from cancelled/deleted events), so `google_event_id` (persisted
+    on schedule-confirm, see set_interview_schedule) is the only thing left to match on."""
+    with db_cursor() as (conn, cur):
+        cur.execute(
+            """
+            SELECT i.id
+            FROM Interviews i
+            JOIN InterviewRounds ir ON ir.id = i.interview_round_id
+            JOIN Applications a     ON a.id = i.application_id
+            JOIN JobPostings jp     ON jp.id = a.job_id
+            WHERE i.google_event_id = ? AND jp.recruiter_id = ?
+            """,
+            event_id, recruiter_id,
+        )
+        row = cur.fetchone()
+    return str(row[0]) if row else None
+
+
+def set_interview_schedule(
+    interview_id: str,
+    scheduled_at_local: datetime,
+    timezone: str,
+    google_event_id: str | None,
+    schedule_task_id: str | None,
+) -> None:
+    """Persists a (re)schedule. `scheduled_at_local` is a naive datetime — the local
+    wall-clock time the recruiter picked, stored as-is, never converted to/from UTC."""
+    with db_cursor() as (conn, cur):
+        cur.execute(
+            """UPDATE Interviews
+               SET scheduled_at = ?, scheduled_timezone = ?, google_event_id = ?, schedule_task_id = ?
+               WHERE id = ?""",
+            scheduled_at_local, timezone, google_event_id, schedule_task_id, interview_id,
+        )
+        conn.commit()
+
+
+def set_interview_livekit_room(interview_id: str, room_name: str) -> None:
+    """Called once the AI agent has pre-joined a scheduled interview's room, so the
+    candidate's later /join call can mint a token for this same room instead of
+    creating a new one (see room_connection.start_scheduled_interview)."""
+    with db_cursor() as (conn, cur):
+        cur.execute("UPDATE Interviews SET livekit_room_name = ? WHERE id = ?", room_name, interview_id)
+        conn.commit()
+
+
+def set_interview_livekit_expiry(interview_id: str, expires_at_local: "datetime") -> None:
+    """Called by the Calendar webhook right after a (re)schedule is confirmed —
+    `expires_at_local` is naive local wall-clock time, same convention as
+    scheduled_at/scheduled_timezone. See scheduling_service.compute_token_ttl_seconds
+    for how this becomes an actual LiveKit token TTL at join time."""
+    with db_cursor() as (conn, cur):
+        cur.execute("UPDATE Interviews SET livekit_token_expires_at = ? WHERE id = ?", expires_at_local, interview_id)
+        conn.commit()
+
+
+class InterviewNotDeletableError(ValueError):
+    """Raised by delete_interview_round when the round can't be unscheduled — either
+    it's already completed/in progress, or its scheduled time has already passed."""
+
+
+def delete_interview_round(interview_id: str) -> dict:
+    """Clears a scheduled-but-not-yet-started interview round's schedule — the
+    Interviews row itself (and its InterviewQuestions) is kept; only the
+    scheduling-related columns are wiped, putting the round back to "not yet
+    scheduled" (status is left untouched: 'Scheduled' already means "this round is
+    next up," not "has a time set" — scheduled_at NULL is what the frontend already
+    treats as unscheduled).
+
+    Callers (the recruiter-initiated DELETE route and the webhook's cancelled-event
+    handler) are responsible for the Celery task revoke and best-effort Calendar event
+    cancellation *before* calling this — this function only owns the DB side.
+
+    Returns the schedule context (as get_schedule_context would, from before it was
+    cleared). Raises InterviewNotDeletableError if the round is already
+    terminal/in-progress or its scheduled time has passed."""
+    ctx = get_schedule_context(interview_id)
+    if ctx is None:
+        raise ValueError(f"Interview {interview_id} not found")
+    if ctx["status"].lower() in SCORED_STATUSES or ctx["status"] == "In Progress":
+        raise InterviewNotDeletableError(f"Interview {interview_id} is already {ctx['status']} — cannot unschedule")
+    if ctx["scheduled_at"] is not None and ctx["scheduled_at"] <= datetime.now():
+        raise InterviewNotDeletableError(f"Interview {interview_id}'s scheduled time has already passed — cannot unschedule")
+
+    with db_cursor() as (conn, cur):
+        cur.execute(
+            """UPDATE Interviews
+               SET scheduled_at = NULL, scheduled_timezone = NULL, google_event_id = NULL,
+                   schedule_task_id = NULL, livekit_room_name = NULL, livekit_token_expires_at = NULL
+               WHERE id = ?""",
+            interview_id,
+        )
+        conn.commit()
+    return ctx
 
 
 def mark_interview_terminated(interview_id: str, reason: str) -> None:
@@ -769,8 +985,34 @@ async def generate_interview_questions(
         items = _test_mode_questions.get(interview_id) or existing or []
         return GenerateQuestionsResponse(
             interview_id=interview_id,
+            application_id=application_id,
             questions=items if return_questions else [],
             timer_seconds=limit_seconds,
+            interview_type=interview_type,
+            enable_fail_cases=settings.ENABLE_FAIL_CASES,
+        )
+
+    # Oral/voice rounds never show the candidate written questions — the voice agent
+    # improvises live from the job post + CV instead (see room_connection.py) — so the
+    # written-question LLM call + InterviewQuestions upsert below is pure unused cost
+    # for these rounds (5-10s of latency for nothing). Everything this endpoint is
+    # actually needed for on the oral path (round-already-completed check, flipping
+    # status to In Progress, computing the refresh-safe timer) is handled here instead,
+    # same as the existing-questions gate below just without ever touching Questions.
+    if is_oral:
+        if current_status_row and str(current_status_row[0]).lower() in TERMINAL_ROUND_STATUSES:
+            raise InterviewAlreadyCompletedError(
+                f"Interview {interview_id} is already completed ({current_status_row[0]}) "
+                "and cannot be restarted.",
+                application_id,
+            )
+        if not test_mode:
+            await asyncio.to_thread(_mark_in_progress, interview_id)
+        return GenerateQuestionsResponse(
+            interview_id=interview_id,
+            application_id=application_id,
+            questions=[],
+            timer_seconds=_remaining_seconds(started_at, limit_seconds),
             interview_type=interview_type,
             enable_fail_cases=settings.ENABLE_FAIL_CASES,
         )
@@ -786,9 +1028,10 @@ async def generate_interview_questions(
     # generation path.
     if not test_mode and existing:
         if current_status_row and str(current_status_row[0]).lower() in TERMINAL_ROUND_STATUSES:
-            raise ValueError(
+            raise InterviewAlreadyCompletedError(
                 f"Interview {interview_id} is already completed ({current_status_row[0]}) "
-                "and cannot be restarted."
+                "and cannot be restarted.",
+                application_id,
             )
         await asyncio.to_thread(_mark_in_progress, interview_id)
         # started_at is None the very first time a pre-generated round is opened
@@ -799,6 +1042,7 @@ async def generate_interview_questions(
         # instead of resetting to the full limit on each reload.
         return GenerateQuestionsResponse(
             interview_id=interview_id,
+            application_id=application_id,
             questions=existing if return_questions else [],
             timer_seconds=_remaining_seconds(started_at, limit_seconds),
             interview_type=interview_type,
@@ -819,6 +1063,7 @@ async def generate_interview_questions(
                 await asyncio.to_thread(_mark_in_progress, interview_id)
                 return GenerateQuestionsResponse(
                     interview_id=interview_id,
+                    application_id=application_id,
                     questions=waited if return_questions else [],
                     timer_seconds=limit_seconds,
                     interview_type=interview_type,
@@ -908,6 +1153,7 @@ async def generate_interview_questions(
 
     return GenerateQuestionsResponse(
         interview_id=interview_id,
+        application_id=application_id,
         questions=items if return_questions else [],
         timer_seconds=limit_seconds,
         interview_type=interview_type,

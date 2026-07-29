@@ -8,6 +8,7 @@ from app.ai.voice_agent.interview_state import store_conclude_result
 from app.ai.voice_agent.room_connection import (
     CreateRoomResponse,
     conduct_voice_interview,
+    join_scheduled_room,
     pop_processing_failure,
     signal_interview_done,
     wait_for_interview_done,
@@ -21,6 +22,7 @@ from app.schemas.interviews import (
     ScoreAnswersResponse,
 )
 from app.services.interview_service import (
+    InterviewAlreadyCompletedError,
     InterviewDeletedPostFailError,
     clear_test_mode_cache,
     generate_interview_questions,
@@ -59,11 +61,17 @@ async def generate_questions(
             status_code=410,
             detail={"code": "interview_deleted_post_fail", "application_id": exc.application_id},
         ) from exc
+    except InterviewAlreadyCompletedError as exc:
+        # Carries application_id — see the exception's docstring — so the frontend's
+        # "already completed" screen can point its Back button at
+        # /application-progress/:applicationId instead of falling back to browser history
+        # (which can land on an unrelated page, e.g. /auth, depending on how the tab got here).
+        raise HTTPException(
+            status_code=409,
+            detail={"message": str(exc), "application_id": exc.application_id},
+        ) from exc
     except ValueError as exc:
-        msg = str(exc)
-        if "already completed" in msg:
-            raise HTTPException(status_code=409, detail=msg) from exc
-        raise HTTPException(status_code=404, detail=msg) from exc
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
@@ -108,6 +116,21 @@ async def score_answers(
 async def start_voice_interview(interview_id: str, test_mode: bool = False) -> CreateRoomResponse:
     try:
         return await conduct_voice_interview(interview_id, test_mode=test_mode)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@router.post("/{interview_id}/join", response_model=CreateRoomResponse)
+async def join_interview(interview_id: str, test_mode: bool = False) -> CreateRoomResponse:
+    """Candidate entry point for a (possibly scheduled) interview — replaces the old
+    always-create-everything /voice-interview call for the Application Progress page's
+    "Enter Interview Room" action. If the AI agent already pre-joined this interview's
+    room (a scheduled round whose time has arrived), mints a token for that same room;
+    otherwise falls back to the original on-demand flow unchanged."""
+    try:
+        return await join_scheduled_room(interview_id, test_mode=test_mode)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:

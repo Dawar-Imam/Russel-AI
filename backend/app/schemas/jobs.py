@@ -194,6 +194,7 @@ class JobStatsRound(BaseModel):
     round_type_name: str
     failing_criteria: int | None
     applicants_count: int
+    interview_round_id: str
 
 
 class JobStatsResponse(BaseModel):
@@ -207,12 +208,22 @@ class JobStatsResponse(BaseModel):
     hired_count: int
 
 
+class DeleteInterviewResponse(BaseModel):
+    status: str
+    interview_id: str
+
+
 class RoundCandidateItem(BaseModel):
     candidate_id: str
     application_id: str
     interview_id: str
     name: str
+    email: str
     status: str
+    scheduled_at: str | None = None  # local wall-clock time, ISO — never UTC (see Interviews.scheduled_at)
+    scheduled_timezone: str | None = None
+
+
 
 
 class CandidateSkillItem(BaseModel):
