@@ -20,8 +20,11 @@ from app.core.config import get_llm, settings
 from app.services.interview_service import (
     get_interview_context,
     get_schedule_context,
+    mark_interview_deleted_no_show,
+    mark_interview_started_by_agent,
     mark_interview_terminated,
     merge_test_mode_answers,
+    raise_if_not_joinable,
     save_voice_answers_bulk,
     set_interview_livekit_room,
 )
@@ -352,6 +355,13 @@ async def conduct_voice_interview(interview_id: str, test_mode: bool = False) ->
     # if not questions:
     #     raise ValueError(f"No questions found for interview {interview_id}")
 
+    # Reachable both directly (/voice-interview, legacy on-demand route) and as
+    # join_scheduled_room's fallback below — gate here too so neither path can mint a
+    # room/token for an already-terminal/deleted round or one that hasn't started yet.
+    sched_ctx = get_schedule_context(interview_id)
+    if sched_ctx is not None:
+        raise_if_not_joinable(sched_ctx, interview_id, allow_early=test_mode)
+
     job_post_text = ""
     candidate_cv_text = ""
     try:
@@ -486,6 +496,13 @@ async def start_scheduled_interview(
         _logger.info("start_scheduled_interview: status validation passed for interview=%s", interview_id)
         _debug_dump_step(interview_id, "status_validation_passed")
 
+        # Flip to 'In Progress' the instant this task commits to running the
+        # interview — regardless of whether the candidate ever actually joins (the
+        # no-show branch below moves it on to 'Deleted' if they don't). Does not
+        # touch started_at/the interview timer — see the function's docstring.
+        mark_interview_started_by_agent(interview_id)
+        _debug_dump_step(interview_id, "marked_in_progress")
+
         job_post_text = ""
         candidate_cv_text = ""
         try:
@@ -543,17 +560,22 @@ async def start_scheduled_interview(
 
     if not candidate_joined:
         _logger.info("Scheduled interview %s: candidate never joined, marking no-show", interview_id)
-        mark_interview_terminated(
-            interview_id,
-            f"Candidate did not join within {effective_window_minutes} minutes "
-            "of the scheduled time — marked as no-show.",
-        )
-        _debug_dump_step(interview_id, "marked_no_show")
         try:
             await agent_room.disconnect()
         except Exception:
             pass
+        # Tear down the room and invalidate its LiveKit URL (clears livekit_room_name/
+        # livekit_token_expires_at) before flipping status to 'Deleted' — a rejoin
+        # attempt landing between these two steps would otherwise briefly see a
+        # dead room_name for a still-'In Progress' round instead of a clean
+        # "deleted" rejection.
         await _force_room_teardown(room_response.room_name)
+        mark_interview_deleted_no_show(
+            interview_id,
+            f"Candidate did not join within {effective_window_minutes} minutes "
+            "of the scheduled time — interview deleted as a no-show.",
+        )
+        _debug_dump_step(interview_id, "marked_deleted_no_show")
         return
 
     # Candidate joined — run the interview exactly like the on-demand path does, just
@@ -569,6 +591,12 @@ async def join_scheduled_room(interview_id: str, test_mode: bool = False) -> Cre
     Otherwise — a round that was never scheduled, or scheduling isn't configured for
     this job — falls back to the original on-demand behavior unchanged."""
     ctx = get_schedule_context(interview_id)
+    # Single gate for both branches below: an already-terminal/deleted round, or one
+    # whose scheduled_at hasn't arrived yet, is rejected here before minting a token
+    # for the agent's pre-joined room OR falling back to conduct_voice_interview's
+    # on-demand path — so a stale/expired/early join link never works either way.
+    if ctx is not None:
+        raise_if_not_joinable(ctx, interview_id, allow_early=test_mode)
     room_name = ctx["livekit_room_name"] if ctx else None
 
     if not room_name:

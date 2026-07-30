@@ -24,6 +24,7 @@ from app.schemas.interviews import (
 from app.services.interview_service import (
     InterviewAlreadyCompletedError,
     InterviewDeletedPostFailError,
+    InterviewNotStartedError,
     clear_test_mode_cache,
     generate_interview_questions,
     mark_interview_failed_on_leave,
@@ -68,6 +69,13 @@ async def generate_questions(
         # (which can land on an unrelated page, e.g. /auth, depending on how the tab got here).
         raise HTTPException(
             status_code=409,
+            detail={"message": str(exc), "application_id": exc.application_id, "code": exc.code},
+        ) from exc
+    except InterviewNotStartedError as exc:
+        # 425 Too Early: the candidate followed a join link before the round's
+        # scheduled start time. Same application_id/Back-button reasoning as above.
+        raise HTTPException(
+            status_code=425,
             detail={"message": str(exc), "application_id": exc.application_id},
         ) from exc
     except ValueError as exc:
@@ -116,6 +124,16 @@ async def score_answers(
 async def start_voice_interview(interview_id: str, test_mode: bool = False) -> CreateRoomResponse:
     try:
         return await conduct_voice_interview(interview_id, test_mode=test_mode)
+    except InterviewAlreadyCompletedError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"message": str(exc), "application_id": exc.application_id, "code": exc.code},
+        ) from exc
+    except InterviewNotStartedError as exc:
+        raise HTTPException(
+            status_code=425,
+            detail={"message": str(exc), "application_id": exc.application_id},
+        ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:
@@ -131,6 +149,18 @@ async def join_interview(interview_id: str, test_mode: bool = False) -> CreateRo
     otherwise falls back to the original on-demand flow unchanged."""
     try:
         return await join_scheduled_room(interview_id, test_mode=test_mode)
+    except InterviewAlreadyCompletedError as exc:
+        # Invalid/expired/deleted join link (see room_connection.join_scheduled_room's
+        # raise_if_not_joinable gate) — same shape as generate-questions' 409 above.
+        raise HTTPException(
+            status_code=409,
+            detail={"message": str(exc), "application_id": exc.application_id, "code": exc.code},
+        ) from exc
+    except InterviewNotStartedError as exc:
+        raise HTTPException(
+            status_code=425,
+            detail={"message": str(exc), "application_id": exc.application_id},
+        ) from exc
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except Exception as exc:

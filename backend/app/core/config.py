@@ -59,7 +59,7 @@ class Settings(BaseSettings):
     # window compensates for scheduling_service.EARLY_DISPATCH_SECONDS — the agent's
     # wait clock actually starts 30s before the scheduled time, so this keeps the
     # candidate's effective join window measured from the real scheduled time unchanged.
-    SCHEDULED_INTERVIEW_JOIN_WINDOW_MINUTES: float = 15.5
+    SCHEDULED_INTERVIEW_JOIN_WINDOW_MINUTES: float = 1.5
     # Timezone auto-scheduling falls back to when a round has never been manually
     # scheduled before (so there's no prior scheduled_timezone to reuse). Manual
     # scheduling always uses whatever timezone the recruiter picks in the UI.

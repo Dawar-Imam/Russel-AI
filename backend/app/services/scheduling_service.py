@@ -43,6 +43,34 @@ def _dispatch_schedule_task(interview_id: str, local_dt: datetime, timezone: str
     return result.id
 
 
+MIN_SCHEDULE_BUFFER_MINUTES = 2
+"""Minimum lead time required between "now" and a recruiter-picked interview start
+time — guards against a Calendar event whose start is so close to "now" that the
+early-dispatched Celery task/agent pre-join wouldn't have meaningful time to run
+before it (see EARLY_DISPATCH_SECONDS above), or one that's already in progress or
+over by the time the webhook processes it."""
+
+
+def validate_schedule_time(local_dt: datetime, end_dt: datetime | None = None) -> str | None:
+    """Returns a human-readable rejection reason if `local_dt` (and optionally
+    `end_dt`) isn't an acceptable interview start time right now, or None if it's
+    fine to schedule. Compares against a naive datetime.now() — same wall-clock
+    convention as scheduled_at/scheduled_timezone elsewhere in this module (see
+    module docstring): both are the recruiter's own local time, never converted to
+    UTC before this comparison."""
+    now_local = datetime.now()
+    if local_dt < now_local:
+        return f"start time {local_dt} is already in the past (now={now_local})"
+    if end_dt is not None and end_dt < now_local:
+        return f"end time {end_dt} is already in the past (now={now_local})"
+    if local_dt < now_local + timedelta(minutes=MIN_SCHEDULE_BUFFER_MINUTES):
+        return (
+            f"start time {local_dt} is less than {MIN_SCHEDULE_BUFFER_MINUTES} "
+            f"minute(s) from now ({now_local})"
+        )
+    return None
+
+
 def revoke_pending_schedule_task(schedule_task_id: str | None) -> None:
     """Cancels a previously-dispatched ETA task — called before dispatching a new one
     on reschedule, so a stale task can never fire the agent into a room at the old time."""

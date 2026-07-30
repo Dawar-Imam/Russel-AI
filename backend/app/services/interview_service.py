@@ -141,9 +141,62 @@ class InterviewAlreadyCompletedError(Exception):
     "already completed" screen's Back button needs /application-progress/:applicationId,
     and interview_id alone can't get there client-side."""
 
+    def __init__(self, message: str, application_id: str, code: str = "already_completed") -> None:
+        super().__init__(message)
+        self.application_id = application_id
+        self.code = code
+
+
+class InterviewNotStartedError(Exception):
+    """Raised when a candidate tries to generate questions / join a round whose
+    scheduled_at is still in the future — e.g. they followed the Calendar join link
+    before their interview's scheduled start time. Carries application_id for the
+    same reason as InterviewAlreadyCompletedError: the "not started yet" screen's
+    Back button needs /application-progress/:applicationId."""
+
     def __init__(self, message: str, application_id: str) -> None:
         super().__init__(message)
         self.application_id = application_id
+
+
+def _raise_terminal_error(status: str, application_id: str, interview_id: str) -> None:
+    """Shared by generate_interview_questions' own terminal-status gates and
+    raise_if_not_joinable below — a 'Deleted' round (no-show/expired link) gets
+    distinct wording from a genuinely-completed one, everything else the same."""
+    if status.lower() == "deleted":
+        raise InterviewAlreadyCompletedError(
+            f"Interview {interview_id} has been deleted.", application_id, code="deleted"
+        )
+    raise InterviewAlreadyCompletedError(
+        f"Interview {interview_id} is already completed ({status}) and cannot be restarted.",
+        application_id,
+    )
+
+
+def raise_if_not_joinable(sched_ctx: dict, interview_id: str, *, allow_early: bool = False) -> None:
+    """Shared gate used right before a candidate is allowed to mint a LiveKit
+    token/room for a round — called from room_connection.join_scheduled_room /
+    conduct_voice_interview (generate_interview_questions has its own equivalent
+    checks inline, using the context it already fetches — see _raise_terminal_error
+    and the not-started check next to _fetch_generation_context's call site).
+    Single source of truth for "is this round joinable right now", so a stale/
+    expired/early join attempt is rejected consistently no matter which endpoint it
+    came in on.
+
+    `sched_ctx` is a get_schedule_context(...) result (must not be None — callers
+    already have their own not-found handling for that case). `allow_early=True` skips
+    the "hasn't started yet" check (test_mode — lets developers jump into a scheduled
+    round without waiting for its real start time; terminal/deleted statuses are still
+    enforced even in test_mode, matching existing behavior elsewhere in this module)."""
+    status_lower = sched_ctx["status"].lower()
+    if status_lower in TERMINAL_ROUND_STATUSES:
+        _raise_terminal_error(sched_ctx["status"], sched_ctx["application_id"], interview_id)
+    if not allow_early and sched_ctx["scheduled_at"] is not None and sched_ctx["scheduled_at"] > datetime.now():
+        raise InterviewNotStartedError(
+            f"Interview {interview_id} has not started yet (scheduled for "
+            f"{sched_ctx['scheduled_at']} {sched_ctx['scheduled_timezone'] or ''}).",
+            sched_ctx["application_id"],
+        )
 
 
 def get_interview_context(interview_id: str) -> dict:
@@ -794,6 +847,41 @@ def set_interview_livekit_expiry(interview_id: str, expires_at_local: "datetime"
         conn.commit()
 
 
+def mark_interview_started_by_agent(interview_id: str) -> None:
+    """Called the instant the scheduled-interview Celery task begins (before it waits
+    for the candidate) — flips status to 'In Progress' immediately, regardless of
+    whether the candidate ever actually joins. Deliberately does NOT touch started_at
+    (unlike _mark_in_progress) — the interview timer still counts from whenever the
+    candidate's own generate-questions call actually begins the round, not from
+    whenever the background agent task happened to wake up."""
+    with db_cursor() as (conn, cur):
+        cur.execute("UPDATE Interviews SET status = 'In Progress' WHERE id = ?", interview_id)
+        conn.commit()
+
+
+def mark_interview_deleted_no_show(interview_id: str, reason: str) -> None:
+    """Called by start_scheduled_interview when the candidate never joins within the
+    scheduled join window. Distinct from mark_interview_terminated (status='Failed',
+    which implies a genuine failed attempt) — a no-show never had an attempt at all,
+    so the round is marked status='Deleted' instead. Also clears livekit_room_name/
+    livekit_token_expires_at so the round's (now torn-down) LiveKit room can never be
+    rejoined — see room_connection._force_room_teardown, called by the caller
+    alongside this. Idempotent: no-ops if already scored or already 'Deleted'."""
+    with db_cursor() as (conn, cur):
+        current = _fetch_current_status(cur, interview_id).lower()
+        if current in SCORED_STATUSES or current == "deleted":
+            return
+        cur.execute(
+            """UPDATE Interviews
+               SET status = 'Deleted', result = ?, feedback = ?, completed_at = GETDATE(),
+                   livekit_room_name = NULL, livekit_token_expires_at = NULL
+               WHERE id = ?""",
+            0.0, reason, interview_id,
+        )
+        _mark_subsequent_rounds_not_needed(cur, interview_id)
+        conn.commit()
+
+
 class InterviewNotDeletableError(ValueError):
     """Raised by delete_interview_round when the round can't be unscheduled — either
     it's already completed/in progress, or its scheduled time has already passed."""
@@ -886,7 +974,7 @@ def _fetch_generation_context(interview_id: str, candidate_id: str):
         )
         cp_row = cur.fetchone()
         experience_level_id = int(cp_row[0]) if cp_row and cp_row[0] else 1
-        cur.execute("SELECT status, started_at FROM Interviews WHERE id = ?", interview_id)
+        cur.execute("SELECT status, started_at, scheduled_at FROM Interviews WHERE id = ?", interview_id)
         current_status_row = cur.fetchone()
     return existing, experience_level_id, current_status_row
 
@@ -978,6 +1066,18 @@ async def generate_interview_questions(
         _fetch_generation_context, interview_id, candidate_id
     )
     started_at = current_status_row[1] if current_status_row else None
+    scheduled_at = current_status_row[2] if current_status_row else None
+
+    # Reject a join attempt before the round's scheduled start time — test_mode
+    # bypasses this (lets developers jump into a scheduled round without waiting),
+    # matching test_mode's existing carve-out everywhere else in this function.
+    # Terminal/deleted statuses are handled separately below, by the oral-round and
+    # existing-questions gates (which already run regardless of test_mode).
+    if not test_mode and scheduled_at is not None and scheduled_at > datetime.now():
+        raise InterviewNotStartedError(
+            f"Interview {interview_id} has not started yet (scheduled for {scheduled_at}).",
+            application_id,
+        )
 
     # In test mode with an already-completed interview: return cached/existing
     # questions without touching the DB at all.
@@ -1001,11 +1101,7 @@ async def generate_interview_questions(
     # same as the existing-questions gate below just without ever touching Questions.
     if is_oral:
         if current_status_row and str(current_status_row[0]).lower() in TERMINAL_ROUND_STATUSES:
-            raise InterviewAlreadyCompletedError(
-                f"Interview {interview_id} is already completed ({current_status_row[0]}) "
-                "and cannot be restarted.",
-                application_id,
-            )
+            _raise_terminal_error(str(current_status_row[0]), application_id, interview_id)
         if not test_mode:
             await asyncio.to_thread(_mark_in_progress, interview_id)
         return GenerateQuestionsResponse(
@@ -1028,11 +1124,7 @@ async def generate_interview_questions(
     # generation path.
     if not test_mode and existing:
         if current_status_row and str(current_status_row[0]).lower() in TERMINAL_ROUND_STATUSES:
-            raise InterviewAlreadyCompletedError(
-                f"Interview {interview_id} is already completed ({current_status_row[0]}) "
-                "and cannot be restarted.",
-                application_id,
-            )
+            _raise_terminal_error(str(current_status_row[0]), application_id, interview_id)
         await asyncio.to_thread(_mark_in_progress, interview_id)
         # started_at is None the very first time a pre-generated round is opened
         # (pregeneration never touches it) — _remaining_seconds treats that as "just

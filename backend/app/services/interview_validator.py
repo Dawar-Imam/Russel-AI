@@ -28,9 +28,11 @@ WRITTEN_TEST_MIN_CORRECT = 10
 SCORED_STATUSES = ("pass", "failed")
 
 # Interviews.status values (lowercased) after which a round must never be
-# regenerated or rescored — either it was scored (SCORED_STATUSES) or it was
-# cascade-skipped because an earlier round in the same application failed.
-TERMINAL_ROUND_STATUSES = ("pass", "failed", "not needed")
+# regenerated or rescored — either it was scored (SCORED_STATUSES), it was
+# cascade-skipped because an earlier round in the same application failed, or it
+# was deleted (a scheduled round whose candidate never joined within the join
+# window — see interview_service.mark_interview_deleted_no_show).
+TERMINAL_ROUND_STATUSES = ("pass", "failed", "not needed", "deleted")
 
 _FEEDBACK_WRITTEN_LEAVE = "User left the interview, interview automatically closed."
 _FEEDBACK_ORAL_LEAVE = "User switched tabs and cheated, thus interview closed."

@@ -93,6 +93,18 @@ def _parse_event_datetime(event: dict) -> tuple[datetime, str] | None:
     return dt.replace(tzinfo=None), start.get("timeZone") or settings.DEFAULT_SCHEDULING_TIMEZONE
 
 
+def _parse_event_end_datetime(event: dict) -> datetime | None:
+    """Same wall-clock extraction as _parse_event_datetime, but for the event's end
+    time — used only for past-time validation (scheduling_service.validate_schedule_time);
+    not persisted anywhere (round duration still comes from
+    InterviewRounds.time_limit_minutes, unrelated to the Calendar event's own end)."""
+    end = event.get("end", {})
+    dt_str = end.get("dateTime")
+    if not dt_str:
+        return None
+    return datetime.fromisoformat(dt_str).replace(tzinfo=None)
+
+
 def _handle_cancelled_event(recruiter_id: str, event_id: str | None) -> None:
     """A cancelled/deleted event carries no description (Google strips it), so this
     can't use the join-link marker — it matches purely on `google_event_id`, which was
@@ -209,6 +221,18 @@ def calendar_webhook(request: Request) -> Response:
             logger.info("google_calendar webhook: event=%s has no dateTime (all-day event), skipping", event_id)
             continue
         local_dt, timezone = parsed
+
+        # Reject a schedule whose start/end is already in the past, or whose start is
+        # too close to "now" to give the early-dispatched Celery task/agent pre-join
+        # meaningful lead time — see scheduling_service.MIN_SCHEDULE_BUFFER_MINUTES.
+        end_dt = _parse_event_end_datetime(event)
+        rejection_reason = scheduling_service.validate_schedule_time(local_dt, end_dt)
+        if rejection_reason:
+            logger.warning(
+                "google_calendar webhook: event=%s for interview=%s rejected -> %s",
+                event_id, interview_id, rejection_reason,
+            )
+            continue
 
         # Idempotency: a burst of webhook pings for the same underlying change
         # shouldn't repeatedly revoke/redispatch the Celery ETA task.

@@ -60,6 +60,7 @@ type Phase =
   | 'results'
   | 'terminated'
   | 'already-completed'
+  | 'not-started'
   | 'error'
 
 function fmtTime(secs: number): string {
@@ -82,7 +83,9 @@ async function fetchVoiceInterviewToken(
   )
   if (!res.ok) {
     const d = await res.json().catch(() => ({}))
-    throw new Error((d as { detail?: string }).detail ?? `Server error ${res.status}`)
+    const detail = (d as { detail?: string | { message?: string; application_id?: string } }).detail
+    const message = typeof detail === 'string' ? detail : detail?.message
+    throw new Error(message ?? `Server error ${res.status}`)
   }
   return res.json() as Promise<{ url: string; token: string }>
 }
@@ -118,6 +121,9 @@ function InterviewRoom() {
   const [enableFailCases, setEnableFailCases] = useState(true)
   const [applicationId, setApplicationId] = useState<string | null>(null)
   const [terminatedReason, setTerminatedReason] = useState<string | null>(null)
+  // 'deleted' (no-show/expired link) gets distinct copy from the generic
+  // already-completed case — both land on the same 'already-completed' phase.
+  const [alreadyCompletedCode, setAlreadyCompletedCode] = useState<string | null>(null)
   const [autoSubmitted, setAutoSubmitted] = useState(false)
 
   const answersRef = useRef<string[]>([])
@@ -643,9 +649,19 @@ function InterviewRoom() {
       .then((res) => {
         if (res.status === 409)
           return res.json().then((d) => {
+            const detail = (d as { detail?: { application_id?: string; code?: string } }).detail
+            if (detail?.application_id) setApplicationId(detail.application_id)
+            setAlreadyCompletedCode(detail?.code ?? null)
+            setPhase('already-completed')
+            return null
+          })
+        if (res.status === 425)
+          return res.json().then((d) => {
+            // Candidate followed the join link before the round's scheduled_at —
+            // see backend InterviewNotStartedError.
             const detail = (d as { detail?: { application_id?: string } }).detail
             if (detail?.application_id) setApplicationId(detail.application_id)
-            setPhase('already-completed')
+            setPhase('not-started')
             return null
           })
         if (res.status === 410)
@@ -1057,13 +1073,28 @@ function InterviewRoom() {
         </div>
       )}
 
-      {/* ── Already completed (interview was closed before this page load) ── */}
+      {/* ── Already completed / deleted (interview was closed before this page load) ── */}
       {phase === 'already-completed' && (
         <div className="ir-center">
           <BackButton to={applicationId ? `/application-progress/${applicationId}` : undefined} />
-          <p className="ir-status-text">Interview Session Ended</p>
+          <p className="ir-status-text">
+            {alreadyCompletedCode === 'deleted' ? 'Interview Deleted' : 'Interview Session Ended'}
+          </p>
           <p className="ir-status-sub">
-            This interview has already been completed. Return to your applications to view your results.
+            {alreadyCompletedCode === 'deleted'
+              ? "This interview wasn't joined in time and has been deleted. Return to your applications for next steps."
+              : 'This interview has already been completed. Return to your applications to view your results.'}
+          </p>
+        </div>
+      )}
+
+      {/* ── Not started yet (candidate followed the join link too early) ── */}
+      {phase === 'not-started' && (
+        <div className="ir-center">
+          <BackButton to={applicationId ? `/application-progress/${applicationId}` : undefined} />
+          <p className="ir-status-text">Interview Not Started</p>
+          <p className="ir-status-sub">
+            This interview hasn't started yet. Please come back at your scheduled time.
           </p>
         </div>
       )}

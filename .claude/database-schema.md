@@ -327,10 +327,10 @@ CREATE TABLE Resumes (
 | id | uniqueidentifier PK | |
 | interview_round_id | uniqueidentifier FK -> InterviewRounds | |
 | application_id | uniqueidentifier FK -> Applications | |
-| status | varchar | `Scheduled` / `In Progress` / `Pass` / `Failed` / `Not Needed` (auto-set on later rounds when an earlier round Fails) |
+| status | varchar | `Scheduled` / `In Progress` / `Pass` / `Failed` / `Not Needed` (auto-set on later rounds when an earlier round Fails) / `Deleted` (auto-set when a scheduled round's candidate never joins within `SCHEDULED_INTERVIEW_JOIN_WINDOW_MINUTES` — see `interview_service.mark_interview_deleted_no_show`; treated as terminal everywhere `TERMINAL_ROUND_STATUSES` is checked) |
 | scheduled_at | datetime2 NULL | **Local wall-clock time only — never UTC, never converted.** NULL until a recruiter manually schedules this round or auto-schedule fires (previously defaulted to `GETDATE()` at row creation; see `application_service._create_interviews_for_application`). Interpreted together with `scheduled_timezone` below. |
 | scheduled_timezone | varchar(50) NULL | IANA zone name (e.g. `Asia/Karachi`) the recruiter picked `scheduled_at` in. Only used at scheduling time to compute the Celery task's execution instant (`scheduling_service._to_utc_eta`) — never written back to the DB as UTC. |
-| started_at | datetime2 NULL | Set once, the first time status flips to 'In Progress' (COALESCE-guarded so a later refresh never overwrites it). Used to compute a refresh-safe remaining timer (`timer_seconds = limit - elapsed`) and to stop accepting new autosaved answers once the round's time limit + grace period has passed. |
+| started_at | datetime2 NULL | Set once, the first time the candidate's own `generate-questions` call flips status to 'In Progress' (COALESCE-guarded so a later refresh never overwrites it). Used to compute a refresh-safe remaining timer (`timer_seconds = limit - elapsed`) and to stop accepting new autosaved answers once the round's time limit + grace period has passed. Note: for scheduled rounds, `status` can flip to 'In Progress' earlier than this — the Celery task sets it the instant it starts, before the candidate joins (`interview_service.mark_interview_started_by_agent`) — without touching `started_at`, so the timer still only starts once the candidate's browser actually begins the round. |
 | completed_at | datetime2 | |
 | feedback | nvarchar | AI-generated text feedback about the round |
 | result | varchar(50) | Final numeric score (0–10) stored as text; NULL until round is scored |
